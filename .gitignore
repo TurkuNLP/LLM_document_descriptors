@@ -1,0 +1,6 @@
+logs/
+hf_cache/
+results/
+data/
+figures/
+.ipynb_checkpoints/
