@@ -26,15 +26,16 @@ def LLM_setup(cache_dir):
         LLM: An instance of the LLM class initialized with the specified settings.
     """
     return LLM(
-        model="unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit",
+        #model="unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit",
+        model="meta-llama/Llama-3.1-70B-Instruct",
         download_dir=cache_dir,
         dtype='bfloat16',
         tensor_parallel_size=4, #or use torch.cuda.device_count(),
         #pipeline_parallel_size=2,
         enforce_eager=False,
         gpu_memory_utilization=1,
-        quantization="bitsandbytes",
-        load_format="bitsandbytes",
+        #quantization="bitsandbytes",
+        #load_format="bitsandbytes",
     )
 
 
@@ -353,7 +354,7 @@ def main(start_at_index=0, stop_at_index=100, use_previous_descriptors=False, de
     - Collects and saves results.
     """
     
-    cache_dir = "/scratch/project_2011109/otto/LLM_data_labelling/hf_cache"
+    cache_dir = "../hf_cache"
     
     print('Loading model...')
     llm = LLM_setup(cache_dir)
@@ -443,5 +444,5 @@ if __name__ == '__main__':
     main(start_at_index=0,
          stop_at_index=-1,
          use_previous_descriptors=False,
-         descriptor_path='../results/descriptors_vllm_8B_1.tsv',
-         run_id='vllm_8B_1')
+         descriptor_path='../results/descriptors_vllm_70B_1.tsv',
+         run_id='vllm_70B_1')
