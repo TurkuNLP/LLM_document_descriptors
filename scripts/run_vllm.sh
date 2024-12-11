@@ -11,10 +11,9 @@
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 
-module load pytorch
+module load pytorch/2.4
 source /projappl/project_2011109/otto_venv/bin/activate
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3  # Set this to match number of GPUs reserved
-export VLLM_WORKER_MULTIPROC_METHOD=spawn # Fixes some bug, maybe?
 
 srun python3 vllm_document_descriptors.py
