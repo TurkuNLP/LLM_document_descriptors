@@ -27,15 +27,15 @@ def LLM_setup(model, cache_dir):
         LLM: An instance of the LLM class initialized with the specified settings.
     """
     return LLM(
-        #model="unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit",
         #model="meta-llama/Llama-3.1-70B-Instruct",
         model=model,
         download_dir=cache_dir,
         dtype='bfloat16',
-        tensor_parallel_size=4, #or use torch.cuda.device_count(),
+        max_model_len=128_000,
+        tensor_parallel_size=torch.cuda.device_count(),
         #pipeline_parallel_size=2,
         enforce_eager=False,
-        gpu_memory_utilization=1,
+        gpu_memory_utilization=0.9,
         #quantization="bitsandbytes",
         #load_format="bitsandbytes",
     )
@@ -54,9 +54,9 @@ def get_sampling_params(stage, llm):
     
     return SamplingParams(
         temperature=0.0,
-        top_p=0.95,
-        max_tokens=8_000,
-        logits_processors=[logits_processor]
+        top_p=0.5,
+        max_tokens=8_000, # max tokens to generate
+        logits_processors=[logits_processor] # ensure correct JSON formatting
     )
 
 
@@ -71,7 +71,7 @@ def calculate_doc_similarity(original, rewrite):
     Returns:
         dict: Dictionary of rewritten documents and their similarity scores.
     """
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+    model = SentenceTransformer("jinaai/jina-embeddings-v3", trust_remote_code=True)
     original_embedding = model.encode([original])
     rewrite_embedding = model.encode([rewrite])
 
@@ -379,51 +379,58 @@ def main(args):
             continue
         
         print(f'Working on document {i}')
-
+        
+        start_time = time.time()
         file_id = f'{run_id}_doc{i}'
+
+        # This is where we collect all descriptors, rewrites and document similarities.
+        # At the end, we compare similarity scores and only keep the best ones.
         general_descriptor_lists = []
         specific_descriptor_lists = []
         rewrites = []
         doc_similarities = []
         
-        # CHANGE THIS WHEN USING THE REAL DATASET!
         document = line['text']
-        #document = line
         
-        # Generate initial descriptors for document
+        # Generate initial descriptors for document.
         stage = 'initial'
         general_descriptors, specific_descriptors = initial_stage(document, descriptor_vocab, stage, llm)
         general_descriptor_lists.append(general_descriptors)
         specific_descriptor_lists.append(specific_descriptors)
 
-
-        for _ in range(5):
-            # Rewrite doc based on the descriptors
+        # Generate num_rewrites rewrites of the document based on descriptors.
+        # After the rewrite, we revise the descriptors to create an even better rewrite.
+        num_rewrites = 3
+        for round_num in range(num_rewrites):
+            # Rewrite doc based on the descriptors.
             stage = 'rewrite'
             rewritten = rewrite_stage(stage,
                                       general_descriptors,
-                                     specific_descriptors,
+                                      specific_descriptors,
                                       llm)
             rewrites.append(rewritten)
 
-
-            # Evaluate rewrite and revise descriptors
-            stage = 'revise'
-            general_descriptors, specific_descriptors = revise_stage(stage,
-                                                                     document,
-                                                                     rewritten,
-                                                                     general_descriptors,
-                                                                     specific_descriptors,
-                                                                     descriptor_vocab,
-                                                                     llm)
-            general_descriptor_lists.append(general_descriptors)
-            specific_descriptor_lists.append(specific_descriptors)
+            if not round_num == num_rewrites-1: 
+                # Evaluate rewrite and revise descriptors.
+                # This stage is skipped on the last round because since we do not do another rewrite
+                # we do not need another set of descriptors.
+                # This saves us one LLM call.
+                stage = 'revise'
+                general_descriptors, specific_descriptors = revise_stage(stage,
+                                                                        document,
+                                                                        rewritten,
+                                                                        general_descriptors,
+                                                                        specific_descriptors,
+                                                                        descriptor_vocab,
+                                                                        llm)
+                general_descriptor_lists.append(general_descriptors)
+                specific_descriptor_lists.append(specific_descriptors)
   
 
             doc_similarities.append(calculate_doc_similarity(document, rewritten))
 
-        # Save best result based on similarity score between original and rewrite
-        # Return the best general descriptors
+        # Save best result based on similarity score between original and rewrite.
+        # Return the best general descriptors.
         best_descriptors = save_best_results(document,
                                              rewrites,
                                              general_descriptor_lists,
@@ -431,18 +438,24 @@ def main(args):
                                              doc_similarities,
                                              run_id)
 
-        # Update descriptor counts and save
+        # Update descriptor counts.
         for desc in best_descriptors:
             descriptor_counts[desc] += 1
             
-        # Sort descriptors by their frequency and save
+        # Sort descriptors by their frequency and save.
         descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
         save_descriptors(descriptor_counts_sorted, descriptor_path)
         
         # Keep the 100 most common general descriptors. These will be given to the model as possible options.
         descriptor_vocab = return_top_descriptors(descriptor_counts_sorted)
+        
+        end_time = time.time()
 
-        # Stop at given index
+        print(f"Time taken to generate descriptors for document {i}: {round(end_time-start_time, 2)} seconds.")
+        print("="*20)
+
+        # Stop run at given index.
+        # If -1, we continue until we run out of data or time.
         if end_index == -1:
             continue
         elif i >= end_index:
@@ -464,7 +477,7 @@ if __name__ == '__main__':
                         help='Index of last document to analyse. Give -1 to set no stopping index.')
     parser.add_argument('--use-previous-descriptors', action='store_true',
                         help='Use descriptors used in a previous run as a starting point.')
-    parser.add_argument('--descriptor-path', type=str, default='../results/desriptors_vllms_70B_1.tsv',
+    parser.add_argument('--descriptor-path', type=str, default='../results/desriptors_vllm_70B_1.tsv',
                         help='Path to file where descriptors are saved if using previous descriptors.')
 
     args = parser.parse_args()
