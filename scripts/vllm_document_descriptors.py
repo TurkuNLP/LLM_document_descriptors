@@ -13,9 +13,10 @@ import sys
 from pydantic import BaseModel
 from random import shuffle
 from collections import defaultdict
+import argparse
 
 
-def LLM_setup(cache_dir):
+def LLM_setup(model, cache_dir):
     """
     Sets up the Language Model (LLM) with specified parameters.
 
@@ -27,7 +28,8 @@ def LLM_setup(cache_dir):
     """
     return LLM(
         #model="unsloth/Meta-Llama-3.1-70B-Instruct-bnb-4bit",
-        model="meta-llama/Llama-3.1-70B-Instruct",
+        #model="meta-llama/Llama-3.1-70B-Instruct",
+        model=model,
         download_dir=cache_dir,
         dtype='bfloat16',
         tensor_parallel_size=4, #or use torch.cuda.device_count(),
@@ -345,7 +347,7 @@ def return_top_descriptors(descriptor_counts_sorted):
     return [desc[0] for desc in descriptor_counts_sorted][:100]
 
 
-def main(start_at_index=0, stop_at_index=100, use_previous_descriptors=False, descriptor_path=None, run_id='run1'):
+def main(args):
     """
     Main function to set up the model, generate responses, and save the results.
 
@@ -354,10 +356,16 @@ def main(start_at_index=0, stop_at_index=100, use_previous_descriptors=False, de
     - Collects and saves results.
     """
     
-    cache_dir = "../hf_cache"
-    
+    cache_dir = args.cache_dir
+    model = args.model
+    start_index = args.start_index
+    end_index = args.end_index
+    use_previous_descriptors = args.use_previous_descriptors
+    descriptor_path = args.descriptor_path
+    run_id = args.run_id
+
     print('Loading model...')
-    llm = LLM_setup(cache_dir)
+    llm = LLM_setup(model, cache_dir)
     print('Loading data...')
     data = load_documents()
 
@@ -367,7 +375,7 @@ def main(start_at_index=0, stop_at_index=100, use_previous_descriptors=False, de
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted)
     
     for i, line in enumerate(data):
-        if i < start_at_index:
+        if i < start_index:
             continue
         
         print(f'Working on document {i}')
@@ -435,14 +443,31 @@ def main(start_at_index=0, stop_at_index=100, use_previous_descriptors=False, de
         descriptor_vocab = return_top_descriptors(descriptor_counts_sorted)
 
         # Stop at given index
-        if stop_at_index == -1:
+        if end_index == -1:
             continue
-        elif i >= stop_at_index:
+        elif i >= end_index:
             break
 
 if __name__ == '__main__':
-    main(start_at_index=0,
-         stop_at_index=-1,
-         use_previous_descriptors=False,
-         descriptor_path='../results/descriptors_vllm_70B_1.tsv',
-         run_id='vllm_70B_1')
+
+    parser = argparse.ArgumentParser(description='A script for getting document descriptors with LLMs.')
+
+    parser.add_argument('--run-id', type=str, required=True,
+                        help='ID for this run, e.g. run1')
+    parser.add_argument('--cache-dir', type=str, default='../hf_cache',
+                        help='Path to cache directory, where model is or will be saved.')
+    parser.add_argument('--model', type=str, default='meta-llama/Llama-3.1-70B-Instruct',
+                        help='Name of model to use.')
+    parser.add_argument('--start-index', type=int, default=0,
+                        help='Index of first document to analyse.')
+    parser.add_argument('--end-index', type=int, default=-1,
+                        help='Index of last document to analyse. Give -1 to set no stopping index.')
+    parser.add_argument('--use-previous-descriptors', action='store_true',
+                        help='Use descriptors used in a previous run as a starting point.')
+    parser.add_argument('--descriptor-path', type=str, default='../results/desriptors_vllms_70B_1.tsv',
+                        help='Path to file where descriptors are saved if using previous descriptors.')
+
+    args = parser.parse_args()
+
+    main(args)
+

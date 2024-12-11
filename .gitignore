@@ -4,3 +4,4 @@ results/
 data/
 figures/
 .ipynb_checkpoints/
+venv/
