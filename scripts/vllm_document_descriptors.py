@@ -157,8 +157,15 @@ def generate(llm, message, stage):
     Returns:
         str: The generated text output from the LLM.
     """
-    sampling_params = get_sampling_params(stage, llm)
+    # Disabled JSON formatted output to test effect on thoughput
+    #sampling_params = get_sampling_params(stage, llm)
     
+    sampling_params = SamplingParams(
+           temperature=0.0,
+           top_p=0.5,
+           max_tokens=8_000, # max tokens to generate
+           )
+
     return llm.chat(
         messages=message,
         sampling_params=sampling_params,
@@ -203,7 +210,12 @@ def initial_stage(document, vocab, stage, llm):
         vocab = '\n'.join(vocab)
     
     prompt = format_prompt(stage=stage, original=document, vocab=vocab)
-    output = json.loads(generate(llm, prompt, stage))
+    output = generate(llm, prompt, stage)
+    valid_json = validate_output(output)
+    if valid_json:
+        output = json.loads(output)
+    else:
+        output = reformat_output(llm, output)
     general = output['general']
     specific = output['specific']
     
@@ -226,7 +238,12 @@ def rewrite_stage(stage, general, specific, llm):
     prompt = format_prompt(stage=stage,
                            general=general,
                            specific=specific)
-    output = json.loads(generate(llm, prompt, stage))
+    output = generate(llm, prompt, stage)
+    valid_json = validate_output(output)
+    if valid_json:
+        output = json.loads(output)
+    else:
+        output = reformat_output(llm, output)
     return output['document']
     
 
@@ -253,11 +270,37 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
                            general=general,
                            specific=specific,
                            vocab=vocab)
-    output = json.loads(generate(llm, prompt, stage))
+    output = generate(llm, prompt, stage)
+    valid_json = validate_output(output)
+    if valid_json:
+        output = json.loads(output)
+    else:
+        output = reformat_output(llm, output)
     general = output['general']
     specific = output['specific']
 
     return general, specific
+
+
+def reformat_output(llm, output):
+    while True:
+        prompt = prompts.reformat_output_prompt(output)
+        output = generate(llm, prompt, None)
+        valid_json = validate_output(output)
+        if valid_json:
+            break
+    return json.loads(output)
+
+
+def validate_output(output):
+    try:
+        parsed_json = json.loads(output)
+        return True
+    except json.JSONDecodeError as e:
+        print('Invalid JSON output:')
+        print(output)
+        print()
+        return False
 
 
 def save_best_results(document, rewrites, general, specific, similarity_scores, run_id, print_results=False):

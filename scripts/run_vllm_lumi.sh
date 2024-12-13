@@ -21,6 +21,6 @@ source ../venv/bin/activate
 
 gpu-energy --save
 
-srun python3 vllm_document_descriptors.py --run-id='70B_5'
+srun python3 vllm_document_descriptors.py --run-id='70B_6'
 
 gpu-energy --diff

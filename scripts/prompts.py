@@ -20,6 +20,10 @@ You will be given a document. Your task is to create a comprehensive list of des
 3. Order:
     - Sequence: Order the descriptors in the sequence they appear in the document.
 
+4. Format:
+    - The output must be formatted as a JSON object. Follow this formatting exactly.
+    - Example: {{"general": [<"desciptor">, <"descriptor">, <"descriptor">, ...], "specific": [<"desciptor">, <"descriptor">, <"descriptor">, ...]}}
+
 ##Possible general descriptors
 Here is a list of general descriptors that you can choose from. If the descriptors do not apply to the current document, you can also invent new ones.
 <start>
@@ -55,7 +59,12 @@ Reconstruct the original document as accurately as possible using both the gener
 
 2. Original Content:
     - The rewritten document should be original and not copied from any existing source.
-    - Maintain coherence and cohesiveness in the document."""
+    - Maintain coherence and cohesiveness in the document.
+
+3. Format:
+    - The output must be formatted as a JSON object. Follow this formatting exactly. Place double quotes around the rewritten document.
+    - Example: {{"document": <"rewritten version of the document">}}
+    """
             },
             {
               "role": "user",
@@ -106,10 +115,15 @@ You will be given:
 
 ##Requirements:
 
-- Specificity: Provide detailed observations in your critique.
-- Clarity: Ensure the revised descriptors are clear and precise. Make sure to differentiate between general and specific descriptors.
-- Completeness: Cover all aspects where the rewritten document deviates from the original.
-- Conciseness: Do not make the descriptors overly long. They should typically not be longer than 3 to 5 words."""
+1. Specificity: Provide detailed observations in your critique.
+2. Clarity: Ensure the revised descriptors are clear and precise. Make sure to differentiate between general and specific descriptors.
+3. Completeness: Cover all aspects where the rewritten document deviates from the original.
+4. Conciseness: Do not make the descriptors overly long. They should typically not be longer than 3 to 5 words.
+5. Format:
+    - The output must be formatted as a JSON object. Follow this formatting exactly. Place double quotes around the discussion about differences.
+    - Example: {{"differences": <"differences between original and rewrite">, "general": [<"desciptor">, <"descriptor">, <"descriptor">, ...], "specific": [<"desciptor">, <"descriptor">, <"descriptor">, ...]}}
+
+"""
             },
             {
               "role": "user",
@@ -137,5 +151,21 @@ You will be given:
             }]
 
 
+def reformat_output_prompt(original):
+    return [{
+              "role": "system",
+              "content": """
 
-    
+###Instructions
+
+You will be given a JSON string object that is not properly formatted. When given to json.loads() it results in an error. Your task is to fix the formatting of the string so that json.loads() can handle the input correctly.
+
+Give as output only the corrected JSON string object without any preamble.  Do not change anything about the contents of the string, only fix the formatting issues.
+    """
+            },
+            {
+              "role": "user",
+              "content": f"""
+{original}
+"""
+            }]   
