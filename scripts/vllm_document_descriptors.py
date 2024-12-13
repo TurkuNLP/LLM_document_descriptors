@@ -166,11 +166,16 @@ def generate(llm, message, stage):
            max_tokens=8_000, # max tokens to generate
            )
 
-    return llm.chat(
+    output = llm.chat(
         messages=message,
         sampling_params=sampling_params,
         use_tqdm=False,
-    )[0].outputs[0].text
+    )[0].outputs[0].text.strip()
+
+    print('Model output:')
+    print(output)
+    print()
+    return output
 
 
 def load_documents():
@@ -297,6 +302,7 @@ def validate_output(output):
         parsed_json = json.loads(output)
         return True
     except json.JSONDecodeError as e:
+        print(e)
         print('Invalid JSON output:')
         print(output)
         print()

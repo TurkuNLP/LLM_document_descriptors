@@ -160,7 +160,7 @@ def reformat_output_prompt(original):
 
 You will be given a JSON string object that is not properly formatted. When given to json.loads() it results in an error. Your task is to fix the formatting of the string so that json.loads() can handle the input correctly.
 
-Give as output only the corrected JSON string object without any preamble.  Do not change anything about the contents of the string, only fix the formatting issues.
+Give as output only the corrected JSON string object without any preamble.  Do not change anything about the contents of the string, only fix the formatting issues. Remember to always use double quotation marks as single quotes are not valid JSON.
     """
             },
             {
