@@ -170,11 +170,8 @@ def generate(llm, message, stage):
         messages=message,
         sampling_params=sampling_params,
         use_tqdm=False,
-    )[0].outputs[0].text.strip()
-
-    print('Model output:')
-    print(output)
-    print()
+    )[0].outputs[0].text.strip(" `") # The model tends to generate these ticks which cause issues.
+    
     return output
 
 
@@ -218,7 +215,7 @@ def initial_stage(document, vocab, stage, llm):
     output = generate(llm, prompt, stage)
     valid_json = validate_output(output)
     if valid_json:
-        output = json.loads(output)
+        output = json.loads(output, strict=False)
     else:
         output = reformat_output(llm, output)
     general = output['general']
@@ -246,7 +243,7 @@ def rewrite_stage(stage, general, specific, llm):
     output = generate(llm, prompt, stage)
     valid_json = validate_output(output)
     if valid_json:
-        output = json.loads(output)
+        output = json.loads(output, strict=False)
     else:
         output = reformat_output(llm, output)
     return output['document']
@@ -278,7 +275,7 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
     output = generate(llm, prompt, stage)
     valid_json = validate_output(output)
     if valid_json:
-        output = json.loads(output)
+        output = json.loads(output, strict=False)
     else:
         output = reformat_output(llm, output)
     general = output['general']
@@ -294,17 +291,17 @@ def reformat_output(llm, output):
         valid_json = validate_output(output)
         if valid_json:
             break
-    return json.loads(output)
+    return json.loads(output, strict=False)
 
 
 def validate_output(output):
     try:
-        parsed_json = json.loads(output)
+        parsed_json = json.loads(output, strict=False)
         return True
     except json.JSONDecodeError as e:
         print(e)
         print('Invalid JSON output:')
-        print(output)
+        print(repr(output))
         print()
         return False
 
@@ -324,14 +321,23 @@ def save_best_results(document, rewrites, general, specific, similarity_scores, 
     Returns:
         list: Best general descriptors.
     """
-    best_index = similarity_scores.index(max(similarity_scores))
-    results = {
-        'document': document,
-        'rewrite': rewrites[best_index],
-        'similarity': similarity_scores[best_index],
-        'general_descriptors': general[best_index],
-        'specific_descriptors': specific[best_index],
-    }
+    if len(rewrites) == 0:
+        best_index = 0
+        results = {
+                'document': document,
+                'general_descriptors': general[0],
+                'specific_descriptors': specific[0],
+                }
+    else:
+        best_index = similarity_scores.index(max(similarity_scores))
+        results = {
+            'document': document,
+            'rewrite': rewrites[best_index].encode('utf-8', errors='ignore').decode('utf-8'), # Remove possible code breaking chars.
+            'similarity': similarity_scores[best_index],
+            'general_descriptors': general[best_index],
+            'specific_descriptors': specific[best_index],
+        }
+
     if print_results:
         print('======================')
         print('BEST RESULTS:')
@@ -340,6 +346,7 @@ def save_best_results(document, rewrites, general, specific, similarity_scores, 
             print(value)
             print()
         print('======================')
+
     with open(f'../results/descriptors_{run_id}.jsonl', 'a', encoding='utf8') as f:
         f.write(json.dumps(results, ensure_ascii=False))
         f.write('\n')
@@ -449,7 +456,7 @@ def main(args):
 
         # Generate num_rewrites rewrites of the document based on descriptors.
         # After the rewrite, we revise the descriptors to create an even better rewrite.
-        num_rewrites = 3
+        num_rewrites = 0
         for round_num in range(num_rewrites):
             # Rewrite doc based on the descriptors.
             stage = 'rewrite'

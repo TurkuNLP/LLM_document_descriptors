@@ -21,7 +21,7 @@ You will be given a document. Your task is to create a comprehensive list of des
     - Sequence: Order the descriptors in the sequence they appear in the document.
 
 4. Format:
-    - The output must be formatted as a JSON object. Follow this formatting exactly.
+    - The output must be formatted as a JSON object. Follow this formatting exactly. Never add any preamble.
     - Example: {{"general": [<"desciptor">, <"descriptor">, <"descriptor">, ...], "specific": [<"desciptor">, <"descriptor">, <"descriptor">, ...]}}
 
 ##Possible general descriptors
@@ -62,7 +62,7 @@ Reconstruct the original document as accurately as possible using both the gener
     - Maintain coherence and cohesiveness in the document.
 
 3. Format:
-    - The output must be formatted as a JSON object. Follow this formatting exactly. Place double quotes around the rewritten document.
+    - The output must be formatted as a JSON object. Follow this formatting exactly. Never add any preamble. Place double quotes around the rewritten document.
     - Example: {{"document": <"rewritten version of the document">}}
     """
             },
@@ -160,7 +160,10 @@ def reformat_output_prompt(original):
 
 You will be given a JSON string object that is not properly formatted. When given to json.loads() it results in an error. Your task is to fix the formatting of the string so that json.loads() can handle the input correctly.
 
-Give as output only the corrected JSON string object without any preamble.  Do not change anything about the contents of the string, only fix the formatting issues. Remember to always use double quotation marks as single quotes are not valid JSON.
+Give as output only the corrected JSON string object without any preamble.
+Do not change anything about the contents of the string, only fix the formatting issues.
+If there is some preamble outside the JSON object, it can be deleted.
+Remember to always use double quotation marks as single quotes are not valid JSON.
     """
             },
             {
