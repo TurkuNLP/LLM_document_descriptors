@@ -163,7 +163,7 @@ def generate(llm, message, stage):
     sampling_params = SamplingParams(
            temperature=0.0,
            top_p=0.5,
-           max_tokens=8_000, # max tokens to generate
+           max_tokens=12_000, # max tokens to generate
            )
 
     output = llm.chat(
@@ -218,10 +218,11 @@ def initial_stage(document, vocab, stage, llm):
         output = json.loads(output, strict=False)
     else:
         output = reformat_output(llm, output)
-    general = output['general']
-    specific = output['specific']
+        # If reformatting fails, return skip and move on to next document.
+        if output == "skip":
+            return "skip", "skip"
     
-    return general, specific
+    return output['general'], output['specific']
 
 
 def rewrite_stage(stage, general, specific, llm):
@@ -246,6 +247,10 @@ def rewrite_stage(stage, general, specific, llm):
         output = json.loads(output, strict=False)
     else:
         output = reformat_output(llm, output)
+        # If reformatting fails, return skip and move on to next document.
+        if output == "skip":
+            return "skip"
+        
     return output['document']
     
 
@@ -278,20 +283,27 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
         output = json.loads(output, strict=False)
     else:
         output = reformat_output(llm, output)
-    general = output['general']
-    specific = output['specific']
+        # If reformatting fails, return skip and move on to next document.
+        if output == "skip":
+            return "skip", "skip"
 
-    return general, specific
+    return output['general'], output['specific']
 
 
 def reformat_output(llm, output):
-    while True:
+    """
+    If model output is not valid JSON, try reformatting it by calling LLM.
+    If after 3 tries the output is still not valid, skip the document.
+    """
+
+    for _ in range(3):
         prompt = prompts.reformat_output_prompt(output)
         output = generate(llm, prompt, None)
         valid_json = validate_output(output)
         if valid_json:
-            break
-    return json.loads(output, strict=False)
+            return json.loads(output, strict=False)
+
+    return "skip"
 
 
 def validate_output(output):
@@ -451,11 +463,22 @@ def main(args):
         # Generate initial descriptors for document.
         stage = 'initial'
         general_descriptors, specific_descriptors = initial_stage(document, descriptor_vocab, stage, llm)
+        
+        # If generation fails we skip and move on.
+        if general_descriptors == "skip":
+            print(f"Document {i} skipped.")
+            continue
+
         general_descriptor_lists.append(general_descriptors)
         specific_descriptor_lists.append(specific_descriptors)
 
         # Generate num_rewrites rewrites of the document based on descriptors.
         # After the rewrite, we revise the descriptors to create an even better rewrite.
+        
+
+        # I'VE SET THE NUMBER OF REWRITES TO ZERO TO SKIP THIS WHOLE PROCESS!
+        # It takes too long if we want to run this on 100,000 documents!
+        # We can always return to it later!
         num_rewrites = 0
         for round_num in range(num_rewrites):
             # Rewrite doc based on the descriptors.
@@ -464,6 +487,12 @@ def main(args):
                                       general_descriptors,
                                       specific_descriptors,
                                       llm)
+
+            # If generation fails, we skip and move on.
+            if rewritten = "skip":
+                print(f"Document {i} skipped.")
+                break
+
             rewrites.append(rewritten)
 
             if not round_num == num_rewrites-1: 
@@ -479,6 +508,12 @@ def main(args):
                                                                         specific_descriptors,
                                                                         descriptor_vocab,
                                                                         llm)
+
+                # If generation fails, we skip and move on
+                if general_descritors == "skip":
+                    print(f"Document {i} skipped.")
+                    break
+
                 general_descriptor_lists.append(general_descriptors)
                 specific_descriptor_lists.append(specific_descriptors)
   

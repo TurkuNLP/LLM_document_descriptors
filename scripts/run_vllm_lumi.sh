@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=vllm_inference
 #SBATCH --account=project_462000353
-#SBATCH --partition=dev-g
-#SBATCH --time=00:59:00
+#SBATCH --partition=standard-g
+#SBATCH --time=11:59:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=15
@@ -21,6 +21,6 @@ source ../venv/bin/activate
 
 gpu-energy --save
 
-srun python3 vllm_document_descriptors.py --run-id='70B_9_no-rewrites2'
+srun python3 vllm_document_descriptors.py --run-id='70B_1_no-rewrites'
 
 gpu-energy --diff
