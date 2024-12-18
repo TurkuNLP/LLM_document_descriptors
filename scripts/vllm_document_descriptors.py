@@ -1,5 +1,4 @@
 from vllm import LLM, SamplingParams
-from outlines.serve.vllm import JSONLogitsProcessor
 import huggingface_hub
 import os
 import torch
@@ -10,7 +9,6 @@ import json
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 import sys
-from pydantic import BaseModel
 from random import shuffle
 from collections import defaultdict
 import argparse
@@ -19,7 +17,6 @@ import logging
 
 # Configure logging
 slurm_job_id = os.environ.get('SLURM_JOB_ID')
-# Configure logging
 logging.basicConfig(
     filename=f'../logs/{slurm_job_id}.log',
     filemode='a',
@@ -39,7 +36,6 @@ def LLM_setup(model, cache_dir):
         LLM: An instance of the LLM class initialized with the specified settings.
     """
     return LLM(
-        #model="meta-llama/Llama-3.1-70B-Instruct",
         model=model,
         download_dir=cache_dir,
         dtype='bfloat16',
@@ -50,25 +46,6 @@ def LLM_setup(model, cache_dir):
         gpu_memory_utilization=0.9,
         #quantization="bitsandbytes",
         #load_format="bitsandbytes",
-    )
-
-
-def get_sampling_params(stage, llm):
-    """
-    Creates and returns sampling parameters for generating responses.
-
-    Returns:
-        SamplingParams: An instance of SamplingParams with set parameters for text generation.
-    """
-
-    response_format = get_response_format(stage)
-    logits_processor = JSONLogitsProcessor(schema=response_format, llm=llm.llm_engine)
-
-    return SamplingParams(
-        temperature=0.0,
-        top_p=0.5,
-        max_tokens=8_000, # max tokens to generate
-        logits_processors=[logits_processor] # ensure correct JSON formatting
     )
 
 
@@ -92,32 +69,6 @@ def calculate_doc_similarity(original, rewrite):
 
     # Return similarity between documents
     return round(float(similarity), 4)
-
-
-def get_response_format(stage):
-    """
-    Returns the appropriate response format based on the stage of execution.
-
-    Args:
-        stage (str): The stage of execution the program is in.
-
-    Returns:
-        ResponseFormat: A Pydantic model for formatting responses.
-    """
-    if stage == 'initial':
-        class ResponseFormat(BaseModel):
-            general: list[str]
-            specific: list[str]
-    elif stage == 'rewrite':
-        class ResponseFormat(BaseModel):
-            document: str
-    else:
-        class ResponseFormat(BaseModel):
-            differences: str
-            general: list[str]
-            specific: list[str]
-
-    return ResponseFormat
 
 
 def format_prompt(stage, original=None, rewritten=None, general=None, specific=None, vocab=None):
@@ -156,8 +107,6 @@ def generate(llm, message, stage):
     Returns:
         str: The generated text output from the LLM.
     """
-    # Disabled JSON formatted output to test effect on thoughput
-    #sampling_params = get_sampling_params(stage, llm)
 
     sampling_params = SamplingParams(
            temperature=temperature,
