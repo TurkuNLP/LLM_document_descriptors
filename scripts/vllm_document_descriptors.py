@@ -14,6 +14,18 @@ from pydantic import BaseModel
 from random import shuffle
 from collections import defaultdict
 import argparse
+import logging
+
+
+# Configure logging
+slurm_job_id = os.environ.get('SLURM_JOB_ID')
+# Configure logging
+logging.basicConfig(
+    filename=f'../logs/{slurm_job_id}.log',
+    filemode='a',
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
 
 def LLM_setup(model, cache_dir):
@@ -33,7 +45,7 @@ def LLM_setup(model, cache_dir):
         dtype='bfloat16',
         max_model_len=128_000,
         tensor_parallel_size=torch.cuda.device_count(),
-        #pipeline_parallel_size=2,
+        #pipeline_parallel_size=2, # use if us need run on multiple nodes
         enforce_eager=False,
         gpu_memory_utilization=0.9,
         #quantization="bitsandbytes",
@@ -51,7 +63,7 @@ def get_sampling_params(stage, llm):
 
     response_format = get_response_format(stage)
     logits_processor = JSONLogitsProcessor(schema=response_format, llm=llm.llm_engine)
-    
+
     return SamplingParams(
         temperature=0.0,
         top_p=0.5,
@@ -85,7 +97,7 @@ def calculate_doc_similarity(original, rewrite):
 def get_response_format(stage):
     """
     Returns the appropriate response format based on the stage of execution.
-    
+
     Args:
         stage (str): The stage of execution the program is in.
 
@@ -106,19 +118,6 @@ def get_response_format(stage):
             specific: list[str]
 
     return ResponseFormat
-
-
-def print_execution_time(start_time, end_time):
-    """
-    Prints the total time taken to process data.
-
-    Args:
-        start_time (float): Start time of the process.
-        end_time (float): End time of the process.
-    """
-    print('='*20)
-    print(f'Total time taken to generate answers: {end_time - start_time}')
-    print('='*20)
 
 
 def format_prompt(stage, original=None, rewritten=None, general=None, specific=None, vocab=None):
@@ -159,19 +158,20 @@ def generate(llm, message, stage):
     """
     # Disabled JSON formatted output to test effect on thoughput
     #sampling_params = get_sampling_params(stage, llm)
-    
+
     sampling_params = SamplingParams(
-           temperature=0.0,
+           temperature=temperature,
            top_p=0.5,
-           max_tokens=12_000, # max tokens to generate
+           max_tokens=3_000, # max tokens to generate
            )
 
     output = llm.chat(
         messages=message,
         sampling_params=sampling_params,
         use_tqdm=False,
-    )[0].outputs[0].text.strip(" `") # The model tends to generate these ticks which cause issues.
-    
+    )[0].outputs[0].text.strip(" `") # The model tends to generate these ticks
+                                     # around JSON strings, which cause issues.
+
     return output
 
 
@@ -182,11 +182,6 @@ def load_documents():
     Returns:
         Dataset: A streaming dataset split to be processed in training mode.
     """
-    #with open('../data/test_data.txt', 'r', encoding='utf8') as f:
-    #    file = f.readlines()
-    #    file = [doc.strip() for doc in file]
-    #return file
-    
     return load_dataset('HuggingFaceFW/fineweb',
                         name='sample-10BT',
                         split='train',
@@ -210,7 +205,7 @@ def initial_stage(document, vocab, stage, llm):
         vocab = "The list of general descriptors is currently empty."
     else:
         vocab = '\n'.join(vocab)
-    
+
     prompt = format_prompt(stage=stage, original=document, vocab=vocab)
     output = generate(llm, prompt, stage)
     valid_json = validate_output(output)
@@ -221,7 +216,7 @@ def initial_stage(document, vocab, stage, llm):
         # If reformatting fails, return skip and move on to next document.
         if output == "skip":
             return "skip", "skip"
-    
+
     return output['general'], output['specific']
 
 
@@ -250,9 +245,9 @@ def rewrite_stage(stage, general, specific, llm):
         # If reformatting fails, return skip and move on to next document.
         if output == "skip":
             return "skip"
-        
+
     return output['document']
-    
+
 
 def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
     """
@@ -266,7 +261,6 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
         specific (list): Specific descriptors.
         vocab (list): Vocabulary for descriptor generation.
         client (OpenAI): OpenAI client instance.
-
     Returns:
         tuple: Revised general and specific descriptors.
     """
@@ -311,14 +305,14 @@ def validate_output(output):
         parsed_json = json.loads(output, strict=False)
         return True
     except json.JSONDecodeError as e:
-        print(e)
-        print('Invalid JSON output:')
-        print(repr(output))
-        print()
+        #print(e)
+        #print('Invalid JSON output:')
+        #print(repr(output))
+        #print()
         return False
 
 
-def save_best_results(document, rewrites, general, specific, similarity_scores, run_id, print_results=False):
+def save_best_results(document, doc_id, rewrites, general, specific, similarity_scores, run_id, print_results=False):
     """
     Saves the best results (highest similarity) among multiple rewrites.
 
@@ -337,6 +331,7 @@ def save_best_results(document, rewrites, general, specific, similarity_scores, 
         best_index = 0
         results = {
                 'document': document,
+                'id': doc_id,
                 'general_descriptors': general[0],
                 'specific_descriptors': specific[0],
                 }
@@ -344,6 +339,7 @@ def save_best_results(document, rewrites, general, specific, similarity_scores, 
         best_index = similarity_scores.index(max(similarity_scores))
         results = {
             'document': document,
+            'id': doc_id,
             'rewrite': rewrites[best_index].encode('utf-8', errors='ignore').decode('utf-8'), # Remove possible code breaking chars.
             'similarity': similarity_scores[best_index],
             'general_descriptors': general[best_index],
@@ -379,7 +375,7 @@ def initialise_descriptor_vocab(use_previous_descriptors, path):
     """
 
     descriptors = defaultdict(int)
-    
+
     if use_previous_descriptors:
         print('use_previous_descriptors=True')
         print('Set this to False if you want to start with an empty dictionary.')
@@ -423,33 +419,34 @@ def main(args):
     - Iterates through each document in the dataset, generating responses for each stage.
     - Collects and saves results.
     """
-    
+
     cache_dir = args.cache_dir
     model = args.model
     start_index = args.start_index
     end_index = args.end_index
     use_previous_descriptors = args.use_previous_descriptors
-    descriptor_path = args.descriptor_path
     run_id = args.run_id
+    num_rewrites = args.num_rewrites
+    global temperature
+    temperature = args.temperature
 
-    print('Loading model...')
+    logging.info('Loading model...')
     llm = LLM_setup(model, cache_dir)
-    print('Loading data...')
+    logging.info('Loading data...')
     data = load_documents()
 
+
+    descriptor_path = "../results/descriptor_vocab_{run_id}"
     descriptor_counts = initialise_descriptor_vocab(use_previous_descriptors, descriptor_path)
     # Keep the top 100 general descriptors. These will be given to the model as possible options.
     descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted)
-    
-    for i, line in enumerate(data):
+
+    for i, doc in enumerate(data):
         if i < start_index:
             continue
-        
-        print(f'Working on document {i}')
-        
+
         start_time = time.time()
-        file_id = f'{run_id}_doc{i}'
 
         # This is where we collect all descriptors, rewrites and document similarities.
         # At the end, we compare similarity scores and only keep the best ones.
@@ -457,16 +454,19 @@ def main(args):
         specific_descriptor_lists = []
         rewrites = []
         doc_similarities = []
-        
-        document = line['text']
-        
+
+        document = doc['text']
+        doc_id = doc['id']
+
+        logging.info(f'Working on document {i}, id: {doc_id}')
+
         # Generate initial descriptors for document.
         stage = 'initial'
         general_descriptors, specific_descriptors = initial_stage(document, descriptor_vocab, stage, llm)
-        
+
         # If generation fails we skip and move on.
         if general_descriptors == "skip":
-            print(f"Document {i} skipped.")
+            logging.info(f"Document {i} skipped.")
             continue
 
         general_descriptor_lists.append(general_descriptors)
@@ -474,12 +474,11 @@ def main(args):
 
         # Generate num_rewrites rewrites of the document based on descriptors.
         # After the rewrite, we revise the descriptors to create an even better rewrite.
-        
+
 
         # I'VE SET THE NUMBER OF REWRITES TO ZERO TO SKIP THIS WHOLE PROCESS!
         # It takes too long if we want to run this on 100,000 documents!
         # We can always return to it later!
-        num_rewrites = 0
         for round_num in range(num_rewrites):
             # Rewrite doc based on the descriptors.
             stage = 'rewrite'
@@ -489,13 +488,13 @@ def main(args):
                                       llm)
 
             # If generation fails, we skip and move on.
-            if rewritten = "skip":
-                print(f"Document {i} skipped.")
+            if rewritten == "skip":
+                logging.info(f"Document {i} skipped.")
                 break
 
             rewrites.append(rewritten)
 
-            if not round_num == num_rewrites-1: 
+            if not round_num == num_rewrites-1:
                 # Evaluate rewrite and revise descriptors.
                 # This stage is skipped on the last round because since we do not do another rewrite
                 # we do not need another set of descriptors.
@@ -510,19 +509,20 @@ def main(args):
                                                                         llm)
 
                 # If generation fails, we skip and move on
-                if general_descritors == "skip":
-                    print(f"Document {i} skipped.")
+                if general_descriptors == "skip":
+                    logging.info(f"Document {i} skipped.")
                     break
 
                 general_descriptor_lists.append(general_descriptors)
                 specific_descriptor_lists.append(specific_descriptors)
-  
+
 
             doc_similarities.append(calculate_doc_similarity(document, rewritten))
 
         # Save best result based on similarity score between original and rewrite.
         # Return the best general descriptors.
         best_descriptors = save_best_results(document,
+                                             doc_id,
                                              rewrites,
                                              general_descriptor_lists,
                                              specific_descriptor_lists,
@@ -532,18 +532,17 @@ def main(args):
         # Update descriptor counts.
         for desc in best_descriptors:
             descriptor_counts[desc] += 1
-            
+
         # Sort descriptors by their frequency and save.
         descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
         save_descriptors(descriptor_counts_sorted, descriptor_path)
-        
+
         # Keep the 100 most common general descriptors. These will be given to the model as possible options.
         descriptor_vocab = return_top_descriptors(descriptor_counts_sorted)
-        
+
         end_time = time.time()
 
-        print(f"Time taken to generate descriptors for document {i}: {round(end_time-start_time, 2)} seconds.")
-        print("="*20)
+        logging.info(f"Time taken to generate descriptors for document {i}:{round(end_time-start_time, 2)} seconds.")
 
         # Stop run at given index.
         # If -1, we continue until we run out of data or time.
@@ -568,10 +567,23 @@ if __name__ == '__main__':
                         help='Index of last document to analyse. Give -1 to set no stopping index.')
     parser.add_argument('--use-previous-descriptors', action='store_true',
                         help='Use descriptors used in a previous run as a starting point.')
-    parser.add_argument('--descriptor-path', type=str, default='../results/desriptors_vllm_70B_1.tsv',
-                        help='Path to file where descriptors are saved if using previous descriptors.')
+    parser.add_argument('--num-rewrites', type=int, default=0,
+                        help='How many rewriting cycles the script should go through.')
+    parser.add_argument('--temperature', type=float, default=0,
+                       help='Model temperature.')
 
     args = parser.parse_args()
+
+    # Log the run settings
+    with open(f'../results/{args.run_id}_settings.txt', 'w') as f:
+        f.write(f'run id: {args.run_id}\n')
+        f.write(f'cache dir: {args.cache_dir}\n')
+        f.write(f'model: {args.model}\n')
+        f.write(f'start index: {args.start_index}\n')
+        f.write(f'end index: {args.end_index}\n')
+        f.write(f'use previous descriptors: {args.use_previous_descriptors}\n')
+        f.write(f'num rewrites: {args.num_rewrites}\n')
+        f.write(f'temperature: {args.temperature}\n')
 
     main(args)
 
