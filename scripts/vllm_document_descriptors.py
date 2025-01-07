@@ -17,11 +17,11 @@ import logging
 
 
 # Configure logging
-slurm_job_id = os.environ.get('SLURM_JOB_ID', 'default_id')
+slurm_job_id = os.environ.get("SLURM_JOB_ID", "default_id")
 logging.basicConfig(
-    filename=f'../logs/{slurm_job_id}.log',
-    filemode='a',
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    filename=f"../logs/{slurm_job_id}.log",
+    filemode="a",
+    format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
@@ -35,7 +35,7 @@ def LLM_setup(model, cache_dir):
     return LLM(
         model=model,
         download_dir=cache_dir,
-        dtype='bfloat16',
+        dtype="bfloat16",
         max_model_len=128_000,
         tensor_parallel_size=torch.cuda.device_count(),
         #pipeline_parallel_size=2, # use if us need run on multiple nodes
@@ -61,9 +61,9 @@ def calculate_doc_similarity(original, rewrite, cache):
 
 
 def format_prompt(stage, original=None, rewritten=None, general=None, specific=None, vocab=None):
-    if stage == 'initial':
+    if stage == "initial":
         message = prompts.initial_prompt(original, vocab)
-    elif stage == 'rewrite':
+    elif stage == "rewrite":
         message = prompts.rewrite_prompt(general, specific)
     else:
         message = prompts.revise_keyphrases_prompt(original, rewritten, general, specific, vocab)
@@ -106,9 +106,9 @@ def generate(llm, batched_input):
 
 
 def load_documents():
-    return load_dataset('HuggingFaceFW/fineweb',
-                        name='sample-10BT',
-                        split='train',
+    return load_dataset("HuggingFaceFW/fineweb",
+                        name="sample-10BT",
+                        split="train",
                         streaming=True)
 
 
@@ -179,6 +179,7 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
 
 
 def reformat_output(llm, output):
+    logging.warning("Fixing JSON formatting.")
     # Remove any text outside curly brackets
     json_start = output.find('{')
     json_end = output.find('}')
@@ -203,10 +204,8 @@ def reformat_output(llm, output):
         if valid_json:
             return json.loads(output, strict=False)
 
-    # If unable to fix output, return generic dictionary.
-    # This should allow the code to keep running.
     logging.warning("Failed to fix JSON formatting.")
-    return json.loads('FAIL')
+    return "FAIL"
 
 
 def validate_output(output):
@@ -215,22 +214,22 @@ def validate_output(output):
         return True
     except json.JSONDecodeError as e:
         logging.debug(e)
-        logging.debug('Invalid JSON output:')
+        logging.debug("Invalid JSON output:")
         logging.debug(repr(output))
         return False
 
 
 def save_best_results(results, run_id):
     try:
-        with open(f'../results/descriptors_{run_id}.jsonl', 'a', encoding='utf8') as f:
+        with open(f"../results/descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
             for doc in results.values():
-                best_index = doc['similarity'].index(max(doc['similarity']))
-                doc['general'] = doc['general'][best_index]
-                doc['specific'] = doc['specific'][best_index]
-                doc['rewrite'] =  doc['rewrite'][best_index].encode('utf-8', errors='ignore').decode('utf-8'), # Remove possible code breaking chars.
-                doc['similarity'] = doc['similarity'][best_index]
+                best_index = doc["similarity"].index(max(doc["similarity"]))
+                doc["general"] = doc["general"][best_index]
+                doc["specific"] = doc["specific"][best_index]
+                doc["rewrite"] =  doc["rewrite"][best_index].encode("utf-8", errors="ignore").decode("utf-8"), # Remove possible code breaking chars.
+                doc["similarity"] = doc["similarity"][best_index]
                 json_line = json.dumps(doc, ensure_ascii=False)
-                f.write(json_line + '\n')
+                f.write(json_line + "\n")
 
         return [doc["general"] for doc in results.values()]
 
@@ -244,13 +243,13 @@ def initialise_descriptor_vocab(use_previous_descriptors, path):
     descriptors = defaultdict(int)
 
     if use_previous_descriptors:
-        logging.info('use_previous_descriptors=True')
-        logging.info('Set this to False if you want to start with an empty dictionary.')
+        logging.info("use_previous_descriptors=True")
+        logging.info("Set this to False if you want to start with an empty dictionary.")
         try:
-            with open(path, 'r') as f:
+            with open(path, "r") as f:
                 file = f.readlines()
                 for line in file:
-                    line = line.strip().split('\t')
+                    line = line.strip().split("\t")
                     desc, freq = line
                     descriptors[desc] = int(freq)
             return descriptors
@@ -288,7 +287,7 @@ def main(args):
     cache_dir = args.cache_dir
     model = args.model
     start_index = args.start_index
-    end_index = args.end_index
+    num_batches = args.num_batches
     use_previous_descriptors = args.use_previous_descriptors
     descriptor_path = args.descriptor_path
     run_id = args.run_id
@@ -310,7 +309,7 @@ def main(args):
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted)
 
     logging.info("Starting document processing...")
-    for batch in batched(data, batch_size, start_index):
+    for batch_num, batch in enumerate(batched(data, batch_size, start_index)):
 
         start_time = time.time()
 
@@ -404,11 +403,11 @@ def main(args):
 
         logging.info(f"Processed {len(results)} documents in {round(end_time-start_time, 2)} seconds.")
 
-        # Stop run at given index.
+        # Stop run after num_batches batches have been processed.
         # If -1, we continue until we run out of data or time.
-        if end_index == -1:
+        if num_batches == -1:
             continue
-        elif i >= end_index:
+        elif batch_num+1 >= num_batches:
             break
 
 if __name__ == "__main__":
@@ -423,8 +422,8 @@ if __name__ == "__main__":
                         help="Name of model to use.")
     parser.add_argument("--start-index", type=int, default=0,
                         help="Index of first document to analyse.")
-    parser.add_argument("--end-index", type=int, default=-1,
-                        help="Index of last document to analyse. Give -1 to set no stopping index.")
+    parser.add_argument("--num-batches", type=int, default=-1,
+                        help="Number of batches of size batch-size to process. Set to -1 to process all data.")
     parser.add_argument("--use-previous-descriptors", action="store_true",
                         help="Use descriptors used in a previous run as a starting point.")
     parser.add_argument("--descriptor-path", type=str, default="",
@@ -439,14 +438,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Log the run settings
-    with open(f'../results/{args.run_id}_settings.txt', 'w') as f:
-        f.write(f'slurm id: {os.environ.get("SLURM_JOB_ID")}\n')
+    with open(f"../results/{args.run_id}_settings.txt", "w") as f:
+        f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
         for arg, value in vars(args).items():
-            f.write(f'{arg}: {value}\n')
+            f.write(f"{arg}: {value}\n")
 
     # Create required directories
-    os.makedirs('../logs', exist_ok=True)
-    os.makedirs('../results', exist_ok=True)
+    os.makedirs("../logs", exist_ok=True)
+    os.makedirs("../results", exist_ok=True)
 
     main(args)
 
