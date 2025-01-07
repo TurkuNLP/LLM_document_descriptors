@@ -1,5 +1,7 @@
 def initial_prompt(document, vocab):
-    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    return [{
+              "role": "system",
+              "content": f"""
 ##Instruction:
 
 You will be given a document. Your task is to create a comprehensive list of descriptors—words or phrases that distill the meaning, tone, style, genre, topics, and other characteristics of the document. Do not focus solely on the topics; also include phrases that describe the tone and style. Order the descriptors as they appear in the document.
@@ -14,34 +16,31 @@ You will be given a document. Your task is to create a comprehensive list of des
     - Descriptors can be single words or multi-word phrases. They should typically not be longer than 3 to 5 words.
     - Each descriptor should describe only one aspect of the document. Multi-aspect descriptors should be split into separate descriptors.
     - The list should be so extensive that, given only the list, a competent person should be able to rewrite the original document.
-    - Do not repeat descriptors.
 
 3. Order:
     - Sequence: Order the descriptors in the sequence they appear in the document.
 
 4. Format:
-    - The output must be formatted as a JSON object. Follow this formatting exactly.
-    - Never add any preamble or anything else outside the JSON object.
-    - Example: {{"general": [<"descriptor">,
-                             <"descriptor">,
-                             <"descriptor">,
-                             ...],
-                 "specific": [<"desciptor">,
-                             <"descriptor">,
-                             <"descriptor">,
-                             ...]
-                }}
+    - The output must be formatted as a JSON object. Follow this formatting exactly. Never add any preamble.
+    - Example: {{"general": [<"desciptor">, <"descriptor">, <"descriptor">, ...], "specific": [<"desciptor">, <"descriptor">, <"descriptor">, ...]}}
 
 ##Possible general descriptors
 Here is a list of general descriptors that you can choose from. If the descriptors do not apply to the current document, you can also invent new ones.
 <start>
 {vocab}
-<end><|eot_id|><|start_header_id|>user<|end_header_id|>
-{document}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
-
+<end>
+"""  
+            },
+            {
+              "role": "user",
+              "content": f"{document}"
+            }]
+            
 
 def rewrite_prompt(general, specific):
-    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    return [{
+              "role": "system",
+              "content": """
 ##Instruction:
 
 You will be given two lists of descriptors:
@@ -63,10 +62,13 @@ Reconstruct the original document as accurately as possible using both the gener
     - Maintain coherence and cohesiveness in the document.
 
 3. Format:
-    - The output must be formatted as a JSON object. Follow this formatting exactly.
-    - Never add any preamble or anything else outside the JSON object.
-    - Place double quotes around the rewritten document.
-    - Example: {{"document": <"rewritten version of the document">}} <|eot_id|><|start_header_id|>user<|end_header_id|>
+    - The output must be formatted as a JSON object. Follow this formatting exactly. Never add any preamble. Place double quotes around the rewritten document.
+    - Example: {{"document": <"rewritten version of the document">}}
+    """
+            },
+            {
+              "role": "user",
+              "content": f"""
 *General Descriptors*:
 <start>
 {general}
@@ -75,13 +77,16 @@ Reconstruct the original document as accurately as possible using both the gener
 *Specific Descriptors*:
 <start>
 {specific}
-<end><|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
-
-
+<end>
+"""
+            }]
+    
 
 
 def revise_keyphrases_prompt(original_document, rewritten_document, general, specific, vocab):
-    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    return [{
+              "role": "system",
+              "content": """
 ##Instruction:
 
 You will be given:
@@ -113,22 +118,16 @@ You will be given:
 1. Specificity: Provide detailed observations in your critique.
 2. Clarity: Ensure the revised descriptors are clear and precise. Make sure to differentiate between general and specific descriptors.
 3. Completeness: Cover all aspects where the rewritten document deviates from the original.
-4. Conciseness: Do not make the descriptors overly long. They should typically
-not be longer than 3 to 5 words. Do not repeat descriptors.
+4. Conciseness: Do not make the descriptors overly long. They should typically not be longer than 3 to 5 words.
 5. Format:
-    - The output must be formatted as a JSON object. Follow this formatting exactly.
-    - Never add any preamble or anything else outside the JSON object.
-    - Place double quotes around the discussion about differences.
-    - Example: {{"differences": <"differences between original and rewrite">,
-                 "general": [<"desciptor">,
-                             <"descriptor">,
-                             <"descriptor">,
-                             ...],
-                 "specific": [<"desciptor">,
-                              <"descriptor">,
-                              <"descriptor">,
-                              ...]
-                }} <|eot_id|><|start_header_id|>user<|end_header_id|>
+    - The output must be formatted as a JSON object. Follow this formatting exactly. Place double quotes around the discussion about differences.
+    - Example: {{"differences": <"differences between original and rewrite">, "general": [<"desciptor">, <"descriptor">, <"descriptor">, ...], "specific": [<"desciptor">, <"descriptor">, <"descriptor">, ...]}}
+
+"""
+            },
+            {
+              "role": "user",
+              "content": f"""
 *Original Document*:
 <start>
 {original_document}
@@ -147,15 +146,12 @@ not be longer than 3 to 5 words. Do not repeat descriptors.
 *Specific Descriptors*:
 <start>
 {specific}
-<end><|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
-
-
+<end>
+"""
+            }]
 
 
 def reformat_output_prompt(original):
-    # This prompt is in the "chat" format unlike the others, because we call the model with LLM.chat() to reformat outputs.
-    # The other prompts are used with LLM.generate() for batched input.
-
     return [{
               "role": "system",
               "content": """
@@ -167,6 +163,7 @@ You will be given a JSON string object that is not properly formatted. When give
 Give as output only the corrected JSON string object without any preamble.
 Do not change anything about the contents of the string, only fix the formatting issues.
 If there is some preamble outside the JSON object, it can be deleted.
+Remember to always use double quotation marks as single quotes are not valid JSON.
     """
             },
             {
@@ -174,4 +171,4 @@ If there is some preamble outside the JSON object, it can be deleted.
               "content": f"""
 {original}
 """
-            }]
+            }]   
