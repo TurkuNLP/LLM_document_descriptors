@@ -38,11 +38,9 @@ def LLM_setup(model, cache_dir):
         dtype="bfloat16",
         max_model_len=128_000,
         tensor_parallel_size=torch.cuda.device_count(),
-        #pipeline_parallel_size=2, # use if us need run on multiple nodes
+        #pipeline_parallel_size=2, # use if us need to run on multiple nodes
         enforce_eager=False,
         gpu_memory_utilization=0.9,
-        #quantization="bitsandbytes",
-        #load_format="bitsandbytes",
     )
 
 
@@ -91,7 +89,7 @@ def generate(llm, batched_input):
     sampling_params = SamplingParams(
         temperature=temperature,
         top_p=0.5,
-        repetition_penalty=1.2, # small repetition penalty
+        repetition_penalty=1, # small repetition penalty
         max_tokens=3000, #max tokens to generate
     )
 
@@ -106,10 +104,19 @@ def generate(llm, batched_input):
 
 
 def load_documents():
-    return load_dataset("HuggingFaceFW/fineweb",
-                        name="sample-10BT",
-                        split="train",
-                        streaming=True)
+    # Comment/uncomment to choose data source
+    
+    # Original fineweb sample
+    #return load_dataset("HuggingFaceFW/fineweb",
+    #                    name="sample-10BT",
+    #                    split="train",
+    #                    streaming=True)
+    
+    
+    #Our 40k sample
+    with open("../data/fineweb_40k.jsonl", "r") as f:
+        lines = f.readlines()
+        return [json.loads(line) for line in lines]
 
 
 def initial_stage(documents, vocab, stage, llm):
@@ -179,7 +186,7 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
 
 
 def reformat_output(llm, output):
-    logging.warning("Fixing JSON formatting.")
+    logging.debug("Fixing JSON formatting.")
     # Remove any text outside curly brackets
     json_start = output.find('{')
     json_end = output.find('}')
@@ -266,8 +273,11 @@ def save_descriptors(vocab, path):
             f.write(f"{desc}\t{freq}\n")
 
 
-def return_top_descriptors(descriptor_counts_sorted):
-    return [desc[0] for desc in descriptor_counts_sorted][:100]
+def return_top_descriptors(descriptor_counts_sorted, max_vocab):
+    if max_vocab == -1:
+        return [desc[0] for desc in descriptor_counts_sorted]
+    else:
+        return [desc[0] for desc in descriptor_counts_sorted][:max_vocab]
 
 
 def batched(data, batch_size, start_index):
@@ -293,6 +303,7 @@ def main(args):
     run_id = args.run_id
     num_rewrites = args.num_rewrites
     batch_size = args.batch_size
+    max_vocab=args.max_vocab
     global temperature
     temperature = args.temperature
 
@@ -306,7 +317,9 @@ def main(args):
     descriptor_counts = initialise_descriptor_vocab(use_previous_descriptors, descriptor_path)
     # Keep the top 100 general descriptors. These will be given to the model as possible options.
     descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
-    descriptor_vocab = return_top_descriptors(descriptor_counts_sorted)
+    descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
+    # Shuffle the list of descriptors to avoid ordering bias
+    shuffle(descriptor_vocab)
 
     logging.info("Starting document processing...")
     for batch_num, batch in enumerate(batched(data, batch_size, start_index)):
@@ -355,7 +368,7 @@ def main(args):
 
             if not round_num == num_rewrites-1:
                 # Evaluate rewrite and revise descriptors.
-                # This stage is skipped on the last round because since we do not do another rewrite
+                # This stage is skipped on the last round: since we do not do another rewrite
                 # we do not need another set of descriptors.
                 # This saves us one LLM call.
                 stage = "revise"
@@ -396,8 +409,10 @@ def main(args):
         descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
         save_descriptors(descriptor_counts_sorted, descriptor_path)
 
-        # Keep the 100 most common general descriptors. These will be given to the model as possible options.
-        descriptor_vocab = return_top_descriptors(descriptor_counts_sorted)
+        # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
+        descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
+        # Shuffle the list of descriptors to avoid ordering bias
+        shuffle(descriptor_vocab)
 
         end_time = time.time()
 
@@ -434,6 +449,8 @@ if __name__ == "__main__":
                         help="Model temperature.")
     parser.add_argument("--batch-size", type=int, default=100,
                         help="Number of documents given to the model at one time.")
+    parser.add_argument("--max-vocab", type=int, default=-1,
+                        help="Max number of descriptors given in the prompt. Give -1 to use all descriptors.")
 
     args = parser.parse_args()
 
