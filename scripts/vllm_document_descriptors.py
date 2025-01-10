@@ -348,8 +348,8 @@ def main(args):
         stage = "initial"
         logging.info(f"Stage: {stage}")
         model_outputs = initial_stage(documents, descriptor_vocab, stage, llm)
-        general_descriptors = [output.get("general") for output in model_outputs]
-        specific_descriptors = [output.get("specific") for output in model_outputs]
+        general_descriptors = [output.get("general", "Generation failed.") for output in model_outputs]
+        specific_descriptors = [output.get("specific", "Generation failed.") for output in model_outputs]
 
         for index in results:
             results[index]["general"].append(general_descriptors[index])
@@ -367,7 +367,7 @@ def main(args):
                                           specific_descriptors,
                                           llm)
 
-            rewrites = [output.get("document") for output in model_outputs]
+            rewrites = [output.get("document", "Generation failed.") for output in model_outputs]
             for index in results:
                 results[index]["rewrite"].append(rewrites[index])
 
@@ -386,8 +386,8 @@ def main(args):
                                              descriptor_vocab,
                                              llm)
 
-                general_descriptors = [output.get("general") for output in model_outputs]
-                specific_descriptors = [output.get("specific") for output in model_outputs]
+                general_descriptors = [output.get("general", "Generation failed.") for output in model_outputs]
+                specific_descriptors = [output.get("specific", "Generation failed.") for output in model_outputs]
 
                 for index in results:
                     results[index]["general"].append(general_descriptors[index])
@@ -437,7 +437,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--run-id", type=str, required=True,
                         help="ID for this run, e.g. run1")
-    parser.add_argument("--cache-dir", type=str, default="../hf_cache",
+    parser.add_argument("--cache-dir", type=str, default="../.cache",
                         help="Path to cache directory, where model is or will be saved.")
     parser.add_argument("--model", type=str, default="meta-llama/Llama-3.3-70B-Instruct",
                         help="Name of model to use.")
