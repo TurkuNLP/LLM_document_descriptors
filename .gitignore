@@ -5,4 +5,5 @@ data/
 figures/
 .ipynb_checkpoints/
 venv/
+.venv/
 __pycache__
