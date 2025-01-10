@@ -89,7 +89,7 @@ def generate(llm, batched_input):
     sampling_params = SamplingParams(
         temperature=temperature,
         top_p=0.5,
-        repetition_penalty=1, # small repetition penalty
+        repetition_penalty=1, # 1 = no penalty, >1 penalty
         max_tokens=3000, #max tokens to generate
     )
 
@@ -271,6 +271,11 @@ def save_descriptors(vocab, path):
     with open(path, "w", encoding="utf8") as f:
         for desc, freq in vocab:
             f.write(f"{desc}\t{freq}\n")
+            
+            
+def count_unique_descriptors(vocab, run_id):
+    with open(f"../results/descriptor_count_growth_{run_id}.txt", "a") as f:
+        f.write(f"{len(vocab)}\n")
 
 
 def return_top_descriptors(descriptor_counts_sorted, max_vocab):
@@ -408,6 +413,7 @@ def main(args):
         # This creates a sorted list of tuples (descriptor, count)
         descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
         save_descriptors(descriptor_counts_sorted, descriptor_path)
+        count_unique_descriptors(descriptor_counts_sorted, run_id)
 
         # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
         descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
