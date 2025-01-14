@@ -1,5 +1,6 @@
 def initial_prompt(document, vocab):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
 ##Instruction:
 
 You will be given a document. Your task is to create a comprehensive list of descriptors—words or phrases that distill the meaning, tone, style, genre, topics, and other characteristics of the document. Do not focus solely on the topics; also include phrases that describe the tone and style. Order the descriptors as they appear in the document.
@@ -37,11 +38,13 @@ Here is a list of general descriptors that you can choose from. If the descripto
 <start>
 {vocab}
 <end><|eot_id|><|start_header_id|>user<|end_header_id|>
+
 {document}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
 
 def rewrite_prompt(general, specific):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
 ##Instruction:
 
 You will be given two lists of descriptors:
@@ -67,6 +70,7 @@ Reconstruct the original document as accurately as possible using both the gener
     - Never add any preamble or anything else outside the JSON object.
     - Place double quotes around the rewritten document.
     - Example: {{"document": <"rewritten version of the document">}} <|eot_id|><|start_header_id|>user<|end_header_id|>
+
 *General Descriptors*:
 <start>
 {general}
@@ -82,6 +86,7 @@ Reconstruct the original document as accurately as possible using both the gener
 
 def revise_keyphrases_prompt(original_document, rewritten_document, general, specific, vocab):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
 ##Instruction:
 
 You will be given:
@@ -129,6 +134,7 @@ not be longer than 3 to 5 words. Do not repeat descriptors.
                               <"descriptor">,
                               ...]
                 }} <|eot_id|><|start_header_id|>user<|end_header_id|>
+                
 *Original Document*:
 <start>
 {original_document}
