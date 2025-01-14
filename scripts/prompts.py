@@ -158,7 +158,7 @@ not be longer than 3 to 5 words. Do not repeat descriptors.
 
 
 
-def reformat_output_prompt(original):
+def reformat_output_prompt(invalid_json):
     # This prompt is in the "chat" format unlike the others, because we call the model with LLM.chat() to reformat outputs.
     # The other prompts are used with LLM.generate() for batched input.
 
@@ -168,16 +168,17 @@ def reformat_output_prompt(original):
 
 ###Instructions
 
-You will be given a JSON string object that is not properly formatted. When given to json.loads() it results in an error. Your task is to fix the formatting of the string so that json.loads() can handle the input correctly.
+You will be provided with a JSON string that contains formatting errors, making it invalid. Your task is to correct the JSON string so that it can be successfully parsed in Python using json.loads().
 
-Give as output only the corrected JSON string object without any preamble.
-Do not change anything about the contents of the string, only fix the formatting issues.
-If there is some preamble outside the JSON object, it can be deleted.
+    - Do not alter the content or structure of the data within the JSON, except as necessary to fix formatting issues (e.g., missing commas, unmatched brackets, incorrect quotes).
+    - If there is any extraneous text or preamble outside the JSON object, remove it entirely.
+    - Ensure the corrected output adheres strictly to JSON standards.
+    - Output only the corrected JSON string—do not include any explanations, commentary, or additional text.
     """
             },
             {
               "role": "user",
               "content": f"""
-{original}
+{invalid_json}
 """
             }]

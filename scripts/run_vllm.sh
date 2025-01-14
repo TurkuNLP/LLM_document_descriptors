@@ -10,7 +10,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
-#SBATCH --exclude=nid007955,nid005022,nid007957,nid007956,nid005023
+#SBATCH --exclude=nid005022,nid005023,nid005024,nid007955,nid007956,nid007957
 
 module purge
 module use /appl/local/csc/modulefiles

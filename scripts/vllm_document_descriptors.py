@@ -208,7 +208,7 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
 
 
 def reformat_output(llm, output):
-    logging.debug("Fixing JSON formatting.")
+    logging.warning("Fixing JSON formatting.")
     # Remove any text outside curly brackets
     json_start = output.find('{')
     json_end = output.find('}')
@@ -226,6 +226,8 @@ def reformat_output(llm, output):
     if valid_json:
         return json.loads(output, strict=False)
 
+    # If fixing JSON with regex does not work,
+    # we try giving it to the model to fix.
     for _ in range(3):
         prompt = prompts.reformat_output_prompt(output)
         output = chat(llm, prompt)
@@ -239,7 +241,7 @@ def reformat_output(llm, output):
 
 def validate_output(output):
     try:
-        parsed_json = json.loads(output, strict=False)
+        json.loads(output, strict=False)
         return True
     except json.JSONDecodeError as e:
         logging.debug(e)
@@ -263,7 +265,7 @@ def save_best_results(results, run_id):
         return [doc["general"] for doc in results.values()]
 
     except Exception as e:
-        logging.warning("Saving  results failed.")
+        logging.warning("Saving  results failed. Results will be discarded.")
         logging.warning(e)
         return [doc["general"] for doc in results.values()]
 
