@@ -226,7 +226,7 @@ def load_documents():
         return [json.loads(line) for line in lines]
 
 
-def initial_stage(documents, vocab, stage, llm):
+def initial_stage(stage, documents, vocab, llm):
     """
     Processes a list of documents through the initial generation stage.
 
@@ -633,7 +633,7 @@ def main(args):
         documents = [doc["text"] for doc in batch]
         stage = "initial"
         logging.info(f"Stage: {stage}")
-        model_outputs = initial_stage(documents, descriptor_vocab, stage, llm)
+        model_outputs = initial_stage(stage, documents, descriptor_vocab, llm)
         general_descriptors = [output.get("general", "Generation failed.") for output in model_outputs]
         specific_descriptors = [output.get("specific", "Generation failed.") for output in model_outputs]
 
