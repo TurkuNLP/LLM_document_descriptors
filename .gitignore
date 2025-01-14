@@ -1,5 +1,6 @@
 logs/
 hf_cache/
+.cache/
 results/
 data/
 figures/
@@ -7,3 +8,4 @@ figures/
 venv/
 .venv/
 __pycache__
+__pycache__/
