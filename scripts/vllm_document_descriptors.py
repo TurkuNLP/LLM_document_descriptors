@@ -1,19 +1,19 @@
-from vllm import LLM, SamplingParams
-import huggingface_hub
+from vllm import LLM, SamplingParams # type: ignore
+from vllm.sampling_params import GuidedDecodingParams #type: ignore
 import os
-import torch
-import torch.distributed as dist
+import torch # type: ignore
+import torch.distributed as dist # type: ignore
 import time
 import prompts
 import json
-from datasets import load_dataset
-from sentence_transformers import SentenceTransformer
-import sys
+from datasets import load_dataset # type: ignore
+from sentence_transformers import SentenceTransformer # type: ignore
 from random import shuffle
 from collections import defaultdict
 import argparse
 import re
 import logging
+from pydantic import BaseModel #type: ignore
 
 
 # Configure logging
@@ -38,7 +38,7 @@ def LLM_setup(model, cache_dir):
         dtype="bfloat16",
         max_model_len=128_000,
         tensor_parallel_size=torch.cuda.device_count(),
-        #pipeline_parallel_size=2, # use if us need to run on multiple nodes
+        #pipeline_parallel_size=2, # use if multiple nodes are needed
         enforce_eager=False,
         gpu_memory_utilization=0.9,
     )
@@ -85,12 +85,13 @@ def chat(llm, message):
     return output
 
 
-def generate(llm, batched_input):
+def generate(llm, batched_input, response_schema):
     sampling_params = SamplingParams(
         temperature=temperature,
         top_p=0.5,
         repetition_penalty=1, # 1 = no penalty, >1 penalty
         max_tokens=3000, #max tokens to generate
+        guided_decoding=response_schema,
     )
 
     batched_outputs = llm.generate(
@@ -101,6 +102,24 @@ def generate(llm, batched_input):
 
     return [out.outputs[0].text.strip(" `\n") for out in batched_outputs]
 
+
+def get_response_format(stage):
+    if stage == 'initial':
+        class ResponseFormat(BaseModel):
+            general: list[str]
+            specific: list[str]
+    elif stage == 'rewrite':
+        class ResponseFormat(BaseModel):
+            document: str
+    else:
+        class ResponseFormat(BaseModel):
+            differences: str
+            general: list[str]
+            specific: list[str]
+            
+    json_schema = ResponseFormat.model_json_schema()
+    
+    return GuidedDecodingParams(json=json_schema)
 
 
 def load_documents():
@@ -126,7 +145,8 @@ def initial_stage(documents, vocab, stage, llm):
         vocab = '\n'.join(vocab)
 
     prompts = [format_prompt(stage=stage, original=document, vocab=vocab) for document in documents]
-    batched_outputs = generate(llm, prompts)
+    json_schema = get_response_format(stage)
+    batched_outputs = generate(llm, prompts, json_schema)
     validated_outputs = []
     for output in batched_outputs:
         valid_json = validate_output(output)
@@ -146,7 +166,8 @@ def rewrite_stage(stage, general, specific, llm):
     prompts = []
     for g, s in zip(general, specific):
         prompts.append(format_prompt(stage=stage, general=g, specific=s))
-    batched_output = generate(llm, prompts)
+    json_schema = get_response_format(stage)
+    batched_output = generate(llm, prompts, json_schema)
     validated_outputs = []
     for output in batched_output:
         valid_json = validate_output(output)
@@ -169,7 +190,8 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
         prompts.append(format_prompt(stage=stage, original=d,
                                      rewritten=r, general=g,
                                      specific=s, vocab=vocab))
-    batched_output = generate(llm, prompts)
+    json_schema = get_response_format(stage)
+    batched_output = generate(llm, prompts, json_schema)
     validated_outputs = []
     for output in batched_output:
         valid_json = validate_output(output)
