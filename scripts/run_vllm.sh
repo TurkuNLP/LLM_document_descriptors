@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=vllm_inference
 #SBATCH --account=project_462000353
-#SBATCH --partition=dev-g
-#SBATCH --time=00:29:00
+#SBATCH --partition=standard-g
+#SBATCH --time=10:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=15
 #SBATCH --mem=80G
-#SBATCH --gpus-per-node=4
+#SBATCH --gpus-per-node=8
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 #SBATCH --exclude=nid005022,nid005023,nid005024,nid007955,nid007956,nid007957
@@ -23,14 +23,17 @@ source ../venv/bin/activate
 # Apparently some hipster library likes to fill your home folder with cache, so put it in scratch instead.
 TRITON_HOME=/scratch/project_462000353/tarkkaot/LLM_document_descriptors/.cache/
 
+# Log NCCL info to catch what is causing the NCCL errors.
+export NCCL_DEBUG=INFO
+
 gpu-energy --save
 
-srun python3 vllm_document_descriptors.py --run-id='70B_3.3_pydantic-test' \
+srun python3 vllm_document_descriptors.py --run-id='70B_3.3_4_max-vocab-50' \
                                           --temperature=0.1 \
-                                          --batch-size=10 \
+                                          --batch-size=50 \
                                           --num-rewrites=3 \
-                                          --start-index=0 \
+                                          --start-index=4000 \
                                           --num-batches=20 \
-                                          --max-vocab=-1
+                                          --max-vocab=50
 
 gpu-energy --diff
