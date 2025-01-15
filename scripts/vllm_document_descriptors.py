@@ -708,7 +708,7 @@ def main(args):
 
         end_time = time.time()
 
-        logging.info(f"Processed {len(results)} documents in {round(end_time-start_time, 2)} seconds.")
+        logging.info(f"Processed {len(results)} documents in {time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}.")
 
         # Stop run after num_batches batches have been processed.
         # If -1, we continue until we run out of data or time.
