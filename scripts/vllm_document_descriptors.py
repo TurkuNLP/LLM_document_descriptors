@@ -383,7 +383,7 @@ def reformat_output(llm, output):
             logging.warning(f"Fixed JSON formatting with {i+1} LLM call.")
             return json.loads(output, strict=False)
 
-    # If fixin does not work, save the malformed JSON to disk for later inspection.
+    # If fixing does not work, save the malformed JSON to disk for later inspection.
     # Return "FAIL"
     logging.warning("Failed to fix JSON formatting.")
     with open("../results/malformed_JSON_output.txt", "a") as f:
@@ -722,6 +722,7 @@ def main(args):
         elif batch_num+1 >= num_batches:
             break
 
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="A script for getting document descriptors with LLMs.")
@@ -762,4 +763,4 @@ if __name__ == "__main__":
     os.makedirs("../results", exist_ok=True)
 
     main(args)
-
+    logging.info("Done.")
