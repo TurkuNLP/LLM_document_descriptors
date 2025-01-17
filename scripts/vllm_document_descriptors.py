@@ -375,11 +375,12 @@ def reformat_output(llm, output):
 
     # If fixing JSON with regex does not work,
     # we try giving it to the model to fix.
-    for _ in range(3):
+    for i in range(3):
         prompt = prompts.reformat_output_prompt(output)
         output = chat(llm, prompt)
         valid_json = validate_output(output)
         if valid_json:
+            logging.warning(f"Fixed JSON formatting with {i+1} LLM call.")
             return json.loads(output, strict=False)
 
     # If fixin does not work, save the malformed JSON to disk for later inspection.
@@ -610,7 +611,7 @@ def main(args):
     if not descriptor_path:
         descriptor_path = f"../results/descriptor_vocab_{run_id}.tsv"
     descriptor_counts = initialise_descriptor_vocab(use_previous_descriptors, descriptor_path)
-    # Keep the top 100 general descriptors. These will be given to the model as possible options.
+    # Keep the top max_vocab general descriptors. These will be given to the model as possible options.
     descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
     # Shuffle the list of descriptors to avoid ordering bias
