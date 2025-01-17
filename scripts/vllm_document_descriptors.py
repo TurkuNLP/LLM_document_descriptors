@@ -356,38 +356,41 @@ def reformat_output(llm, output):
         dict or str: The reformatted JSON as a dictionary if successful, or "FAIL" if all attempts fail.
     """
     logging.warning("Fixing JSON formatting.")
-    # Remove any text outside curly brackets
-    json_start = output.find('{')
-    json_end = output.find('}')
-    if json_start != -1 and json_end != -1:
-        output = output[json_start:json_end + 1]  # Include the '}'
-    # Replace single quotes with double quotes.
-    output = output.replace("'", '"')
-    # Remove trailing commas
-    output = re.sub(r",\s*([\]}])", r"\1", output)
-    # Add double quotes around keys (if missing)
-    output = re.sub(r"([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", r'\1"\2":', output)
-    # Add double quotes around string values (if missing)
-    output = re.sub(r':\s*([^"\s\d\[{].*?)(?=[,}\]])', r':"\1"', output)
-    valid_json = validate_output(output)
-    if valid_json:
-        return json.loads(output, strict=False)
-
-    # If fixing JSON with regex does not work,
-    # we try giving it to the model to fix.
     for i in range(3):
+        # Remove any text outside curly brackets
+        json_start = output.find('{')
+        json_end = output.find('}')
+        if json_start != -1 and json_end != -1:
+            output = output[json_start:json_end + 1]  # Include the '}'
+        # Replace single quotes with double quotes.
+        output = output.replace("'", '"')
+        # Remove trailing commas
+        output = re.sub(r",\s*([\]}])", r"\1", output)
+        # Add double quotes around keys (if missing)
+        output = re.sub(r"([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", r'\1"\2":', output)
+        # Add double quotes around string values (if missing)
+        output = re.sub(r':\s*([^"\s\d\[{].*?)(?=[,}\]])', r':"\1"', output)
+        valid_json = validate_output(output)
+        if valid_json:
+            logging.warning(f"Fixed JSON formatting with {i} LLM call(s).")
+            return json.loads(output, strict=False)
+
+        # If fixing JSON with regex does not work,
+        # we try giving it to the model to fix.
+        # This takes quite a lot of time (~1-2 min/attempt), so consider lowering
+        # number of attempts to speed up the process.
         prompt = prompts.reformat_output_prompt(output)
         output = chat(llm, prompt)
         valid_json = validate_output(output)
         if valid_json:
-            logging.warning(f"Fixed JSON formatting with {i+1} LLM call.")
+            logging.warning(f"Fixed JSON formatting with {i+1} LLM call(s).")
             return json.loads(output, strict=False)
 
     # If fixing does not work, save the malformed JSON to disk for later inspection.
     # Return "FAIL"
     logging.warning("Failed to fix JSON formatting.")
     with open("../results/malformed_JSON_output.txt", "a") as f:
-        f.write(f"{output}\n")
+        f.write(f"{output}\n======================")
     return "FAIL"
 
 
