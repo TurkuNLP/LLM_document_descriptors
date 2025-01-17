@@ -61,7 +61,7 @@ def LLM_setup(model, cache_dir):
         tensor_parallel_size=torch.cuda.device_count(),
         #pipeline_parallel_size=2, # use if multiple nodes are needed
         enforce_eager=False,
-        gpu_memory_utilization=0.9,
+        gpu_memory_utilization=0.8,
     )
 
 
@@ -382,7 +382,11 @@ def reformat_output(llm, output):
         if valid_json:
             return json.loads(output, strict=False)
 
+    # If fixin does not work, save the malformed JSON to disk for later inspection.
+    # Return "FAIL"
     logging.warning("Failed to fix JSON formatting.")
+    with open("../results/malformed_JSON_output.txt", "a") as f:
+        f.write(f"{output}\n")
     return "FAIL"
 
 
