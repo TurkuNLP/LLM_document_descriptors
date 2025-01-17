@@ -637,7 +637,7 @@ def main(args):
         # Generate initial descriptors for document.
         documents = [doc["text"] for doc in batch]
         stage = "initial"
-        logging.info(f"Stage: {stage}")
+        logging.info(f"Stage: {stage}.")
         model_outputs = initial_stage(stage, documents, descriptor_vocab, llm)
         general_descriptors = [output.get("general", "Generation failed.") for output in model_outputs]
         specific_descriptors = [output.get("specific", "Generation failed.") for output in model_outputs]
@@ -652,7 +652,7 @@ def main(args):
         for round_num in range(num_rewrites):
             # Rewrite doc based on the descriptors.
             stage = "rewrite"
-            logging.info(f"Stage: {stage}")
+            logging.info(f"Stage: {stage} {round_num+1}.")
             model_outputs = rewrite_stage(stage,
                                           general_descriptors,
                                           specific_descriptors,
@@ -668,7 +668,7 @@ def main(args):
                 # we do not need another set of descriptors.
                 # This saves us one LLM call.
                 stage = "revise"
-                logging.info(f"Stage: {stage}")
+                logging.info(f"Stage: {stage} {round_num+1}.")
                 model_outputs = revise_stage(stage,
                                              documents,
                                              rewrites,
