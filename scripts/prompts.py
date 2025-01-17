@@ -180,5 +180,7 @@ You will be provided with a JSON string that contains formatting errors, making 
               "role": "user",
               "content": f"""
 {invalid_json}
+
+The corrected JSON looks like this:
 """
             }]
