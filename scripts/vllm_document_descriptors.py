@@ -717,6 +717,7 @@ def main(args):
         end_time = time.time()
 
         logging.info(f"Processed {len(results)} documents in {time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}.")
+        logging.info(f"Processed a total of {(batch_num+1)*batch_size} documents.")
 
         # Stop run after num_batches batches have been processed.
         # If -1, we continue until we run out of data or time.
@@ -759,6 +760,7 @@ if __name__ == "__main__":
     with open(f"../results/{args.run_id}_settings.txt", "w") as f:
         f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
         for arg, value in vars(args).items():
+            logging.info(f"{arg}: {value}\n")
             f.write(f"{arg}: {value}\n")
 
     # Create required directories
