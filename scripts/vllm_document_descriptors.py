@@ -415,7 +415,7 @@ def reformat_output(llm, output):
     # Return "FAIL"
     logging.warning("Failed to fix JSON formatting.")
     with open("../results/malformed_JSON_output.txt", "a") as f:
-        f.write(f"{output}\n======================")
+        f.write(f"{output}\n======================\n")
     return "FAIL"
 
 
