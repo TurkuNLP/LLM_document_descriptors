@@ -655,7 +655,7 @@ def main(args):
     # Shuffle the list of descriptors to avoid ordering bias
     shuffle(descriptor_vocab)
 
-    logging.info("Starting document processing...")
+    logging.info("Starting document processing pipeline...")
     for batch_num, batch in enumerate(batched(data, batch_size, start_index)):
 
         start_time = time.time()
@@ -848,7 +848,7 @@ if __name__ == "__main__":
     with open(f"../results/{args.run_id}_settings.txt", "w") as f:
         f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
         for arg, value in vars(args).items():
-            logging.info(f"{arg}: {value}\n")
+            logging.info(f"{arg}: {value}")
             f.write(f"{arg}: {value}\n")
 
     # Create required directories
