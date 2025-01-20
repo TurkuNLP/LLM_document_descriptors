@@ -1,19 +1,19 @@
-from vllm import LLM, SamplingParams # type: ignore
-from vllm.sampling_params import GuidedDecodingParams #type: ignore
+from vllm import LLM, SamplingParams  # type: ignore
+from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 import os
-import torch # type: ignore
-import torch.distributed as dist # type: ignore
+import torch  # type: ignore
+import torch.distributed as dist  # type: ignore
 import time
 import prompts
 import json
-from datasets import load_dataset # type: ignore
-from sentence_transformers import SentenceTransformer # type: ignore
+from datasets import load_dataset  # type: ignore
+from sentence_transformers import SentenceTransformer  # type: ignore
 from random import shuffle
 from collections import defaultdict
 import argparse
 import re
 import logging
-from pydantic import BaseModel #type: ignore
+from pydantic import BaseModel  # type: ignore
 
 
 # Configure logging
@@ -22,7 +22,7 @@ logging.basicConfig(
     filename=f"../logs/{slurm_job_id}.log",
     filemode="a",
     format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 
 # Suppress sentence_transformers logging
@@ -59,7 +59,7 @@ def LLM_setup(model, cache_dir):
         dtype="bfloat16",
         max_model_len=128_000,
         tensor_parallel_size=torch.cuda.device_count(),
-        #pipeline_parallel_size=2, # use if multiple nodes are needed
+        # pipeline_parallel_size=2, # use if multiple nodes are needed
         enforce_eager=False,
         gpu_memory_utilization=0.8,
     )
@@ -76,9 +76,9 @@ def calculate_doc_similarity(original, rewrite, cache):
     Returns:
         list of float: A list of similarity scores between the original document and each rewritten document, rounded to four decimal places.
     """
-    model = SentenceTransformer("jinaai/jina-embeddings-v3",
-                                trust_remote_code=True,
-                                cache_folder=cache)
+    model = SentenceTransformer(
+        "jinaai/jina-embeddings-v3", trust_remote_code=True, cache_folder=cache
+    )
     original_embedding = model.encode([original])
     rewrite_embeddings = model.encode(rewrite)
 
@@ -89,7 +89,9 @@ def calculate_doc_similarity(original, rewrite, cache):
     return [round(float(sim), 4) for sim in similarity[0]]
 
 
-def format_prompt(stage, original=None, rewritten=None, general=None, specific=None, vocab=None):
+def format_prompt(
+    stage, original=None, rewritten=None, general=None, specific=None, vocab=None
+):
     """
     Formats a prompt message based on the given stage and parameters.
 
@@ -109,7 +111,9 @@ def format_prompt(stage, original=None, rewritten=None, general=None, specific=N
     elif stage == "rewrite":
         message = prompts.rewrite_prompt(general, specific)
     else:
-        message = prompts.revise_keyphrases_prompt(original, rewritten, general, specific, vocab)
+        message = prompts.revise_keyphrases_prompt(
+            original, rewritten, general, specific, vocab
+        )
     return message
 
 
@@ -129,17 +133,21 @@ def chat(llm, message):
         - This is currently only used for reformatting JSON strings.
     """
     sampling_params = SamplingParams(
-           temperature=temperature,
-           top_p=0.5,
-           max_tokens=3_000, # max tokens to generate
-           )
+        temperature=temperature,
+        top_p=0.5,
+        max_tokens=3_000,  # max tokens to generate
+    )
 
-    output = llm.chat(
-        messages=message,
-        sampling_params=sampling_params,
-        use_tqdm=False,
-    )[0].outputs[0].text.strip(" `\n") # The model tends to generate these ticks
-                                       # around JSON strings, which cause issues.
+    output = (
+        llm.chat(
+            messages=message,
+            sampling_params=sampling_params,
+            use_tqdm=False,
+        )[0]
+        .outputs[0]
+        .text.strip(" `\n")
+    )  # The model tends to generate these ticks
+    # around JSON strings, which cause issues.
 
     return output
 
@@ -159,15 +167,13 @@ def generate(llm, batched_input, response_schema):
     sampling_params = SamplingParams(
         temperature=temperature,
         top_p=0.5,
-        repetition_penalty=1, # 1 = no penalty, >1 penalty
-        max_tokens=3000, #max tokens to generate
+        repetition_penalty=1,  # 1 = no penalty, >1 penalty
+        max_tokens=3000,  # max tokens to generate
         guided_decoding=response_schema,
     )
 
     batched_outputs = llm.generate(
-        batched_input,
-        sampling_params=sampling_params,
-        use_tqdm=False
+        batched_input, sampling_params=sampling_params, use_tqdm=False
     )
 
     return [out.outputs[0].text.strip(" `\n") for out in batched_outputs]
@@ -176,28 +182,33 @@ def generate(llm, batched_input, response_schema):
 def get_response_format(stage):
     """
     Generates a JSON schema for the response format based on the given stage.
-    
+
     Args:
         stage (str): The stage of code execution. Can be 'initial', 'rewrite', or 'revise'.
-    
+
     Returns:
         GuidedDecodingParams: An object containing the JSON schema for the response format.
     """
-    if stage == 'initial':
+    if stage == "initial":
+
         class ResponseFormat(BaseModel):
             general: list[str]
             specific: list[str]
-    elif stage == 'rewrite':
+
+    elif stage == "rewrite":
+
         class ResponseFormat(BaseModel):
             document: str
+
     else:
+
         class ResponseFormat(BaseModel):
             differences: str
             general: list[str]
             specific: list[str]
-            
+
     json_schema = ResponseFormat.model_json_schema()
-    
+
     return GuidedDecodingParams(json=json_schema)
 
 
@@ -207,20 +218,19 @@ def load_documents():
     This function provides two options for loading documents:
     1. From the HuggingFace FineWeb dataset (commented out by default).
     2. From a local JSONL file containing a 40k sample.
-    
+
     Returns:
         list: A list of documents loaded from the selected data source.
     """
     # Comment/uncomment to choose data source
-    
+
     # Original fineweb sample
-    #return load_dataset("HuggingFaceFW/fineweb",
+    # return load_dataset("HuggingFaceFW/fineweb",
     #                    name="sample-10BT",
     #                    split="train",
     #                    streaming=True)
-    
-    
-    #Our 40k sample
+
+    # Our 40k sample
     with open("../data/fineweb_40k.jsonl", "r") as f:
         lines = f.readlines()
         return [json.loads(line) for line in lines]
@@ -242,9 +252,12 @@ def initial_stage(stage, documents, vocab, llm):
     if len(vocab) == 0:
         vocab = "The list of general descriptors is currently empty."
     else:
-        vocab = '\n'.join(vocab)
+        vocab = "\n".join(vocab)
 
-    prompts = [format_prompt(stage=stage, original=document, vocab=vocab) for document in documents]
+    prompts = [
+        format_prompt(stage=stage, original=document, vocab=vocab)
+        for document in documents
+    ]
     json_schema = get_response_format(stage)
     batched_outputs = generate(llm, prompts, json_schema)
     validated_outputs = []
@@ -255,7 +268,11 @@ def initial_stage(stage, documents, vocab, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(json.loads('{"general": ["Generation failed"], "specific": ["Generation failed"]}'))
+                validated_outputs.append(
+                    json.loads(
+                        '{"general": ["Generation failed"], "specific": ["Generation failed"]}'
+                    )
+                )
             else:
                 validated_outputs.append(reformatted)
 
@@ -288,7 +305,9 @@ def rewrite_stage(stage, general, specific, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(json.loads('{"document": "Generation failed."}'))
+                validated_outputs.append(
+                    json.loads('{"document": "Generation failed."}')
+                )
             else:
                 validated_outputs.append(reformatted)
 
@@ -311,12 +330,14 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
     Returns:
         list of dict: A list of validated outputs, each containing general and specific descriptors.
     """
-    vocab = '\n'.join(vocab)
+    vocab = "\n".join(vocab)
     prompts = []
-    for d,r,g,s in zip(document,rewritten, general, specific):
-        prompts.append(format_prompt(stage=stage, original=d,
-                                     rewritten=r, general=g,
-                                     specific=s, vocab=vocab))
+    for d, r, g, s in zip(document, rewritten, general, specific):
+        prompts.append(
+            format_prompt(
+                stage=stage, original=d, rewritten=r, general=g, specific=s, vocab=vocab
+            )
+        )
     json_schema = get_response_format(stage)
     batched_output = generate(llm, prompts, json_schema)
     validated_outputs = []
@@ -327,7 +348,11 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(json.loads('{"general": ["Generation failed"], "specific": ["Generation failed"]}'))
+                validated_outputs.append(
+                    json.loads(
+                        '{"general": ["Generation failed"], "specific": ["Generation failed"]}'
+                    )
+                )
             else:
                 validated_outputs.append(reformatted)
 
@@ -358,10 +383,10 @@ def reformat_output(llm, output):
     logging.warning("Fixing JSON formatting.")
     for i in range(3):
         # Remove any text outside curly brackets
-        json_start = output.find('{')
-        json_end = output.find('}')
+        json_start = output.find("{")
+        json_end = output.find("}")
         if json_start != -1 and json_end != -1:
-            output = output[json_start:json_end + 1]  # Include the '}'
+            output = output[json_start : json_end + 1]  # Include the '}'
         # Replace single quotes with double quotes.
         output = output.replace("'", '"')
         # Remove trailing commas
@@ -448,7 +473,11 @@ def save_best_results(results, run_id):
                 best_index = doc["similarity"].index(max(doc["similarity"]))
                 doc["general"] = doc["general"][best_index]
                 doc["specific"] = doc["specific"][best_index]
-                doc["rewrite"] =  doc["rewrite"][best_index].encode("utf-8", errors="ignore").decode("utf-8"), # Remove possible code breaking chars.
+                doc["rewrite"] = (
+                    doc["rewrite"][best_index]
+                    .encode("utf-8", errors="ignore")
+                    .decode("utf-8"),
+                )  # Remove possible code breaking chars.
                 doc["similarity"] = doc["similarity"][best_index]
                 json_line = json.dumps(doc, ensure_ascii=False)
                 f.write(json_line + "\n")
@@ -487,7 +516,9 @@ def initialise_descriptor_vocab(use_previous_descriptors, path):
                     descriptors[desc] = int(freq)
             return descriptors
         except FileNotFoundError:
-            logging.info("No previous descriptors found. Defaulting to empty dictionary.")
+            logging.info(
+                "No previous descriptors found. Defaulting to empty dictionary."
+            )
             return descriptors
     else:
         return descriptors
@@ -507,8 +538,8 @@ def save_descriptors(vocab, path):
     with open(path, "w", encoding="utf8") as f:
         for desc, freq in vocab:
             f.write(f"{desc}\t{freq}\n")
-            
-            
+
+
 def count_unique_descriptors(vocab, run_id):
     """
     Counts the number of unique descriptors in the given vocabulary and appends the count to a results file.
@@ -560,7 +591,7 @@ def batched(data, batch_size, start_index):
         batch.append(doc)
         if len(batch) == batch_size:
             yield batch
-            batch= []
+            batch = []
     if batch:
         yield batch
 
@@ -602,7 +633,7 @@ def main(args):
     run_id = args.run_id
     num_rewrites = args.num_rewrites
     batch_size = args.batch_size
-    max_vocab=args.max_vocab
+    max_vocab = args.max_vocab
     global temperature
     temperature = args.temperature
 
@@ -613,9 +644,13 @@ def main(args):
 
     if not descriptor_path:
         descriptor_path = f"../results/descriptor_vocab_{run_id}.tsv"
-    descriptor_counts = initialise_descriptor_vocab(use_previous_descriptors, descriptor_path)
-    # Keep the top max_vocab general descriptors. These will be given to the model as possible options.
-    descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
+    descriptor_counts = initialise_descriptor_vocab(
+        use_previous_descriptors, descriptor_path
+    )
+    # Keep the top 100 general descriptors. These will be given to the model as possible options.
+    descriptor_counts_sorted = sorted(
+        descriptor_counts.items(), key=lambda item: item[1], reverse=True
+    )
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
     # Shuffle the list of descriptors to avoid ordering bias
     shuffle(descriptor_vocab)
@@ -632,7 +667,7 @@ def main(args):
                 "general": [],
                 "specific": [],
                 "rewrite": [],
-                "similarity": []
+                "similarity": [],
             }
             for index, doc in enumerate(batch)
         }
@@ -642,8 +677,12 @@ def main(args):
         stage = "initial"
         logging.info(f"Stage: {stage}.")
         model_outputs = initial_stage(stage, documents, descriptor_vocab, llm)
-        general_descriptors = [output.get("general", "Generation failed.") for output in model_outputs]
-        specific_descriptors = [output.get("specific", "Generation failed.") for output in model_outputs]
+        general_descriptors = [
+            output.get("general", "Generation failed.") for output in model_outputs
+        ]
+        specific_descriptors = [
+            output.get("specific", "Generation failed.") for output in model_outputs
+        ]
 
         for index in results:
             results[index]["general"].append(general_descriptors[index])
@@ -656,41 +695,50 @@ def main(args):
             # Rewrite doc based on the descriptors.
             stage = "rewrite"
             logging.info(f"Stage: {stage} {round_num+1}.")
-            model_outputs = rewrite_stage(stage,
-                                          general_descriptors,
-                                          specific_descriptors,
-                                          llm)
+            model_outputs = rewrite_stage(
+                stage, general_descriptors, specific_descriptors, llm
+            )
 
-            rewrites = [output.get("document", "Generation failed.") for output in model_outputs]
+            rewrites = [
+                output.get("document", "Generation failed.") for output in model_outputs
+            ]
             for index in results:
                 results[index]["rewrite"].append(rewrites[index])
 
-            if not round_num == num_rewrites-1:
+            if not round_num == num_rewrites - 1:
                 # Evaluate rewrite and revise descriptors.
                 # This stage is skipped on the last round: since we do not do another rewrite
                 # we do not need another set of descriptors.
                 # This saves us one LLM call.
                 stage = "revise"
                 logging.info(f"Stage: {stage} {round_num+1}.")
-                model_outputs = revise_stage(stage,
-                                             documents,
-                                             rewrites,
-                                             general_descriptors,
-                                             specific_descriptors,
-                                             descriptor_vocab,
-                                             llm)
+                model_outputs = revise_stage(
+                    stage,
+                    documents,
+                    rewrites,
+                    general_descriptors,
+                    specific_descriptors,
+                    descriptor_vocab,
+                    llm,
+                )
 
-                general_descriptors = [output.get("general", "Generation failed.") for output in model_outputs]
-                specific_descriptors = [output.get("specific", "Generation failed.") for output in model_outputs]
+                general_descriptors = [
+                    output.get("general", "Generation failed.")
+                    for output in model_outputs
+                ]
+                specific_descriptors = [
+                    output.get("specific", "Generation failed.")
+                    for output in model_outputs
+                ]
 
                 for index in results:
                     results[index]["general"].append(general_descriptors[index])
                     results[index]["specific"].append(specific_descriptors[index])
 
         for index in results:
-            similarities = calculate_doc_similarity(results[index]["document"],
-                                                    results[index]["rewrite"],
-                                                    cache_dir)
+            similarities = calculate_doc_similarity(
+                results[index]["document"], results[index]["rewrite"], cache_dir
+            )
             results[index]["similarity"].extend(similarities)
 
         # Save best result based on similarity score between original and rewrite.
@@ -705,7 +753,9 @@ def main(args):
 
         # Sort descriptors by their frequency.
         # This creates a sorted list of tuples (descriptor, count)
-        descriptor_counts_sorted = sorted(descriptor_counts.items(), key=lambda item: item[1], reverse=True)
+        descriptor_counts_sorted = sorted(
+            descriptor_counts.items(), key=lambda item: item[1], reverse=True
+        )
         save_descriptors(descriptor_counts_sorted, descriptor_path)
         count_unique_descriptors(descriptor_counts_sorted, run_id)
 
@@ -716,43 +766,81 @@ def main(args):
 
         end_time = time.time()
 
-        logging.info(f"Processed {len(results)} documents in {time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}.")
+        logging.info(
+            f"Processed {len(results)} documents in {time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}."
+        )
         logging.info(f"Processed a total of {(batch_num+1)*batch_size} documents.")
 
         # Stop run after num_batches batches have been processed.
         # If -1, we continue until we run out of data or time.
         if num_batches == -1:
             continue
-        elif batch_num+1 >= num_batches:
+        elif batch_num + 1 >= num_batches:
             break
 
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description="A script for getting document descriptors with LLMs.")
+    parser = argparse.ArgumentParser(
+        description="A script for getting document descriptors with LLMs."
+    )
 
-    parser.add_argument("--run-id", type=str, required=True,
-                        help="ID for this run, e.g. run1")
-    parser.add_argument("--cache-dir", type=str, default="../.cache",
-                        help="Path to cache directory, where model is or will be saved.")
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.3-70B-Instruct",
-                        help="Name of model to use.")
-    parser.add_argument("--start-index", type=int, default=0,
-                        help="Index of first document to analyse.")
-    parser.add_argument("--num-batches", type=int, default=-1,
-                        help="Number of batches of size batch-size to process. Set to -1 to process all data.")
-    parser.add_argument("--use-previous-descriptors", action="store_true",
-                        help="Use descriptors used in a previous run as a starting point.")
-    parser.add_argument("--descriptor-path", type=str, default="",
-                        help="Path to descriptors, if using previous descriptors")
-    parser.add_argument("--num-rewrites", type=int, default=0,
-                        help="How many rewriting cycles the script should go through.")
-    parser.add_argument("--temperature", type=float, default=0,
-                        help="Model temperature.")
-    parser.add_argument("--batch-size", type=int, default=100,
-                        help="Number of documents given to the model at one time.")
-    parser.add_argument("--max-vocab", type=int, default=-1,
-                        help="Max number of descriptors given in the prompt. Give -1 to use all descriptors.")
+    parser.add_argument(
+        "--run-id", type=str, required=True, help="ID for this run, e.g. run1"
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default="../.cache",
+        help="Path to cache directory, where model is or will be saved.",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="meta-llama/Llama-3.3-70B-Instruct",
+        help="Name of model to use.",
+    )
+    parser.add_argument(
+        "--start-index", type=int, default=0, help="Index of first document to analyse."
+    )
+    parser.add_argument(
+        "--num-batches",
+        type=int,
+        default=-1,
+        help="Number of batches of size batch-size to process. Set to -1 to process all data.",
+    )
+    parser.add_argument(
+        "--use-previous-descriptors",
+        action="store_true",
+        help="Use descriptors used in a previous run as a starting point.",
+    )
+    parser.add_argument(
+        "--descriptor-path",
+        type=str,
+        default="",
+        help="Path to descriptors, if using previous descriptors",
+    )
+    parser.add_argument(
+        "--num-rewrites",
+        type=int,
+        default=0,
+        help="How many rewriting cycles the script should go through.",
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=0, help="Model temperature."
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Number of documents given to the model at one time.",
+    )
+    parser.add_argument(
+        "--max-vocab",
+        type=int,
+        default=-1,
+        help="Max number of descriptors given in the prompt. Give -1 to use all descriptors.",
+    )
 
     args = parser.parse_args()
 
