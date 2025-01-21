@@ -145,7 +145,7 @@ def chat(llm, message):
             use_tqdm=False,
         )[0]
         .outputs[0]
-        .text.strip(" `\n")
+        .text.strip(" `\njson")
     )  # The model tends to generate these ticks
     # around JSON strings, which cause issues.
 
@@ -176,7 +176,7 @@ def generate(llm, batched_input, response_schema):
         batched_input, sampling_params=sampling_params, use_tqdm=False
     )
 
-    return [out.outputs[0].text.strip(" `\n") for out in batched_outputs]
+    return [out.outputs[0].text.strip(" `\njson") for out in batched_outputs]
 
 
 def get_response_format(stage):
@@ -382,6 +382,8 @@ def reformat_output(llm, output):
     """
     logging.warning("Fixing JSON formatting.")
     for i in range(3):
+        # Remove newlines and spaces from start and end
+        output = output.strip(" \n")
         # Remove any text outside curly brackets
         json_start = output.find("{")
         json_end = output.find("}")
