@@ -1,5 +1,6 @@
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
+from sklearn.metrics.pairwise import cosine_similarity # type: ignore
 import os
 import torch  # type: ignore
 import torch.distributed as dist  # type: ignore
@@ -687,8 +688,6 @@ def replace_synonyms(synonyms, results):
                 if desc in members:
                     replaced.append(group)
         doc["general"] = replaced
-        
-    return results
 
 
 def update_descriptor_vocab(results, descriptor_counts, descriptor_path, run_id, max_vocab):
@@ -711,6 +710,20 @@ def update_descriptor_vocab(results, descriptor_counts, descriptor_path, run_id,
     shuffle(descriptor_vocab)
     
     return descriptor_vocab
+
+
+def init_results(batch):
+    return {
+            index: {
+                "document": doc["text"],
+                "doc_id": doc["id"],
+                "general": [],
+                "specific": [],
+                "rewrite": [],
+                "similarity": [],
+            }
+            for index, doc in enumerate(batch)
+        }
 
 
 def main(args):
@@ -777,37 +790,28 @@ def main(args):
 
         start_time = time.time()
 
-        results = {
-            index: {
-                "document": doc["text"],
-                "doc_id": doc["id"],
-                "general": [],
-                "specific": [],
-                "rewrite": [],
-                "similarity": [],
-            }
-            for index, doc in enumerate(batch)
-        }
+        # Initialise empty results dictionary
+        results = init_results(batch)
 
         # Generate initial descriptors for document.
         documents = [doc["text"] for doc in batch]
         stage = "initial"
         logging.info(f"Stage: {stage}.")
         model_outputs = initial_stage(stage, documents, descriptor_vocab, llm)
+        
+        # Extract output and append to results.
         general_descriptors = [
             output.get("general", "Generation failed.") for output in model_outputs
         ]
         specific_descriptors = [
             output.get("specific", "Generation failed.") for output in model_outputs
         ]
-
         for index in results:
             results[index]["general"].append(general_descriptors[index])
             results[index]["specific"].append(specific_descriptors[index])
 
         # Generate num_rewrites rewrites of the document based on descriptors.
         # After the rewrite, we revise the descriptors to create an even better rewrite.
-
         for round_num in range(num_rewrites):
             # Rewrite doc based on the descriptors.
             stage = "rewrite"
@@ -816,6 +820,7 @@ def main(args):
                 stage, general_descriptors, specific_descriptors, llm
             )
 
+            # Extract output and append to results.
             rewrites = [
                 output.get("document", "Generation failed.") for output in model_outputs
             ]
@@ -826,7 +831,6 @@ def main(args):
                 # Evaluate rewrite and revise descriptors.
                 # This stage is skipped on the last round: since we do not do another rewrite
                 # we do not need another set of descriptors.
-                # This saves us one LLM call.
                 stage = "revise"
                 logging.info(f"Stage: {stage} {round_num+1}.")
                 model_outputs = revise_stage(
@@ -839,6 +843,7 @@ def main(args):
                     llm,
                 )
 
+                # Extract output and append to results.
                 general_descriptors = [
                     output.get("general", "Generation failed.")
                     for output in model_outputs
@@ -847,51 +852,64 @@ def main(args):
                     output.get("specific", "Generation failed.")
                     for output in model_outputs
                 ]
-
                 for index in results:
                     results[index]["general"].append(general_descriptors[index])
                     results[index]["specific"].append(specific_descriptors[index])
 
-                for index in results:
+        # Calculate similarity between rewrites and original.
+        # Append to results.
+        for index in results:
             similarities = calculate_doc_similarity(
                 results[index]["document"], results[index]["rewrite"], cache_dir
             )
             results[index]["similarity"].extend(similarities)
 
-        save_results(results, run_id)
+        save_results(results, run_id, only_best=False)
         logging.info("Results saved.")
 
+        # Get the descriptors that produced the best rewrite
         best_descriptors = get_best_descriptors(results)
+        # Get all results from the round that produced the best rewrite
         best_results = get_best_results(results)
         
         logging.info("Combining synonymous descriptors")
-        
         # Embed best descriptors
         embedder = StellaEmbedder()
         embeddings = embedder.embed_descriptors(best_descriptors)
-        
         # Combine similar descriptors
         synonyms = find_synonyms(best_descriptors, embeddings)
-        results = replace_synonyms(synonyms, best_results)
+        replace_synonyms(synonyms, best_results)
         
+        # Update the descriptor vocabulary with new descriptors
+        descriptor_vocab = update_descriptor_vocab(best_results, descriptor_counts, descriptor_path, run_id, max_vocab)
         
+        # Now that we have combined similar descriptors,
+        # we do one more rewrite to see how much is has changed.
         stage = "rewrite"
-        logging.info(f"Stage: {stage} after synonym replacement.")
-        general_descriptors = [doc["general"] for doc in results.values()]
-        specific_descriptors = [doc["specific"] for doc in results.values()]
-        
+        logging.info(f"Stage: Rewrite after synonym replacement.")
+        general_descriptors = [doc["general"] for doc in best_results.values()]
+        specific_descriptors = [doc["specific"] for doc in best_results.values()]
         model_outputs = rewrite_stage(
             stage, general_descriptors, specific_descriptors, llm
         )
 
+        # Extract rewrites and append to best_results.
         rewrites = [
             output.get("document", "Generation failed.") for output in model_outputs
         ]
-        for index in results:
-            results[index]["rewrite"] = [rewrites[index]]
+        for index in best_results:
+            best_results[index]["rewrite"] = [rewrites[index]]
         
-        descriptor_vocab = update_descriptor_vocab(results, descriptor_counts, descriptor_path, run_id, max_vocab)
-
+        # Get similarity score between original and rewrite and append to best_results.
+        for index in best_results:
+            similarities = calculate_doc_similarity(
+                best_results[index]["document"], [best_results[index]["rewrite"]], cache_dir
+            )
+            best_results[index]["similarity"].extend(similarities)
+        
+        # Save the new results with the new descriptors to a separete file.
+        save_results(best_results, run_id=run_id+"syn_replaced", only_best=False)
+        
         end_time = time.time()
 
         logging.info(
