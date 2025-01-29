@@ -8,12 +8,15 @@ import prompts
 import json
 from datasets import load_dataset  # type: ignore
 from sentence_transformers import SentenceTransformer  # type: ignore
+from transformers import AutoModel, AutoTokenizer
+import numpy as np
 from random import shuffle
 from collections import defaultdict
 import argparse
 import re
 import logging
 from pydantic import BaseModel  # type: ignore
+import copy
 
 
 # Configure logging
@@ -89,9 +92,7 @@ def calculate_doc_similarity(original, rewrite, cache):
     return [round(float(sim), 4) for sim in similarity[0]]
 
 
-def format_prompt(
-    stage, original=None, rewritten=None, general=None, specific=None, vocab=None
-):
+def format_prompt(stage, original=None, rewritten=None, general=None, specific=None, vocab=None):
     """
     Formats a prompt message based on the given stage and parameters.
 
@@ -445,7 +446,7 @@ def validate_output(output):
         return False
 
 
-def save_best_results(results, run_id):
+def save_results(results, run_id, only_best=True):
     """
     Save the best results from the given results dictionary to a JSONL file.
 
@@ -461,35 +462,38 @@ def save_best_results(results, run_id):
                         - "rewrite": List of document rewrites.
                         - "similarity": List of similarity scores.
         run_id (str): Identifier for the current run, used to name the output file.
-
-    Returns:
-        list: A list of the best general descriptors for each document in the results.
-
-    Raises:
-        Exception: If an error occurs during file writing, a warning is logged and
-                   the function returns the list of best general descriptors.
+        only_best (bool): Whether to save all results or only those with best rewrite score.
     """
-    try:
+    if only_best:
         with open(f"../results/descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
             for doc in results.values():
-                best_index = doc["similarity"].index(max(doc["similarity"]))
-                doc["general"] = doc["general"][best_index]
-                doc["specific"] = doc["specific"][best_index]
-                doc["rewrite"] = (
-                    doc["rewrite"][best_index]
+                doc_copy = copy.deepcopy(doc)  # Create a deep copy of the document
+                best_index = doc_copy["similarity"].index(max(doc["similarity"]))
+                doc_copy["general"] = doc_copy["general"][best_index]
+                doc_copy["specific"] = doc_copy["specific"][best_index]
+                doc_copy["rewrite"] = (
+                    doc_copy["rewrite"][best_index]
                     .encode("utf-8", errors="ignore")
                     .decode("utf-8"),
                 )  # Remove possible code breaking chars.
-                doc["similarity"] = doc["similarity"][best_index]
+                doc_copy["similarity"] = doc_copy["similarity"][best_index]
+                json_line = json.dumps(doc_copy, ensure_ascii=False)
+                f.write(json_line + "\n")
+    
+    else:
+        with open(f"../results/descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
+            for doc in results.values():
                 json_line = json.dumps(doc, ensure_ascii=False)
                 f.write(json_line + "\n")
 
-        return [doc["general"] for doc in results.values()]
 
-    except Exception as e:
-        logging.warning("Saving  results failed. Results will be discarded.")
-        logging.warning(e)
-        return [doc["general"] for doc in results.values()]
+def get_best_descriptors(results):
+    best_descriptors = []
+    for doc in results.values():
+        best_index = doc["similarity"].index(max(doc["similarity"]))
+        best_descriptors.append(doc["general"][best_index])
+        
+    return best_descriptors
 
 
 def initialise_descriptor_vocab(use_previous_descriptors, path):
@@ -596,6 +600,117 @@ def batched(data, batch_size, start_index):
             batch = []
     if batch:
         yield batch
+
+
+class StellaEmbedder:
+    def __init__(self, batch_size=32):
+        self.model = (
+            AutoModel.from_pretrained(
+                "Marqo/dunzhang-stella_en_400M_v5", trust_remote_code=True
+            )
+            .cuda()
+            .eval()
+            .half()
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            "Marqo/dunzhang-stella_en_400M_v5", trust_remote_code=True
+        )
+        self.batch_size = batch_size
+
+    def embed_descriptors(self, texts):
+        all_embeddings = []
+        for i in range(0, len(texts), self.batch_size):
+            batch_texts = texts[i : i + self.batch_size]
+            with torch.no_grad():
+                inputs = self.tokenizer(
+                    batch_texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt",
+                ).to("cuda")
+                last_hidden_state = self.model(**inputs)[0]
+                attention_mask = inputs["attention_mask"]
+                last_hidden = last_hidden_state.masked_fill(
+                    ~attention_mask[..., None].bool(), 0.0
+                )
+                embeddings = (
+                    last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+                )
+                all_embeddings.append(embeddings.cpu().numpy())
+        return np.vstack(all_embeddings)
+
+
+def get_best_results(results):
+    for doc in results.values():
+        best_index = doc["similarity"].index(max(doc["similarity"]))
+        doc["general"] = doc["general"][best_index]
+        doc["specific"] = doc["specific"][best_index]
+        doc["rewrite"] = (
+            doc["rewrite"][best_index]
+            .encode("utf-8", errors="ignore")
+            .decode("utf-8"),
+        )  # Remove possible code breaking chars.
+        doc["similarity"] = doc["similarity"][best_index]
+    
+    return results
+
+
+def find_synonyms(descriptors, embeddings, similarity_threshold=0.9):
+    # Compute the similarity matrix
+    similarity_matrix = cosine_similarity(embeddings)
+
+    # Initialize a list to keep track of which descriptors have been grouped
+    grouped = [False] * len(embeddings)
+
+    groups = []
+    for i in range(len(embeddings)):
+        if not grouped[i]:
+            new_group = [i]
+            grouped[i] = True
+            for j in range(i + 1, len(embeddings)):
+                if similarity_matrix[i, j] > similarity_threshold and not grouped[j]:
+                    new_group.append(j)
+                    grouped[j] = True
+            groups.append(new_group)
+
+    # Generate a dictionary with the first word in each group as the key
+    group_dict = {descriptors[group[0]]: [descriptors[idx] for idx in group] for group in groups}
+    return group_dict
+
+
+def replace_synonyms(synonyms, results):
+    for doc in results.items():
+        for desc in doc["general"]:
+            replaced = []
+            for group, members in synonyms.items():
+                if desc in members:
+                    replaced.append(group)
+        doc["general"] = replaced
+        
+    return results
+
+
+def update_descriptor_vocab(results, descriptor_counts, descriptor_path, run_id, max_vocab):
+    # Update the descriptor counts
+    for doc in results.values():
+        for desc in doc["general"]:
+            descriptor_counts[desc] += 1
+
+    # Sort descriptors by their frequency.
+    # This creates a sorted list of tuples (descriptor, count)
+    descriptor_counts_sorted = sorted(
+        descriptor_counts.items(), key=lambda item: item[1], reverse=True
+    )
+    save_descriptors(descriptor_counts_sorted, descriptor_path)
+    count_unique_descriptors(descriptor_counts_sorted, run_id)
+
+    # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
+    descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
+    # Shuffle the list of descriptors to avoid ordering bias
+    shuffle(descriptor_vocab)
+    
+    return descriptor_vocab
 
 
 def main(args):
@@ -737,34 +852,45 @@ def main(args):
                     results[index]["general"].append(general_descriptors[index])
                     results[index]["specific"].append(specific_descriptors[index])
 
-        for index in results:
+                for index in results:
             similarities = calculate_doc_similarity(
                 results[index]["document"], results[index]["rewrite"], cache_dir
             )
             results[index]["similarity"].extend(similarities)
 
-        # Save best result based on similarity score between original and rewrite.
-        # Return the best general descriptors.
-        best_descriptors = save_best_results(results, run_id)
+        save_results(results, run_id)
         logging.info("Results saved.")
 
-        # Update descriptor counts.
-        for desc_list in best_descriptors:
-            for desc in desc_list:
-                descriptor_counts[desc] += 1
-
-        # Sort descriptors by their frequency.
-        # This creates a sorted list of tuples (descriptor, count)
-        descriptor_counts_sorted = sorted(
-            descriptor_counts.items(), key=lambda item: item[1], reverse=True
+        best_descriptors = get_best_descriptors(results)
+        best_results = get_best_results(results)
+        
+        logging.info("Combining synonymous descriptors")
+        
+        # Embed best descriptors
+        embedder = StellaEmbedder()
+        embeddings = embedder.embed_descriptors(best_descriptors)
+        
+        # Combine similar descriptors
+        synonyms = find_synonyms(best_descriptors, embeddings)
+        results = replace_synonyms(synonyms, best_results)
+        
+        
+        stage = "rewrite"
+        logging.info(f"Stage: {stage} after synonym replacement.")
+        general_descriptors = [doc["general"] for doc in results.values()]
+        specific_descriptors = [doc["specific"] for doc in results.values()]
+        
+        model_outputs = rewrite_stage(
+            stage, general_descriptors, specific_descriptors, llm
         )
-        save_descriptors(descriptor_counts_sorted, descriptor_path)
-        count_unique_descriptors(descriptor_counts_sorted, run_id)
 
-        # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
-        descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
-        # Shuffle the list of descriptors to avoid ordering bias
-        shuffle(descriptor_vocab)
+        rewrites = [
+            output.get("document", "Generation failed.") for output in model_outputs
+        ]
+        for index in results:
+            results[index]["rewrite"] = [rewrites[index]]
+        
+        descriptor_vocab = update_descriptor_vocab(results, descriptor_counts, descriptor_path, run_id, max_vocab)
 
         end_time = time.time()
 
