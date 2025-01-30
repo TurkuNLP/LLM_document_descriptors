@@ -22,16 +22,15 @@ source ../venv/bin/activate
 # Apparently some hipster library likes to fill your home folder with cache, so put it in scratch instead.
 TRITON_HOME=/scratch/project_462000353/tarkkaot/LLM_document_descriptors/.cache/
 
-# Log NCCL info to catch what is causing the NCCL errors.
-export NCCL_DEBUG=INFO
-
+# Memory management
 PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-srun python3 vllm_document_descriptors.py --run-id='70B_3.3_0' \
+srun python3 vllm_document_descriptors.py --run-id="70B_3.3_0" \
                                           --temperature=0.1 \
                                           --batch-size=50 \
+                                          --num-batches=20 \
                                           --num-rewrites=3 \
                                           --start-index=0 \
                                           --num-batches=20 \
