@@ -1,6 +1,6 @@
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
-from sklearn.metrics.pairwise import cosine_similarity # type: ignore
+from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
 import os
 import torch  # type: ignore
 import torch.distributed as dist  # type: ignore
@@ -84,7 +84,7 @@ def calculate_doc_similarity(original, rewrite, cache):
     model = SentenceTransformer(
         "jinaai/jina-embeddings-v3", trust_remote_code=True, cache_folder=cache
     )
-    
+
     if not isinstance(rewrite, list):
         rewrite = [rewrite]
     original_embedding = model.encode([original])
@@ -97,7 +97,9 @@ def calculate_doc_similarity(original, rewrite, cache):
     return [round(float(sim), 4) for sim in similarity[0]]
 
 
-def format_prompt(stage, original=None, rewritten=None, general=None, specific=None, vocab=None):
+def format_prompt(
+    stage, original=None, rewritten=None, general=None, specific=None, vocab=None
+):
     """
     Formats a prompt message based on the given stage and parameters.
 
@@ -484,7 +486,7 @@ def save_results(results, run_id, only_best=True):
                 doc_copy["similarity"] = doc_copy["similarity"][best_index]
                 json_line = json.dumps(doc_copy, ensure_ascii=False)
                 f.write(json_line + "\n")
-    
+
     else:
         with open(f"../results/descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
             for doc in results.values():
@@ -497,7 +499,7 @@ def get_best_descriptors(results):
     for doc in results.values():
         best_index = doc["similarity"].index(max(doc["similarity"]))
         best_descriptors.extend(doc["general"][best_index])
-        
+
     return best_descriptors
 
 
@@ -613,12 +615,10 @@ def get_best_results(results):
         doc["general"] = doc["general"][best_index]
         doc["specific"] = doc["specific"][best_index]
         doc["rewrite"] = (
-            doc["rewrite"][best_index]
-            .encode("utf-8", errors="ignore")
-            .decode("utf-8"),
+            doc["rewrite"][best_index].encode("utf-8", errors="ignore").decode("utf-8"),
         )  # Remove possible code breaking chars.
         doc["similarity"] = doc["similarity"][best_index]
-    
+
     return results
 
 
@@ -641,7 +641,9 @@ def find_synonyms(descriptors, embeddings, similarity_threshold):
             groups.append(new_group)
 
     # Generate a dictionary with the first word in each group as the key
-    group_dict = {descriptors[group[0]]: [descriptors[idx] for idx in group] for group in groups}
+    group_dict = {
+        descriptors[group[0]]: [descriptors[idx] for idx in group] for group in groups
+    }
     return group_dict
 
 
@@ -654,7 +656,9 @@ def replace_synonyms(synonyms, results):
         doc["general"] = replaced
 
 
-def update_descriptor_vocab(results, descriptor_counts, descriptor_path, run_id, max_vocab):
+def update_descriptor_vocab(
+    results, descriptor_counts, descriptor_path, run_id, max_vocab
+):
     # Update the descriptor counts
     for doc in results.values():
         for desc in doc["general"]:
@@ -672,22 +676,22 @@ def update_descriptor_vocab(results, descriptor_counts, descriptor_path, run_id,
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
     # Shuffle the list of descriptors to avoid ordering bias
     shuffle(descriptor_vocab)
-    
+
     return descriptor_vocab
 
 
 def init_results(batch):
     return {
-            index: {
-                "document": doc["text"],
-                "doc_id": doc["id"],
-                "general": [],
-                "specific": [],
-                "rewrite": [],
-                "similarity": [],
-            }
-            for index, doc in enumerate(batch)
+        index: {
+            "document": doc["text"],
+            "doc_id": doc["id"],
+            "general": [],
+            "specific": [],
+            "rewrite": [],
+            "similarity": [],
         }
+        for index, doc in enumerate(batch)
+    }
 
 
 def main(args):
@@ -763,7 +767,7 @@ def main(args):
         stage = "initial"
         logging.info(f"Stage: {stage}.")
         model_outputs = initial_stage(stage, documents, descriptor_vocab, llm)
-        
+
         # Extract output and append to results.
         general_descriptors = [
             output.get("general", "Generation failed.") for output in model_outputs
@@ -836,7 +840,7 @@ def main(args):
         best_descriptors = get_best_descriptors(results)
         # Get all results from the round that produced the best rewrite
         best_results = get_best_results(results)
-        
+
         logging.info("Combining synonymous descriptors.")
         # Embed best descriptors
         logging.info("Loading Stella Embedder.")
@@ -848,10 +852,12 @@ def main(args):
         synonyms = find_synonyms(best_descriptors, embeddings)
         logging.info("Replacing synonyms.")
         replace_synonyms(synonyms, best_results, synonym_threshold)
-        
+
         # Update the descriptor vocabulary with new descriptors
-        descriptor_vocab = update_descriptor_vocab(best_results, descriptor_counts, descriptor_path, run_id, max_vocab)
-        
+        descriptor_vocab = update_descriptor_vocab(
+            best_results, descriptor_counts, descriptor_path, run_id, max_vocab
+        )
+
         # Now that we have combined similar descriptors,
         # we do one more rewrite to see how much is has changed.
         stage = "rewrite"
@@ -868,17 +874,19 @@ def main(args):
         ]
         for index in best_results:
             best_results[index]["rewrite"] = [rewrites[index]]
-        
+
         # Get similarity score between original and rewrite and append to best_results.
         for index in best_results:
             similarities = calculate_doc_similarity(
-                best_results[index]["document"], best_results[index]["rewrite"], cache_dir
+                best_results[index]["document"],
+                best_results[index]["rewrite"],
+                cache_dir,
             )
             best_results[index]["similarity"] = similarities
-        
+
         # Save the new results with the new descriptors to a separete file.
-        save_results(best_results, run_id=run_id+"syn_replaced", only_best=False)
-        
+        save_results(best_results, run_id=run_id + "syn_replaced", only_best=False)
+
         end_time = time.time()
 
         logging.info(
@@ -956,8 +964,12 @@ if __name__ == "__main__":
         default=-1,
         help="Max number of descriptors given in the prompt. Give -1 to use all descriptors.",
     )
-    parser.add_argument("--synonym-threshold", type=float, default=0.9,
-                        help="Cosine similarity threshold for when two descriptors should count as synonyms.")
+    parser.add_argument(
+        "--synonym-threshold",
+        type=float,
+        default=0.9,
+        help="Cosine similarity threshold for when two descriptors should count as synonyms.",
+    )
 
     args = parser.parse_args()
 
