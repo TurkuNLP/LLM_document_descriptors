@@ -47,7 +47,7 @@ def LLM_setup(model, cache_dir):
         - max_model_len: Maximum length of the model, set to 128,000 tokens.
         - tensor_parallel_size: Number of GPUs to use for tensor parallelism, determined by the number of available CUDA devices.
         - enforce_eager: Whether to enforce eager execution, set to False.
-        - gpu_memory_utilization: Fraction of GPU memory to utilize, set to 0.9.
+        - gpu_memory_utilization: Fraction of GPU memory to utilize.
         - pipeline_parallel_size: Optional, can be set to 2 if multiple nodes are needed (currently commented out).
 
     Note:
