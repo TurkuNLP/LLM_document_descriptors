@@ -18,6 +18,7 @@ import re
 import logging
 from pydantic import BaseModel  # type: ignore
 import copy
+from embed import StellaEmbedder
 
 
 # Configure logging
@@ -83,6 +84,9 @@ def calculate_doc_similarity(original, rewrite, cache):
     model = SentenceTransformer(
         "jinaai/jina-embeddings-v3", trust_remote_code=True, cache_folder=cache
     )
+    
+    if not isinstance(rewrite, list):
+        rewrite = [rewrite]
     original_embedding = model.encode([original])
     rewrite_embeddings = model.encode(rewrite)
 
@@ -492,7 +496,7 @@ def get_best_descriptors(results):
     best_descriptors = []
     for doc in results.values():
         best_index = doc["similarity"].index(max(doc["similarity"]))
-        best_descriptors.append(doc["general"][best_index])
+        best_descriptors.extend(doc["general"][best_index])
         
     return best_descriptors
 
@@ -603,45 +607,6 @@ def batched(data, batch_size, start_index):
         yield batch
 
 
-class StellaEmbedder:
-    def __init__(self, batch_size=32):
-        self.model = (
-            AutoModel.from_pretrained(
-                "Marqo/dunzhang-stella_en_400M_v5", trust_remote_code=True
-            )
-            .cuda()
-            .eval()
-            .half()
-        )
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            "Marqo/dunzhang-stella_en_400M_v5", trust_remote_code=True
-        )
-        self.batch_size = batch_size
-
-    def embed_descriptors(self, texts):
-        all_embeddings = []
-        for i in range(0, len(texts), self.batch_size):
-            batch_texts = texts[i : i + self.batch_size]
-            with torch.no_grad():
-                inputs = self.tokenizer(
-                    batch_texts,
-                    padding=True,
-                    truncation=True,
-                    max_length=512,
-                    return_tensors="pt",
-                ).to("cuda")
-                last_hidden_state = self.model(**inputs)[0]
-                attention_mask = inputs["attention_mask"]
-                last_hidden = last_hidden_state.masked_fill(
-                    ~attention_mask[..., None].bool(), 0.0
-                )
-                embeddings = (
-                    last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-                )
-                all_embeddings.append(embeddings.cpu().numpy())
-        return np.vstack(all_embeddings)
-
-
 def get_best_results(results):
     for doc in results.values():
         best_index = doc["similarity"].index(max(doc["similarity"]))
@@ -657,7 +622,7 @@ def get_best_results(results):
     return results
 
 
-def find_synonyms(descriptors, embeddings, similarity_threshold=0.9):
+def find_synonyms(descriptors, embeddings, similarity_threshold):
     # Compute the similarity matrix
     similarity_matrix = cosine_similarity(embeddings)
 
@@ -681,12 +646,11 @@ def find_synonyms(descriptors, embeddings, similarity_threshold=0.9):
 
 
 def replace_synonyms(synonyms, results):
-    for doc in results.items():
-        for desc in doc["general"]:
-            replaced = []
-            for group, members in synonyms.items():
-                if desc in members:
-                    replaced.append(group)
+    # Create a mapping from synonym to its group for fast lookup
+    synonym_map = {syn: group for group, members in synonyms.items() for syn in members}
+
+    for doc in results.values():
+        replaced = [synonym_map.get(desc, desc) for desc in doc["general"]]
         doc["general"] = replaced
 
 
@@ -764,6 +728,7 @@ def main(args):
     num_rewrites = args.num_rewrites
     batch_size = args.batch_size
     max_vocab = args.max_vocab
+    synonym_threshold = args.synonym_threshold
     global temperature
     temperature = args.temperature
 
@@ -872,13 +837,17 @@ def main(args):
         # Get all results from the round that produced the best rewrite
         best_results = get_best_results(results)
         
-        logging.info("Combining synonymous descriptors")
+        logging.info("Combining synonymous descriptors.")
         # Embed best descriptors
+        logging.info("Loading Stella Embedder.")
         embedder = StellaEmbedder()
+        logging.info("Embedding...")
         embeddings = embedder.embed_descriptors(best_descriptors)
         # Combine similar descriptors
+        logging.info("Finding synonyms.")
         synonyms = find_synonyms(best_descriptors, embeddings)
-        replace_synonyms(synonyms, best_results)
+        logging.info("Replacing synonyms.")
+        replace_synonyms(synonyms, best_results, synonym_threshold)
         
         # Update the descriptor vocabulary with new descriptors
         descriptor_vocab = update_descriptor_vocab(best_results, descriptor_counts, descriptor_path, run_id, max_vocab)
@@ -903,9 +872,9 @@ def main(args):
         # Get similarity score between original and rewrite and append to best_results.
         for index in best_results:
             similarities = calculate_doc_similarity(
-                best_results[index]["document"], [best_results[index]["rewrite"]], cache_dir
+                best_results[index]["document"], best_results[index]["rewrite"], cache_dir
             )
-            best_results[index]["similarity"].extend(similarities)
+            best_results[index]["similarity"] = similarities
         
         # Save the new results with the new descriptors to a separete file.
         save_results(best_results, run_id=run_id+"syn_replaced", only_best=False)
@@ -987,6 +956,8 @@ if __name__ == "__main__":
         default=-1,
         help="Max number of descriptors given in the prompt. Give -1 to use all descriptors.",
     )
+    parser.add_argument("--synonym-threshold", type=float, default=0.9,
+                        help="Cosine similarity threshold for when two descriptors should count as synonyms.")
 
     args = parser.parse_args()
 
