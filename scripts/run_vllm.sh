@@ -10,7 +10,6 @@
 #SBATCH --gpus-per-node=8
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
-####SBATCH --exclude=nid005022,nid005023,nid005024,nid007955,nid007956,nid007957
 
 module purge
 module use /appl/local/csc/modulefiles
@@ -30,14 +29,14 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-srun python3 vllm_document_descriptors.py --run-id='70B_3.3_0_full-vocab' \
+srun python3 vllm_document_descriptors.py --run-id='70B_3.3_0' \
                                           --temperature=0.1 \
                                           --batch-size=50 \
                                           --num-rewrites=3 \
-                                          --start-index=400 \
-                                          --num-batches=12 \
-                                          --max-vocab=-1 \
-                                          --use-previous-descriptors \
-                                          --descriptor-path="/scratch/project_462000353/tarkkaot/LLM_document_descriptors/results/descriptor_vocab_70B_3.3_0_full-vocab.tsv" \
+                                          --start-index=0 \
+                                          --num-batches=20 \
+                                          --max-vocab=50 \
+                                          #--use-previous-descriptors \
+                                          #--descriptor-path="/scratch/project_462000353/tarkkaot/LLM_document_descriptors/results/descriptor_vocab_70B_3.3_0_full-vocab.tsv" \
 
 gpu-energy --diff
