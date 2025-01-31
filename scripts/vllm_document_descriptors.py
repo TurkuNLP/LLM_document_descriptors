@@ -1,8 +1,8 @@
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 import numpy as np
-from sklearn.cluster import AgglomerativeClustering # type: ignore
-from scipy.spatial.distance import cdist # type: ignore
+from sklearn.cluster import AgglomerativeClustering  # type: ignore
+from scipy.spatial.distance import cdist  # type: ignore
 import os
 import torch  # type: ignore
 import torch.distributed as dist  # type: ignore
@@ -17,7 +17,13 @@ import re
 import logging
 from pydantic import BaseModel  # type: ignore
 from embed import StellaEmbedder
-from utils import load_documents, save_descriptors, initialise_descriptor_vocab, init_results, save_results
+from utils import (
+    load_documents,
+    save_descriptors,
+    initialise_descriptor_vocab,
+    init_results,
+    save_results,
+)
 
 
 # Configure logging
@@ -532,10 +538,10 @@ def find_synonyms(descriptors, embeddings, distance_threshold, save_groups=False
 
     # Perform Agglomerative Clustering
     clustering = AgglomerativeClustering(
-        n_clusters=None, 
-        distance_threshold=distance_threshold, 
-        metric='cosine',
-        linkage='average'
+        n_clusters=None,
+        distance_threshold=distance_threshold,
+        metric="cosine",
+        linkage="average",
     )
     labels = clustering.fit_predict(embeddings)
 
@@ -548,13 +554,13 @@ def find_synonyms(descriptors, embeddings, distance_threshold, save_groups=False
     group_dict = {}
     for label, indices in groups.items():
         group_vectors = embeddings[indices]
-        distance_matrix = cdist(group_vectors, group_vectors, metric='cosine')
+        distance_matrix = cdist(group_vectors, group_vectors, metric="cosine")
         medoid_index = np.argmin(np.sum(distance_matrix, axis=1))
         medoid_word = descriptors[indices[medoid_index]]
-        
+
         # Store the group with the medoid as the key
         group_dict[medoid_word] = [descriptors[idx] for idx in indices]
-    
+
     if save_groups:
         # Save groups for later inspection
         with open("../results/synonyms.json", "a") as f:
@@ -735,7 +741,7 @@ def main(args):
                 results[index]["document"], results[index]["rewrite"], cache_dir
             )
             results[index]["similarity"].extend(similarities)
-        
+
         save_results(results, run_id, only_best=False)
         logging.info("Results saved.")
 
@@ -756,7 +762,9 @@ def main(args):
         embedder = StellaEmbedder()
         embeddings = embedder.embed_descriptors(descriptors)
         # Combine similar descriptors
-        synonyms = find_synonyms(descriptors, embeddings, synonym_threshold, save_groups=True)
+        synonyms = find_synonyms(
+            descriptors, embeddings, synonym_threshold, save_groups=True
+        )
         replace_synonyms(synonyms, best_results)
 
         # Update the descriptor vocabulary with new descriptors
@@ -874,7 +882,8 @@ if __name__ == "__main__":
         "--synonym-threshold",
         type=float,
         default=0.2,
-        help="Distance threshold for when two descriptors should count as synonyms. Smaller value means words are less likely to count as synonyms.",
+        help="""Distance threshold for when two descriptors should count as synonyms.
+        Smaller value means words are less likely to count as synonyms.""",
     )
 
     args = parser.parse_args()

@@ -33,8 +33,9 @@ srun python3 vllm_document_descriptors.py --run-id="70B_3.3_0-test0" \
                                           --num-batches=20 \
                                           --num-rewrites=3 \
                                           --start-index=0 \
+                                          --num-batches=20 \
                                           --max-vocab=50 \
                                           #--use-previous-descriptors \
-                                          #--descriptor-path="/scratch/project_462000353/tarkkaot/LLM_document_descriptors/results/descriptor_vocab_70B_3.3_0_no-vocab.tsv" \
+                                          #--descriptor-path="/scratch/project_462000353/tarkkaot/LLM_document_descriptors/results/descriptor_vocab_70B_3.3_0_full-vocab.tsv" \
 
 gpu-energy --diff
