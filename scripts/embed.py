@@ -1,4 +1,4 @@
-import torch
+import torch # type: ignore
 from transformers import AutoModel, AutoTokenizer
 import numpy as np
 

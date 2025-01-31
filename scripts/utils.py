@@ -24,8 +24,8 @@ def save_results(results, run_id, only_best=True):
     if only_best:
         with open(f"../results/descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
             for doc in results.values():
-                doc_copy = copy.deepcopy(doc)  # Create a deep copy of the document
-                best_index = doc_copy["similarity"].index(max(doc["similarity"]))
+                doc_copy = copy.deepcopy(doc)  # Create a deep copy of the one set of results
+                best_index = doc_copy["similarity"].index(max(doc_copy["similarity"]))
                 doc_copy["general"] = doc_copy["general"][best_index]
                 doc_copy["specific"] = doc_copy["specific"][best_index]
                 doc_copy["rewrite"] = (

@@ -1,6 +1,8 @@
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
-from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+import numpy as np
+from sklearn.cluster import AgglomerativeClustering # type: ignore
+from scipy.spatial.distance import cdist # type: ignore
 import os
 import torch  # type: ignore
 import torch.distributed as dist  # type: ignore
@@ -504,28 +506,61 @@ def get_best_results(results):
     return results
 
 
-def find_synonyms(descriptors, embeddings, similarity_threshold):
-    # Compute the similarity matrix
-    similarity_matrix = cosine_similarity(embeddings)
+def find_synonyms(descriptors, embeddings, distance_threshold, save_groups=False):
+    """
+    Groups similar words based on their embeddings using hierarchical clustering.
+    The most central word in each group is chosen as the representative.
 
-    # Initialize a list to keep track of which descriptors have been grouped
-    grouped = [False] * len(embeddings)
+    Parameters:
+        descriptors (list): List of words/descriptors.
+        embeddings (list or np.array): Corresponding word embedding vectors.
+        distance_threshold (float): Threshold for forming clusters (lower = stricter grouping).
 
-    groups = []
-    for i in range(len(embeddings)):
-        if not grouped[i]:
-            new_group = [i]
-            grouped[i] = True
-            for j in range(i + 1, len(embeddings)):
-                if similarity_matrix[i, j] > similarity_threshold and not grouped[j]:
-                    new_group.append(j)
-                    grouped[j] = True
-            groups.append(new_group)
+    Returns:
+        dict: A dictionary where keys are the most central word (medoid) in each group,
+              and values are lists of words grouped as synonyms.
+    """
 
-    # Generate a dictionary with the first word in each group as the key
-    group_dict = {
-        descriptors[group[0]]: [descriptors[idx] for idx in group] for group in groups
-    }
+    # Convert embeddings to NumPy array if needed
+    embeddings = np.array(embeddings)
+
+    # Identify and remove zero vectors
+    valid_indices = [i for i, vec in enumerate(embeddings) if np.linalg.norm(vec) > 0]
+
+    descriptors = [descriptors[i] for i in valid_indices]
+    embeddings = embeddings[valid_indices]
+
+    # Perform Agglomerative Clustering
+    clustering = AgglomerativeClustering(
+        n_clusters=None, 
+        distance_threshold=distance_threshold, 
+        metric='cosine',
+        linkage='average'
+    )
+    labels = clustering.fit_predict(embeddings)
+
+    # Group words by cluster labels
+    groups = {}
+    for idx, label in enumerate(labels):
+        groups.setdefault(label, []).append(idx)
+
+    # Find the medoid for each group
+    group_dict = {}
+    for label, indices in groups.items():
+        group_vectors = embeddings[indices]
+        distance_matrix = cdist(group_vectors, group_vectors, metric='cosine')
+        medoid_index = np.argmin(np.sum(distance_matrix, axis=1))
+        medoid_word = descriptors[indices[medoid_index]]
+        
+        # Store the group with the medoid as the key
+        group_dict[medoid_word] = [descriptors[idx] for idx in indices]
+    
+    if save_groups:
+        # Save groups for later inspection
+        with open("../results/synonyms.json", "a") as f:
+            f.write(json.dumps(group_dict, ensure_ascii=False, indent=4))
+            f.write("========================================\n")
+
     return group_dict
 
 
@@ -700,7 +735,7 @@ def main(args):
                 results[index]["document"], results[index]["rewrite"], cache_dir
             )
             results[index]["similarity"].extend(similarities)
-
+        
         save_results(results, run_id, only_best=False)
         logging.info("Results saved.")
 
@@ -710,16 +745,19 @@ def main(args):
         best_results = get_best_results(results)
 
         logging.info("Combining synonymous descriptors.")
+        # Load full vocabulary (if it exists) and append it to this round of descriptors
+        try:
+            with open(f"../results/descriptor_vocab_{run_id}.tsv", "r") as f:
+                file = f.readlines()
+                descriptors = [line.split("\t")[0] for line in file] + best_descriptors
+        except FileNotFoundError:
+            descriptors = best_descriptors
         # Embed best descriptors
-        logging.info("Loading Stella Embedder.")
         embedder = StellaEmbedder()
-        logging.info("Embedding...")
-        embeddings = embedder.embed_descriptors(best_descriptors)
+        embeddings = embedder.embed_descriptors(descriptors)
         # Combine similar descriptors
-        logging.info("Finding synonyms.")
-        synonyms = find_synonyms(best_descriptors, embeddings)
-        logging.info("Replacing synonyms.")
-        replace_synonyms(synonyms, best_results, synonym_threshold)
+        synonyms = find_synonyms(descriptors, embeddings, synonym_threshold, save_groups=True)
+        replace_synonyms(synonyms, best_results)
 
         # Update the descriptor vocabulary with new descriptors
         descriptor_vocab = update_descriptor_vocab(
@@ -729,7 +767,7 @@ def main(args):
         # Now that we have combined similar descriptors,
         # we do one more rewrite to see how much is has changed.
         stage = "rewrite"
-        logging.info(f"Stage: Rewrite after synonym replacement.")
+        logging.info(f"Generating rewrites after synonym replacement.")
         general_descriptors = [doc["general"] for doc in best_results.values()]
         specific_descriptors = [doc["specific"] for doc in best_results.values()]
         model_outputs = rewrite_stage(
@@ -752,8 +790,8 @@ def main(args):
             )
             best_results[index]["similarity"] = similarities
 
-        # Save the new results with the new descriptors to a separete file.
-        save_results(best_results, run_id=run_id + "syn_replaced", only_best=False)
+        # Save the new results with the new descriptors to a separate file.
+        save_results(best_results, run_id=run_id + "_syn_replaced", only_best=False)
 
         end_time = time.time()
 
@@ -835,8 +873,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--synonym-threshold",
         type=float,
-        default=0.9,
-        help="Cosine similarity threshold for when two descriptors should count as synonyms.",
+        default=0.2,
+        help="Distance threshold for when two descriptors should count as synonyms. Smaller value means words are less likely to count as synonyms.",
     )
 
     args = parser.parse_args()
