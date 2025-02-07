@@ -3,7 +3,7 @@ from datasets import load_dataset  # type: ignore
 from collections import defaultdict
 import copy
 
-def save_results(results, run_id, only_best=True):
+def save_results(results, path, run_id, only_best=True):
     """
     Save the best results from the given results dictionary to a JSONL file.
 
@@ -22,12 +22,14 @@ def save_results(results, run_id, only_best=True):
         only_best (bool): Whether to save all results or only those with best rewrite score.
     """
     if only_best:
-        with open(f"../results/descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
+        with open(path / f"descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
             for doc in results.values():
                 doc_copy = copy.deepcopy(doc)  # Create a deep copy of the one set of results
                 best_index = doc_copy["similarity"].index(max(doc_copy["similarity"]))
                 doc_copy["general"] = doc_copy["general"][best_index]
+                doc_copy["general_explanations"] = doc_copy["general_explanations"][best_index]
                 doc_copy["specific"] = doc_copy["specific"][best_index]
+                doc_copy["specific_explanations"] = doc_copy["specific_explanations"][best_index]
                 doc_copy["rewrite"] = (
                     doc_copy["rewrite"][best_index]
                     .encode("utf-8", errors="ignore")
@@ -38,7 +40,7 @@ def save_results(results, run_id, only_best=True):
                 f.write(json_line + "\n")
                 
     else:
-        with open(f"../results/descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
+        with open(path / f"descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
             for doc in results.values():
                 json_line = json.dumps(doc, ensure_ascii=False)
                 f.write(json_line + "\n")
@@ -91,7 +93,9 @@ def init_results(batch):
             "document": doc["text"],
             "doc_id": doc["id"],
             "general": [],
+            "general_explanations": [],
             "specific": [],
+            "specific_explanations": [],
             "rewrite": [],
             "similarity": [],
         }

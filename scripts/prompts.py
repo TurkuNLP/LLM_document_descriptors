@@ -8,33 +8,37 @@ You will be given a document. Your task is to create a comprehensive list of des
 ##Requirements:
 
 1. Generate Two Types of Descriptors:
-    - General Descriptors: General Descriptors: Describe the document in aspects including, but not limited to, style, tone, genre, topic, domain, length, language, quality, etc. They should be general enough so they could likely be applied to other, hypothetical documents.
+    - General Descriptors: Describe the document in aspects including, but not limited to, style, tone, genre, topic, domain, length, language, quality, etc. They should be general enough so they could likely be applied to other, hypothetical documents.
     - Specific Descriptors: Describe minute details specific to this document such as individual words and phrases, emphasis, structure, etc.
 
 2. Descriptor Details:
-    - Descriptors can be single words or multi-word phrases. They should typically not be longer than 3 to 5 words.
+    - Descriptors can be single words or multi-word phrases. They should typically not be longer than 3 words.
     - Each descriptor should describe only one aspect of the document. Multi-aspect descriptors should be split into separate descriptors.
     - The list should be so extensive that, given only the list, a competent person should be able to rewrite the original document.
     - Do not repeat descriptors.
 
 3. Order:
     - Sequence: Order the descriptors in the sequence they appear in the document.
+    
+4. Descriptor explanations:
+    - After each descriptor, add a one or two sentence explanation for what the descriptor describes in the document.
 
-4. Format:
+5. Format:
     - The output must be formatted as a JSON object. Follow this formatting exactly.
     - Never add any preamble or anything else outside the JSON object.
-    - Example: {{"general": [<"descriptor">,
-                             <"descriptor">,
-                             <"descriptor">,
+    - Example: {{"general": [{{<"descriptor">: <"explanation">}},
+                             {{<"descriptor">: <"explanation">}},
+                             {{<"descriptor">: <"explanation">}},
                              ...],
-                 "specific": [<"desciptor">,
-                             <"descriptor">,
-                             <"descriptor">,
+                 "specific": [{{<"descriptor">: <"explanation">}},
+                             {{<"descriptor">: <"explanation">}},
+                             {{<"descriptor">: <"explanation">}},
                              ...]
                 }}
 
 ##Possible general descriptors
 Here is a list of general descriptors that you can choose from. If the descriptors do not apply to the current document, you can also invent new ones.
+Only invent new descriptors when necessary. Stick to the given list of possible descriptors whenever possible.
 <start>
 {vocab}
 <end><|eot_id|><|start_header_id|>user<|end_header_id|>
@@ -120,18 +124,19 @@ You will be given:
 3. Completeness: Cover all aspects where the rewritten document deviates from the original.
 4. Conciseness: Do not make the descriptors overly long. They should typically
 not be longer than 3 to 5 words. Do not repeat descriptors.
-5. Format:
+5. Descriptor explanations: After each descriptor, add a one or two sentence explanation for what the descriptor describes in the document.
+6. Format:
     - The output must be formatted as a JSON object. Follow this formatting exactly.
     - Never add any preamble or anything else outside the JSON object.
     - Place double quotes around the discussion about differences.
     - Example: {{"differences": <"differences between original and rewrite">,
-                 "general": [<"desciptor">,
-                             <"descriptor">,
-                             <"descriptor">,
+                 "general": [{{<"descriptor">: <"explanation">}},
+                             {{<"descriptor">: <"explanation">}},
+                             {{<"descriptor">: <"explanation">}},
                              ...],
-                 "specific": [<"desciptor">,
-                              <"descriptor">,
-                              <"descriptor">,
+                 "specific": [{{<"descriptor">: <"explanation">}},
+                              {{<"descriptor">: <"explanation">}},
+                              {{<"descriptor">: <"explanation">}},
                               ...]
                 }} <|eot_id|><|start_header_id|>user<|end_header_id|>
                 
@@ -155,6 +160,43 @@ not be longer than 3 to 5 words. Do not repeat descriptors.
 {specific}
 <end><|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
+
+
+def review_synonyms(synonyms):
+    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+You will be given a list of candidate words that might be synonyms. The words describe the contents of text documents.
+Your task is to analyze the list and decide whether all words are sufficiently similar in meaning to form one coherent group or if they should be divided into multiple groups. Please follow these instructions:
+
+1. **Definition of Synonymy and Coherence:**
+   - Words do not have to be perfectly synonymous, but they should share a significant overlap in meaning, usage, or connotation to be considered part of the same group.
+   - A coherent group is one in which every word is contextually or semantically similar, even if subtle differences exist.
+
+2. **Handling Ambiguity:**
+   - Some words have multiple meanings. Use the most common sense or the sense that best fits with the other words in the list.
+   - If a word has multiple plausible senses, choose the one that aligns with a potential group or consider it an outlier if no clear fit exists.
+
+3. **Grouping Requirements:**
+   - Group words such that each group is as large as possible without including words that do not fit together.
+   - Avoid creating more groups than necessary. Only create a new group if one or more words clearly do not belong in an otherwise coherent group.
+   - Outlier words should form their own individual groups if they do not match any of the other words.
+
+4. **Output Format:**
+   - Present your results as a list of groups. Each group should be numbered.
+   - Do not modify the words in any way. Each word must appear in exactly one group.
+   - Your output should be in JSON format. Do not add any text or explanation outside the JSON object.
+    - Example: {{"group_1": [<"word">,
+                             <"word">,
+                             <"word">,
+                             ...],
+                 "group_2": [<"word">,
+                             <"word">,
+                             <"word">,
+                             ...]
+                }}<|eot_id|><|start_header_id|>user<|end_header_id|>
+                
+List of possible synonyms:
+{synonyms}<end><|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
 
 
