@@ -508,12 +508,6 @@ def get_best_results(results):
 
     return results
 
-
-import numpy as np
-import logging
-from sklearn.cluster import AgglomerativeClustering
-from scipy.spatial.distance import cdist
-
 def find_synonyms(stage, llm, descriptors, explanations, embeddings, distance_threshold):
     """
     Groups similar words based on their embeddings using hierarchical clustering.
