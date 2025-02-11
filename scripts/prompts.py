@@ -25,14 +25,17 @@ You will be given a document. Your task is to create a comprehensive list of des
 
 5. Format:
     - The output must be formatted as a JSON object. Follow this formatting exactly.
+    - Separate the descriptor and its explanation with a colon ":".
     - Never add any preamble or anything else outside the JSON object.
-    - Example: {{"general": [{{<"descriptor">: <"explanation">}},
-                             {{<"descriptor">: <"explanation">}},
-                             {{<"descriptor">: <"explanation">}},
-                             ...],
-                 "specific": [{{<"descriptor">: <"explanation">}},
-                             {{<"descriptor">: <"explanation">}},
-                             {{<"descriptor">: <"explanation">}},
+    - Example: {{"general": [
+                            "<descriptor>: <explanation>",
+                            "<descriptor>: <explanation>",
+                            "<descriptor>: <explanation>",
+                            ...],
+                 "specific": [
+                             "<descriptor>: <explanation>",
+                             "<descriptor>: <explanation>",
+                             "<descriptor>: <explanation>",
                              ...]
                 }}
 
@@ -129,15 +132,18 @@ not be longer than 3 to 5 words. Do not repeat descriptors.
     - The output must be formatted as a JSON object. Follow this formatting exactly.
     - Never add any preamble or anything else outside the JSON object.
     - Place double quotes around the discussion about differences.
+    - Separate the descriptor and its explanation with a colon ":".
     - Example: {{"differences": <"differences between original and rewrite">,
-                 "general": [{{<"descriptor">: <"explanation">}},
-                             {{<"descriptor">: <"explanation">}},
-                             {{<"descriptor">: <"explanation">}},
-                             ...],
-                 "specific": [{{<"descriptor">: <"explanation">}},
-                              {{<"descriptor">: <"explanation">}},
-                              {{<"descriptor">: <"explanation">}},
-                              ...]
+                 "general": [
+                            "<descriptor>: <explanation>",
+                            "<descriptor>: <explanation>",
+                            "<descriptor>: <explanation>",
+                            ...],
+                 "specific": [
+                             "<descriptor>: <explanation>",
+                             "<descriptor>: <explanation>",
+                             "<descriptor>: <explanation>",
+                             ...]
                 }} <|eot_id|><|start_header_id|>user<|end_header_id|>
                 
 *Original Document*:

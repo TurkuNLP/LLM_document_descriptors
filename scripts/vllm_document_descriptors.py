@@ -208,8 +208,8 @@ def get_response_format(stage):
     
     if stage == "initial":
         class ResponseFormat(BaseModel):
-            general: list[dict[str, str]]
-            specific: list[dict[str, str]]
+            general: list[str]
+            specific: list[str]
 
     elif stage == "rewrite":
         class ResponseFormat(BaseModel):
@@ -218,8 +218,8 @@ def get_response_format(stage):
     elif stage == "revise":
         class ResponseFormat(BaseModel):
             differences: str
-            general: list[dict[str, str]]
-            specific: dist[dict[str, str]]
+            general: list[str]
+            specific: list[str]
             
     elif stage == "synonyms":
         class ResponseFormat(BaseModel):
@@ -262,7 +262,7 @@ def initial_stage(stage, documents, vocab, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(None)
+                validated_outputs.append({})
             else:
                 validated_outputs.append(reformatted)
 
@@ -295,7 +295,7 @@ def rewrite_stage(stage, general, specific, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(None)
+                validated_outputs.append({})
             else:
                 validated_outputs.append(reformatted)
 
@@ -336,7 +336,7 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(None)
+                validated_outputs.append({})
             else:
                 validated_outputs.append(reformatted)
 
@@ -508,6 +508,7 @@ def get_best_results(results):
 
     return results
 
+
 def find_synonyms(stage, llm, descriptors, explanations, embeddings, distance_threshold):
     """
     Groups similar words based on their embeddings using hierarchical clustering.
@@ -552,17 +553,19 @@ def find_synonyms(stage, llm, descriptors, explanations, embeddings, distance_th
        
     # Find the medoid for each group
     group_dict = {}
+    medoid_words_and_explanations = []
     for label, indices in groups.items():
         group_vectors = embeddings[indices]
         distance_matrix = cdist(group_vectors, group_vectors, metric="cosine")
         medoid_index = np.argmin(np.sum(distance_matrix, axis=1))
         medoid_word = descriptors[indices[medoid_index]]
         medoid_explanation = explanations[indices[medoid_index]]
-
+        medoid_words_and_explanations.append([medoid_word, medoid_explanation])
+        
         # Store the group with the medoid as the key
         group_dict[medoid_word] = [(descriptors[idx], explanations[idx]) for idx in indices]
         
-    return group_dict
+    return group_dict, medoid_words_and_explanations
 
 
 def save_synonym_dict(groups, path, run_id):
@@ -574,7 +577,7 @@ def save_synonym_dict(groups, path, run_id):
 
 def replace_synonyms(synonyms, results):
     # Create a mapping from synonym to its group for fast lookup
-    synonym_map = {syn: group for group, members in synonyms.items() for syn in members}
+    synonym_map = {syn[0]: group for group, members in synonyms.items() for syn in members}
 
     for doc in results.values():
         replaced = [synonym_map.get(desc, desc) for desc in doc["general"]]
@@ -582,7 +585,7 @@ def replace_synonyms(synonyms, results):
 
 
 def update_descriptor_vocab(
-    results, descriptor_counts, descriptor_path, path, run_id, max_vocab
+    results, descs_and_explanations, descriptor_counts, descriptor_path, path, run_id, max_vocab
 ):
     # Update the descriptor counts
     for doc in results.values():
@@ -594,7 +597,7 @@ def update_descriptor_vocab(
     descriptor_counts_sorted = sorted(
         descriptor_counts.items(), key=lambda item: item[1], reverse=True
     )
-    save_descriptors(descriptor_counts_sorted, descriptor_path)
+    save_descriptors(descriptor_counts_sorted, descs_and_explanations, descriptor_path)
     count_unique_descriptors(descriptor_counts_sorted, path, run_id)
 
     # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
@@ -680,18 +683,22 @@ def main(args):
         stage = "initial"
         logging.info(f"Stage: {stage}.")
         model_outputs = initial_stage(stage, documents, descriptor_vocab, llm)
-
+        
         # Extract output and append to results.
-        for i, document in enumerate(model_outputs):
-            for descriptor in document.get("general", ["Generation failed."]):
-                results[i]["general"].append(list(descriptor.keys())[0])
-                results[i]["general_explanations"].append(list(descriptor.values())[0])
-            for descriptor in document.get("specific", ["Generation failed."]):
-                results[i]["specific"].append(list(descriptor.keys())[0])
-                results[i]["specific_explanations"].append(list(descriptor.values())[0])
+        general_descriptors = [[desc.split(":")[0].strip() for desc in out.get("general", ["Generation failed.: Generation failed."])] for out in model_outputs]
+        general_explanations = [[desc.split(":")[1].strip() for desc in out.get("general", ["Generation failed.: Generation failed."])] for out in model_outputs]
+        specific_descriptors = [[desc.split(":")[0].strip() for desc in out.get("specific", ["Generation failed.: Generation failed."])] for out in model_outputs]
+        specific_explanations = [[desc.split(":")[1].strip() for desc in out.get("specific", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                
+        for index in results:
+            results[index]["general"].append(general_descriptors[index])
+            results[index]["general_explanations"].append(general_explanations[index])
+            results[index]["specific"].append(specific_descriptors[index])
+            results[index]["specific_explanations"].append(specific_explanations[index])
 
         # Generate num_rewrites rewrites of the document based on descriptors.
         # After the rewrite, we revise the descriptors to create an even better rewrite.
+        
         for round_num in range(num_rewrites):
             # Rewrite doc based on the descriptors.
             stage = "rewrite"
@@ -701,9 +708,9 @@ def main(args):
             )
 
             # Extract output and append to results.
-            for i, document in enumerate(model_outputs):
-                for rewrite in document.get("document", "Generation failed."):
-                    results[i].append(rewrite)
+            rewrites = [out.get("document", "Generation failed") for out in model_outputs]
+            for index in results:
+                results[index]["rewrite"].append(rewrites[index])
             
             if not round_num == num_rewrites - 1:
                 # Evaluate rewrite and revise descriptors.
@@ -722,13 +729,16 @@ def main(args):
                 )
 
                 # Extract output and append to results.
-                for i, document in enumerate(model_outputs):
-                    for descriptor in document.get("general", ["Generation failed."]):
-                        results[i]["general"].append(list(descriptor.keys())[0])
-                        results[i]["general_explanations"].append(list(descriptor.values())[0])
-                    for descriptor in document.get("specific", ["Generation failed."]):
-                        results[i]["specific"].append(list(descriptor.keys())[0])
-                        results[i]["specific_explanations"].append(list(descriptor.values())[0])
+                general_descriptors = [[desc.split(":")[0].strip() for desc in out.get("general", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                general_explanations = [[desc.split(":")[1].strip() for desc in out.get("general", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                specific_descriptors = [[desc.split(":")[0].strip() for desc in out.get("specific", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                specific_explanations = [[desc.split(":")[1].strip() for desc in out.get("specific", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                
+                for index in results:
+                    results[index]["general"].append(general_descriptors[index])
+                    results[index]["general_explanations"].append(general_explanations[index])
+                    results[index]["specific"].append(specific_descriptors[index])
+                    results[index]["specific_explanations"].append(specific_explanations[index])
 
         # Calculate similarity between rewrites and original.
         # Append to results.
@@ -760,7 +770,7 @@ def main(args):
         embedder = StellaEmbedder()
         embeddings = embedder.embed_descriptors([desc + ": " + exp for desc, exp in zip(descriptors, explanations)])
         # Combine similar descriptors
-        synonyms = find_synonyms(
+        synonyms, descs_and_explanations = find_synonyms(
             stage, llm, descriptors, explanations, embeddings, synonym_threshold,
         )
         # Save synonyms for later inspection
@@ -769,7 +779,7 @@ def main(args):
 
         # Update the descriptor vocabulary with new descriptors
         descriptor_vocab = update_descriptor_vocab(
-            best_results, descriptor_counts, descriptor_path, base_dir, run_id, max_vocab
+            best_results, descs_and_explanations, descriptor_counts, descriptor_path, base_dir, run_id, max_vocab
         )
 
         # Now that we have combined similar descriptors,

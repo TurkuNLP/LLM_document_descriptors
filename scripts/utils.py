@@ -46,7 +46,7 @@ def save_results(results, path, run_id, only_best=True):
                 f.write(json_line + "\n")
                 
 
-def save_descriptors(vocab, path):
+def save_descriptors(desc_counts, descs_and_explanations, path):
     """
     Save vocabulary descriptors and their frequencies to a file.
 
@@ -58,8 +58,12 @@ def save_descriptors(vocab, path):
         A tab-separated file with each line containing a descriptor and its frequency.
     """
     with open(path, "w", encoding="utf8") as f:
-        for desc, freq in vocab:
-            f.write(f"{desc}\t{freq}\n")
+        for desc, freq in desc_counts:
+            for pair in descs_and_explanations:
+                if desc in pair:
+                    exp = pair[1].strip()
+                    f.write(f"{freq}\t{desc}\t{exp}\n")
+                    break
             
 
 def load_documents(source="40k"):
@@ -123,7 +127,7 @@ def initialise_descriptor_vocab(use_previous_descriptors, path):
                 file = f.readlines()
                 for line in file:
                     line = line.strip().split("\t")
-                    desc, freq = line
+                    freq, desc, exp = line
                     descriptors[desc] = int(freq)
             return descriptors
         except FileNotFoundError:
