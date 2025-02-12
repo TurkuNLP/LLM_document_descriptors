@@ -24,7 +24,7 @@ from utils import (
     initialise_descriptor_vocab,
     init_results,
     save_results,
-    save_synonym_dict
+    save_synonym_dict,
 )
 
 # Configure logging
@@ -104,7 +104,14 @@ def calculate_doc_similarity(original, rewrite, cache):
 
 
 def format_prompt(
-    stage, original=None, rewritten=None, general=None, specific=None, vocab=None, group_name=None, synonyms=None
+    stage,
+    original=None,
+    rewritten=None,
+    general=None,
+    specific=None,
+    vocab=None,
+    group_name=None,
+    synonyms=None,
 ):
     """
     Formats a prompt message based on the given stage and parameters.
@@ -221,8 +228,9 @@ def get_response_format(stage):
             differences: str
             general: list[str]
             specific: list[str]
-            
+
     elif stage == "synonyms":
+
         class ResponseFormat(BaseModel):
             __root__: dict[str, list[str]]
 
@@ -347,7 +355,9 @@ def revise_stage(document, rewritten, general, specific, vocab, llm):
     return validated_outputs
 
 
-def synonym_stage(best_results, best_descriptors, synonym_threshold, base_dir, run_id, llm):
+def synonym_stage(
+    best_results, best_descriptors, synonym_threshold, base_dir, run_id, llm
+):
     # Load full vocabulary (if it exists) and append it to this round of descriptors
     stage = "synonyms"
     try:
@@ -363,7 +373,7 @@ def synonym_stage(best_results, best_descriptors, synonym_threshold, base_dir, r
     synonyms = find_synonyms(
         descriptors, embeddings, synonym_threshold, save_groups=True
     )
-    
+
     prompts = [
         format_prompt(stage=stage, group_name=group_name, synonyms=syns)
         for group_name, syns in synonyms.item()
@@ -380,10 +390,10 @@ def synonym_stage(best_results, best_descriptors, synonym_threshold, base_dir, r
             if reformatted == "FAIL":
                 key = list(synonyms.keys())[idx]
                 values = list(synonyms.values())[idx]
-                validated_outputs.append({key:values})
+                validated_outputs.append({key: values})
             else:
                 validated_outputs.append(reformatted)
-    
+
     synonyms = {}
     for d in validated_outputs:
         for key, value in d.items():
@@ -391,7 +401,7 @@ def synonym_stage(best_results, best_descriptors, synonym_threshold, base_dir, r
                 synonyms[key].extend(value)
             else:
                 synonyms[key] = value
-    
+
     save_synonym_dict(synonyms, base_dir, run_id)
     replace_synonyms(synonyms, best_results)
 
@@ -799,8 +809,10 @@ def main(args):
         best_results = get_best_results(results)
 
         logging.info("Stage: synonyms")
-        best_results = synonym_stage(best_results, best_descriptors, synonym_threshold, base_dir, run_id, llm)
-        
+        best_results = synonym_stage(
+            best_results, best_descriptors, synonym_threshold, base_dir, run_id, llm
+        )
+
         # Update the descriptor vocabulary with new descriptors
         descriptor_vocab = update_descriptor_vocab(
             best_results, descriptor_counts, descriptor_path, run_id, max_vocab
@@ -811,9 +823,7 @@ def main(args):
         logging.info(f"Generating rewrites after synonym replacement.")
         general_descriptors = [doc["general"] for doc in best_results.values()]
         specific_descriptors = [doc["specific"] for doc in best_results.values()]
-        model_outputs = rewrite_stage(
-            general_descriptors, specific_descriptors, llm
-        )
+        model_outputs = rewrite_stage(general_descriptors, specific_descriptors, llm)
 
         # Extract rewrites and append to best_results.
         rewrites = [
@@ -925,7 +935,7 @@ if __name__ == "__main__":
     os.makedirs("../logs", exist_ok=True)
     os.makedirs("../results", exist_ok=True)
     os.makedirs(f"../results/{args.run_id}", exist_ok=True)
-    
+
     # Log the run settings
     with open(f"../results/{args.run_id}/{args.run_id}_settings.txt", "w") as f:
         f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
