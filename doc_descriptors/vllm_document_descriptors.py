@@ -376,7 +376,7 @@ def synonym_stage(
 
     prompts = [
         format_prompt(stage=stage, group_name=group_name, synonyms=syns)
-        for group_name, syns in synonyms.item()
+        for group_name, syns in synonyms.items()
     ]
     json_schema = get_response_format(stage)
     batched_outputs = generate(llm, prompts, json_schema)
