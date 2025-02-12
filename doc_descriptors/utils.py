@@ -34,13 +34,13 @@ def save_results(results, path, run_id, only_best=True):
                     .decode("utf-8"),
                 )  # Remove possible code breaking chars.
                 doc_copy["similarity"] = doc_copy["similarity"][best_index]
-                json_line = json.dumps(doc_copy, ensure_ascii=False)
+                json_line = json.dumps(doc_copy, ensure_ascii=False, indent=4)
                 f.write(json_line + "\n")
                 
     else:
         with open(path / f"descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
             for doc in results.values():
-                json_line = json.dumps(doc, ensure_ascii=False)
+                json_line = json.dumps(doc, ensure_ascii=False, indent=4)
                 f.write(json_line + "\n")
                 
 
