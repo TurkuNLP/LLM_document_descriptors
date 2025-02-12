@@ -19,23 +19,19 @@ You will be given a document. Your task is to create a comprehensive list of des
 
 3. Order:
     - Sequence: Order the descriptors in the sequence they appear in the document.
-    
-4. Descriptor explanations:
-    - After each descriptor, add a one or two sentence explanation for what the descriptor describes in the document.
 
-5. Format:
+4. Format:
     - The output must be formatted as a JSON object. Follow this formatting exactly.
-    - Separate the descriptor and its explanation with a colon ":".
     - Never add any preamble or anything else outside the JSON object.
     - Example: {{"general": [
-                            "<descriptor>: <explanation>",
-                            "<descriptor>: <explanation>",
-                            "<descriptor>: <explanation>",
+                            "<descriptor>",
+                            "<descriptor>",
+                            "<descriptor>",
                             ...],
                  "specific": [
-                             "<descriptor>: <explanation>",
-                             "<descriptor>: <explanation>",
-                             "<descriptor>: <explanation>",
+                             "<descriptor>,
+                             "<descriptor>,
+                             "<descriptor>,
                              ...]
                 }}
 
@@ -55,7 +51,7 @@ def rewrite_prompt(general, specific):
 ##Instruction:
 
 You will be given two lists of descriptors:
-- General Descriptors: General Descriptors: Describe the document in aspects including, but not limited to, style, tone, genre, topic, domain, length, language, quality, etc.
+- General Descriptors: Describe the document in aspects including, but not limited to, style, tone, genre, topic, domain, length, language, quality, etc.
 - Specific Descriptors: Describe minute details specific to a document such as individual words and phrases, emphasis, structure, etc.
 
 ##Your Task:
@@ -127,22 +123,20 @@ You will be given:
 3. Completeness: Cover all aspects where the rewritten document deviates from the original.
 4. Conciseness: Do not make the descriptors overly long. They should typically
 not be longer than 3 to 5 words. Do not repeat descriptors.
-5. Descriptor explanations: After each descriptor, add a one or two sentence explanation for what the descriptor describes in the document.
-6. Format:
+5. Format:
     - The output must be formatted as a JSON object. Follow this formatting exactly.
     - Never add any preamble or anything else outside the JSON object.
     - Place double quotes around the discussion about differences.
-    - Separate the descriptor and its explanation with a colon ":".
     - Example: {{"differences": <"differences between original and rewrite">,
                  "general": [
-                            "<descriptor>: <explanation>",
-                            "<descriptor>: <explanation>",
-                            "<descriptor>: <explanation>",
+                            "<descriptor>2,
+                            "<descriptor>",
+                            "<descriptor>",
                             ...],
                  "specific": [
-                             "<descriptor>: <explanation>",
-                             "<descriptor>: <explanation>",
-                             "<descriptor>: <explanation>",
+                             "<descriptor>",
+                             "<descriptor>",
+                             "<descriptor>",
                              ...]
                 }} <|eot_id|><|start_header_id|>user<|end_header_id|>
                 
