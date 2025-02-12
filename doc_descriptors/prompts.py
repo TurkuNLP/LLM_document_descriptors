@@ -168,11 +168,11 @@ not be longer than 3 to 5 words. Do not repeat descriptors.
 
 
 
-def review_synonyms(synonyms):
+def review_synonyms(group_name, synonyms):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 You will be given a list of candidate words that might be synonyms. The words describe the contents of text documents.
-Your task is to analyze the list and decide whether all words are sufficiently similar in meaning to form one coherent group or if they should be divided into multiple groups. Please follow these instructions:
+Your task is to analyze the list and decide whether all words are sufficiently similar in meaning to form one coherent group and match the name of the group or if they should be divided into multiple groups. Please follow these instructions:
 
 1. **Definition of Synonymy and Coherence:**
    - Words do not have to be perfectly synonymous, but they should share a significant overlap in meaning, usage, or connotation to be considered part of the same group.
@@ -186,23 +186,29 @@ Your task is to analyze the list and decide whether all words are sufficiently s
    - Group words such that each group is as large as possible without including words that do not fit together.
    - Avoid creating more groups than necessary. Only create a new group if one or more words clearly do not belong in an otherwise coherent group.
    - Outlier words should form their own individual groups if they do not match any of the other words.
+   
+4. **Naming the Groups:**
+   - The name of the group should be one of the words in the group.
+   - The name of the group should be central to the meaning of the group, i.e., all words in the group should be synonymous with the name. 
 
 4. **Output Format:**
    - Present your results as a list of groups. Each group should be numbered.
    - Do not modify the words in any way. Each word must appear in exactly one group.
    - Your output should be in JSON format. Do not add any text or explanation outside the JSON object.
-    - Example: {{"group_1": [<"word">,
-                             <"word">,
-                             <"word">,
-                             ...],
-                 "group_2": [<"word">,
-                             <"word">,
-                             <"word">,
-                             ...]
+    - Example: {{"group_name": [<"word">,
+                               <"word">,
+                               <"word">,
+                               ...],
+                 "group_name": [<"word">,
+                               <"word">,
+                               <"word">,
+                               ...]
                 }}<|eot_id|><|start_header_id|>user<|end_header_id|>
                 
-List of possible synonyms:
-{synonyms}<end><|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+Now, here are the possible synonyms:
+Name: {group_name}
+Words:
+{synonyms}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
 
 
