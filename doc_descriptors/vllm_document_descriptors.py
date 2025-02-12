@@ -373,7 +373,7 @@ def synonym_stage(
     
     # Group similar descriptors
     synonyms = find_synonyms(
-        descriptors, embeddings, synonym_threshold, save_groups=True
+        descriptors, embeddings, synonym_threshold, save_groups=False
     )
     
     # Use LLM to evaluate and form final synonyms
@@ -381,6 +381,10 @@ def synonym_stage(
         format_prompt(stage=stage, group_name=group_name, synonyms=syns)
         for group_name, syns in synonyms.items()
     ]
+    
+    logging.info("Number of synonym groups before LLM:")
+    logging.info(len(prompts))
+    
     json_schema = get_response_format(stage)
     batched_outputs = generate(llm, prompts, json_schema)
     validated_outputs = []
@@ -398,6 +402,9 @@ def synonym_stage(
             else:
                 validated_outputs.append(reformatted)
 
+    logging.info("Number of synonym groups after LLM:")
+    logging.info(len(validated_outputs))
+
     # Make dictionary from LLM outputs
     synonyms = {}
     for d in validated_outputs:
@@ -408,7 +415,7 @@ def synonym_stage(
                 synonyms[key] = value
 
     # Replace the original descriptors
-    #save_synonym_dict(synonyms, base_dir, run_id)
+    save_synonym_dict(synonyms, base_dir, run_id)
     replace_synonyms(synonyms, best_results)
 
     return best_results
@@ -625,13 +632,13 @@ def find_synonyms(descriptors, embeddings, distance_threshold, save_groups=False
         medoid_word = descriptors[indices[medoid_index]]
 
         # Store the group with the medoid as the key
-        group_dict[medoid_word] = [descriptors[idx] for idx in indices]
+        # Remove duplicates in each group
+        group_dict[medoid_word] = list(set([descriptors[idx] for idx in indices]))
 
     if save_groups:
         # Save groups for later inspection
-        with open("../results/synonyms.json", "a") as f:
-            f.write(json.dumps(group_dict, ensure_ascii=False, indent=4))
-            f.write("========================================\n")
+        with open("../results/synonyms.jsonl", "a") as f:
+            f.write(json.dumps(group_dict, ensure_ascii=False, indent=4)+"\n")
 
     return group_dict
 
@@ -722,8 +729,9 @@ def main(args):
 
     logging.info("Loading model...")
     llm = LLM_setup(model, cache_dir)
-    logging.info("Loading data...")
+    logging.info("Model loaded.")
     data = load_documents()
+    logging.info("Data loaded.")
 
     if not descriptor_path:
         descriptor_path = base_dir / f"descriptor_vocab_{run_id}.tsv"
@@ -737,8 +745,7 @@ def main(args):
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
     # Shuffle the list of descriptors to avoid ordering bias
     shuffle(descriptor_vocab)
-
-    logging.info("Starting document processing pipeline...")
+    
     for batch_num, batch in enumerate(batched(data, batch_size, start_index)):
 
         start_time = time.time()
