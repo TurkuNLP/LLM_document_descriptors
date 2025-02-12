@@ -598,7 +598,7 @@ def update_descriptor_vocab(
         descriptor_counts.items(), key=lambda item: item[1], reverse=True
     )
     save_descriptors(descriptor_counts_sorted, descs_and_explanations, descriptor_path)
-    count_unique_descriptors(descriptor_counts_sorted, path, run_id)
+    count_unique_descriptors(descs_and_explanations, path, run_id)
 
     # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
@@ -810,6 +810,7 @@ def main(args):
 
         # Save the new results with the new descriptors to a separate file.
         save_results(best_results, base_dir, run_id=run_id + "_syn_replaced", only_best=False)
+        logging.info("Results saved.")
 
         end_time = time.time()
 
