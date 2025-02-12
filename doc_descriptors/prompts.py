@@ -186,7 +186,7 @@ Your task is to analyze the list and decide whether all words are sufficiently s
    - The name of the group should be central to the meaning of the group, i.e., all words in the group should be synonymous with the name. 
 
 4. **Output Format:**
-   - Present your results as a list of groups. Each group should be numbered.
+   - Present your results as a list of groups. Each group should be named.
    - Do not modify the words in any way. Each word must appear in exactly one group.
    - Your output should be in JSON format. Do not add any text or explanation outside the JSON object.
     - Example: {{"group_name": [<"word">,

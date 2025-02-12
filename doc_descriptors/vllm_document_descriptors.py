@@ -15,7 +15,7 @@ from random import shuffle
 import argparse
 import re
 import logging
-from pydantic import BaseModel  # type: ignore
+from pydantic import BaseModel, RootModel  # type: ignore
 from pathlib import Path
 from embed import StellaEmbedder
 from utils import (
@@ -231,8 +231,8 @@ def get_response_format(stage):
 
     elif stage == "synonyms":
 
-        class ResponseFormat(BaseModel):
-            __root__: dict[str, list[str]]
+        class ResponseFormat(RootModel):
+            root: dict[str, list[str]]
 
     json_schema = ResponseFormat.model_json_schema()
 
@@ -366,14 +366,17 @@ def synonym_stage(
             descriptors = [line.split("\t")[0] for line in file] + best_descriptors
     except FileNotFoundError:
         descriptors = best_descriptors
+        
     # Embed best descriptors
     embedder = StellaEmbedder()
     embeddings = embedder.embed_descriptors(descriptors)
-    # Combine similar descriptors
+    
+    # Group similar descriptors
     synonyms = find_synonyms(
         descriptors, embeddings, synonym_threshold, save_groups=True
     )
-
+    
+    # Use LLM to evaluate and form final synonyms
     prompts = [
         format_prompt(stage=stage, group_name=group_name, synonyms=syns)
         for group_name, syns in synonyms.items()
@@ -388,12 +391,14 @@ def synonym_stage(
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
+                # If model fails, use the default synonyms generated from embeddings.
                 key = list(synonyms.keys())[idx]
                 values = list(synonyms.values())[idx]
                 validated_outputs.append({key: values})
             else:
                 validated_outputs.append(reformatted)
 
+    # Make dictionary from LLM outputs
     synonyms = {}
     for d in validated_outputs:
         for key, value in d.items():
@@ -402,7 +407,8 @@ def synonym_stage(
             else:
                 synonyms[key] = value
 
-    save_synonym_dict(synonyms, base_dir, run_id)
+    # Replace the original descriptors
+    #save_synonym_dict(synonyms, base_dir, run_id)
     replace_synonyms(synonyms, best_results)
 
     return best_results
@@ -503,7 +509,7 @@ def get_best_descriptors(results):
     return best_descriptors
 
 
-def count_unique_descriptors(vocab, run_id):
+def count_unique_descriptors(vocab, path, run_id):
     """
     Counts the number of unique descriptors in the given vocabulary and appends the count to a results file.
 
@@ -514,7 +520,7 @@ def count_unique_descriptors(vocab, run_id):
     Writes:
         Appends the count of unique descriptors to a file named "descriptor_count_growth_<run_id>.txt" located in the "../results/" directory.
     """
-    with open(f"../results/descriptor_count_growth_{run_id}.txt", "a") as f:
+    with open(path / f"descriptor_count_growth_{run_id}.txt", "a") as f:
         f.write(f"{len(vocab)}\n")
 
 
@@ -634,13 +640,20 @@ def replace_synonyms(synonyms, results):
     # Create a mapping from synonym to its group for fast lookup
     synonym_map = {syn: group for group, members in synonyms.items() for syn in members}
 
+    # Replace synonyms and remove possible duplicates
     for doc in results.values():
         replaced = [synonym_map.get(desc, desc) for desc in doc["general"]]
-        doc["general"] = replaced
+        seen = set()
+        no_dups = []
+        for item in replaced:
+            if item not in seen:
+                no_dups.append(item)
+                seen.add(item)
+        doc["general"] = no_dups
 
 
 def update_descriptor_vocab(
-    results, descriptor_counts, descriptor_path, run_id, max_vocab
+    results, descriptor_counts, descriptor_path, path, run_id, max_vocab
 ):
     # Update the descriptor counts
     for doc in results.values():
@@ -653,7 +666,7 @@ def update_descriptor_vocab(
         descriptor_counts.items(), key=lambda item: item[1], reverse=True
     )
     save_descriptors(descriptor_counts_sorted, descriptor_path)
-    count_unique_descriptors(descriptor_counts_sorted, run_id)
+    count_unique_descriptors(descriptor_counts_sorted, path, run_id)
 
     # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
@@ -815,7 +828,7 @@ def main(args):
 
         # Update the descriptor vocabulary with new descriptors
         descriptor_vocab = update_descriptor_vocab(
-            best_results, descriptor_counts, descriptor_path, run_id, max_vocab
+            best_results, descriptor_counts, descriptor_path, base_dir, run_id, max_vocab
         )
 
         # Now that we have combined similar descriptors,
@@ -842,7 +855,7 @@ def main(args):
             best_results[index]["similarity"] = similarities
 
         # Save the new results with the new descriptors to a separate file.
-        save_results(best_results, run_id=run_id + "_syn_replaced", only_best=False)
+        save_results(best_results, base_dir, run_id=run_id + "_syn_replaced", only_best=False)
 
         end_time = time.time()
 

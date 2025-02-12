@@ -27,7 +27,7 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-srun python3 vllm_document_descriptors.py --run-id="70B_3.3_0_syn-test1" \
+srun python3 vllm_document_descriptors.py --run-id="70B_3.3_0_syn-test3" \
                                           --temperature=0.1 \
                                           --batch-size=10 \
                                           --num-batches=20 \
