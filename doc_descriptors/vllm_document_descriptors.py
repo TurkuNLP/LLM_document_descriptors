@@ -16,6 +16,7 @@ import argparse
 import re
 import logging
 from pydantic import BaseModel  # type: ignore
+from pathlib import Path
 from embed import StellaEmbedder
 from utils import (
     load_documents,
@@ -23,8 +24,8 @@ from utils import (
     initialise_descriptor_vocab,
     init_results,
     save_results,
+    save_synonym_dict
 )
-
 
 # Configure logging
 slurm_job_id = os.environ.get("SLURM_JOB_ID", "default_id")
@@ -346,11 +347,11 @@ def revise_stage(document, rewritten, general, specific, vocab, llm):
     return validated_outputs
 
 
-def synonym_stage(best_results, best_descriptors, synonym_threshold, run_id, llm):
+def synonym_stage(best_results, best_descriptors, synonym_threshold, base_dir, run_id, llm):
     # Load full vocabulary (if it exists) and append it to this round of descriptors
     stage = "synonyms"
     try:
-        with open(f"../results/descriptor_vocab_{run_id}.tsv", "r") as f:
+        with open(base_dir / f"descriptor_vocab_{run_id}.tsv", "r") as f:
             file = f.readlines()
             descriptors = [line.split("\t")[0] for line in file] + best_descriptors
     except FileNotFoundError:
@@ -391,9 +392,11 @@ def synonym_stage(best_results, best_descriptors, synonym_threshold, run_id, llm
             else:
                 synonyms[key] = value
     
+    save_synonym_dict(synonyms, base_dir, run_id)
     replace_synonyms(synonyms, best_results)
 
     return best_results
+
 
 def reformat_output(llm, output):
     """
@@ -692,13 +695,15 @@ def main(args):
     global temperature
     temperature = args.temperature
 
+    base_dir = Path(f"../results") / run_id
+
     logging.info("Loading model...")
     llm = LLM_setup(model, cache_dir)
     logging.info("Loading data...")
     data = load_documents()
 
     if not descriptor_path:
-        descriptor_path = f"../results/descriptor_vocab_{run_id}.tsv"
+        descriptor_path = base_dir / f"descriptor_vocab_{run_id}.tsv"
     descriptor_counts = initialise_descriptor_vocab(
         use_previous_descriptors, descriptor_path
     )
@@ -720,8 +725,7 @@ def main(args):
 
         # Generate initial descriptors for document.
         documents = [doc["text"] for doc in batch]
-        stage = "initial"
-        logging.info(f"Stage: {stage}.")
+        logging.info("Stage: initial.")
         model_outputs = initial_stage(documents, descriptor_vocab, llm)
 
         # Extract output and append to results.
@@ -739,8 +743,7 @@ def main(args):
         # After the rewrite, we revise the descriptors to create an even better rewrite.
         for round_num in range(num_rewrites):
             # Rewrite doc based on the descriptors.
-            stage = "rewrite"
-            logging.info(f"Stage: {stage} {round_num+1}.")
+            logging.info(f"Stage: rewrite {round_num+1}.")
             model_outputs = rewrite_stage(
                 general_descriptors, specific_descriptors, llm
             )
@@ -756,8 +759,7 @@ def main(args):
                 # Evaluate rewrite and revise descriptors.
                 # This stage is skipped on the last round: since we do not do another rewrite
                 # we do not need another set of descriptors.
-                stage = "revise"
-                logging.info(f"Stage: {stage} {round_num+1}.")
+                logging.info(f"Stage: revise {round_num+1}.")
                 model_outputs = revise_stage(
                     documents,
                     rewrites,
@@ -788,7 +790,7 @@ def main(args):
             )
             results[index]["similarity"].extend(similarities)
 
-        save_results(results, run_id, only_best=False)
+        save_results(results, base_dir, run_id, only_best=False)
         logging.info("Results saved.")
 
         # Get the descriptors that produced the best rewrite
@@ -797,7 +799,7 @@ def main(args):
         best_results = get_best_results(results)
 
         logging.info("Stage: synonyms")
-        best_results = synonym_stage(best_results, best_descriptors, synonym_threshold, run_id, llm)
+        best_results = synonym_stage(best_results, best_descriptors, synonym_threshold, base_dir, run_id, llm)
         
         # Update the descriptor vocabulary with new descriptors
         descriptor_vocab = update_descriptor_vocab(
@@ -806,7 +808,6 @@ def main(args):
 
         # Now that we have combined similar descriptors,
         # we do one more rewrite to see how much is has changed.
-        stage = "rewrite"
         logging.info(f"Generating rewrites after synonym replacement.")
         general_descriptors = [doc["general"] for doc in best_results.values()]
         specific_descriptors = [doc["specific"] for doc in best_results.values()]
@@ -920,16 +921,17 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Create required directories
+    os.makedirs("../logs", exist_ok=True)
+    os.makedirs("../results", exist_ok=True)
+    os.makedirs(f"../results/{args.run_id}", exist_ok=True)
+    
     # Log the run settings
-    with open(f"../results/{args.run_id}_settings.txt", "w") as f:
+    with open(f"../results/{args.run_id}/{args.run_id}_settings.txt", "w") as f:
         f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
         for arg, value in vars(args).items():
             logging.info(f"{arg}: {value}")
             f.write(f"{arg}: {value}\n")
-
-    # Create required directories
-    os.makedirs("../logs", exist_ok=True)
-    os.makedirs("../results", exist_ok=True)
 
     main(args)
     logging.info("Done.")

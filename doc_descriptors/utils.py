@@ -27,9 +27,7 @@ def save_results(results, path, run_id, only_best=True):
                 doc_copy = copy.deepcopy(doc)  # Create a deep copy of the one set of results
                 best_index = doc_copy["similarity"].index(max(doc_copy["similarity"]))
                 doc_copy["general"] = doc_copy["general"][best_index]
-                doc_copy["general_explanations"] = doc_copy["general_explanations"][best_index]
                 doc_copy["specific"] = doc_copy["specific"][best_index]
-                doc_copy["specific_explanations"] = doc_copy["specific_explanations"][best_index]
                 doc_copy["rewrite"] = (
                     doc_copy["rewrite"][best_index]
                     .encode("utf-8", errors="ignore")
@@ -46,7 +44,7 @@ def save_results(results, path, run_id, only_best=True):
                 f.write(json_line + "\n")
                 
 
-def save_descriptors(desc_counts, descs_and_explanations, path):
+def save_descriptors(desc_counts, path):
     """
     Save vocabulary descriptors and their frequencies to a file.
 
@@ -59,11 +57,7 @@ def save_descriptors(desc_counts, descs_and_explanations, path):
     """
     with open(path, "w", encoding="utf8") as f:
         for desc, freq in desc_counts:
-            for pair in descs_and_explanations:
-                if desc in pair:
-                    exp = pair[1].strip()
-                    f.write(f"{freq}\t{desc}\t{exp}\n")
-                    break
+            f.write(f"{desc}\t{freq}\n")
             
 
 def load_documents(source="40k"):
@@ -97,9 +91,7 @@ def init_results(batch):
             "document": doc["text"],
             "doc_id": doc["id"],
             "general": [],
-            "general_explanations": [],
             "specific": [],
-            "specific_explanations": [],
             "rewrite": [],
             "similarity": [],
         }
@@ -127,10 +119,17 @@ def initialise_descriptor_vocab(use_previous_descriptors, path):
                 file = f.readlines()
                 for line in file:
                     line = line.strip().split("\t")
-                    freq, desc, exp = line
+                    desc, freq = line
                     descriptors[desc] = int(freq)
             return descriptors
         except FileNotFoundError:
             return descriptors
     else:
         return descriptors
+    
+    
+def save_synonym_dict(groups, path, run_id):
+    # Save groups for later inspection
+    with open(path / f"synonyms_{run_id}.jsonl", "a") as f:
+        json_line = json.dumps(groups, ensure_ascii=False, indent=4)
+        f.write(json_line + "\n")
