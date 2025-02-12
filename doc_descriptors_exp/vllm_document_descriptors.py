@@ -16,6 +16,7 @@ import argparse
 import re
 import logging
 from pydantic import BaseModel  # type: ignore
+from pathlib import Path
 from embed import StellaEmbedder
 from utils import (
     load_documents,
@@ -103,7 +104,7 @@ def calculate_doc_similarity(original, rewrite, cache):
 
 
 def format_prompt(
-    stage, original=None, rewritten=None, general=None, specific=None, vocab=None
+    stage, original=None, rewritten=None, general=None, specific=None, vocab=None, synonyms=None,
 ):
     """
     Formats a prompt message based on the given stage and parameters.
@@ -123,10 +124,12 @@ def format_prompt(
         message = prompts.initial_prompt(original, vocab)
     elif stage == "rewrite":
         message = prompts.rewrite_prompt(general, specific)
-    else:
+    elif stage == "revise":
         message = prompts.revise_keyphrases_prompt(
             original, rewritten, general, specific, vocab
         )
+    elif stage == "synonyms":
+        message = prompts.review_synonyms(synonyms)
     return message
 
 
@@ -202,23 +205,25 @@ def get_response_format(stage):
     Returns:
         GuidedDecodingParams: An object containing the JSON schema for the response format.
     """
+    
     if stage == "initial":
-
         class ResponseFormat(BaseModel):
             general: list[str]
             specific: list[str]
 
     elif stage == "rewrite":
-
         class ResponseFormat(BaseModel):
             document: str
 
-    else:
-
+    elif stage == "revise":
         class ResponseFormat(BaseModel):
             differences: str
             general: list[str]
             specific: list[str]
+            
+    elif stage == "synonyms":
+        class ResponseFormat(BaseModel):
+            __root__: dict[str, list[str]]
 
     json_schema = ResponseFormat.model_json_schema()
 
@@ -257,11 +262,7 @@ def initial_stage(stage, documents, vocab, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(
-                    json.loads(
-                        '{"general": ["Generation failed"], "specific": ["Generation failed"]}'
-                    )
-                )
+                validated_outputs.append({})
             else:
                 validated_outputs.append(reformatted)
 
@@ -294,9 +295,7 @@ def rewrite_stage(stage, general, specific, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(
-                    json.loads('{"document": "Generation failed."}')
-                )
+                validated_outputs.append({})
             else:
                 validated_outputs.append(reformatted)
 
@@ -337,11 +336,7 @@ def revise_stage(stage, document, rewritten, general, specific, vocab, llm):
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
-                validated_outputs.append(
-                    json.loads(
-                        '{"general": ["Generation failed"], "specific": ["Generation failed"]}'
-                    )
-                )
+                validated_outputs.append({})
             else:
                 validated_outputs.append(reformatted)
 
@@ -436,14 +431,16 @@ def validate_output(output):
 
 def get_best_descriptors(results):
     best_descriptors = []
+    explanations = []
     for doc in results.values():
         best_index = doc["similarity"].index(max(doc["similarity"]))
         best_descriptors.extend(doc["general"][best_index])
+        explanations.extend(doc["general_explanations"][best_index])
 
-    return best_descriptors
+    return best_descriptors, explanations
 
 
-def count_unique_descriptors(vocab, run_id):
+def count_unique_descriptors(vocab, path, run_id):
     """
     Counts the number of unique descriptors in the given vocabulary and appends the count to a results file.
 
@@ -454,7 +451,7 @@ def count_unique_descriptors(vocab, run_id):
     Writes:
         Appends the count of unique descriptors to a file named "descriptor_count_growth_<run_id>.txt" located in the "../results/" directory.
     """
-    with open(f"../results/descriptor_count_growth_{run_id}.txt", "a") as f:
+    with open(path / f"descriptor_count_growth_{run_id}.txt", "a") as f:
         f.write(f"{len(vocab)}\n")
 
 
@@ -475,7 +472,7 @@ def return_top_descriptors(descriptor_counts_sorted, max_vocab):
         return [desc[0] for desc in descriptor_counts_sorted][:max_vocab]
 
 
-def batched(data, batch_size, start_index):
+def batched(data, batch_size, start_index=0):
     """
     Generator function that yields batches of data from a given start index.
 
@@ -512,19 +509,20 @@ def get_best_results(results):
     return results
 
 
-def find_synonyms(descriptors, embeddings, distance_threshold, save_groups=False):
+def find_synonyms(stage, llm, descriptors, explanations, embeddings, distance_threshold):
     """
     Groups similar words based on their embeddings using hierarchical clustering.
     The most central word in each group is chosen as the representative.
 
     Parameters:
         descriptors (list): List of words/descriptors.
+        explanations (list): Corresponding explanations for each descriptor.
         embeddings (list or np.array): Corresponding word embedding vectors.
         distance_threshold (float): Threshold for forming clusters (lower = stricter grouping).
 
     Returns:
         dict: A dictionary where keys are the most central word (medoid) in each group,
-              and values are lists of words grouped as synonyms.
+              and values are lists of tuples (word, explanation).
     """
 
     # Convert embeddings to NumPy array if needed
@@ -532,10 +530,13 @@ def find_synonyms(descriptors, embeddings, distance_threshold, save_groups=False
 
     # Identify and remove zero vectors
     valid_indices = [i for i, vec in enumerate(embeddings) if np.linalg.norm(vec) > 0]
+    if len(valid_indices) < len(embeddings):
+        logging.warning("Some embeddings are zero vectors and have been removed.")
 
     descriptors = [descriptors[i] for i in valid_indices]
+    explanations = [explanations[i] for i in valid_indices]
     embeddings = embeddings[valid_indices]
-
+    
     # Perform Agglomerative Clustering
     clustering = AgglomerativeClustering(
         n_clusters=None,
@@ -549,30 +550,34 @@ def find_synonyms(descriptors, embeddings, distance_threshold, save_groups=False
     groups = {}
     for idx, label in enumerate(labels):
         groups.setdefault(label, []).append(idx)
-
+       
     # Find the medoid for each group
     group_dict = {}
+    medoid_words_and_explanations = []
     for label, indices in groups.items():
         group_vectors = embeddings[indices]
         distance_matrix = cdist(group_vectors, group_vectors, metric="cosine")
         medoid_index = np.argmin(np.sum(distance_matrix, axis=1))
         medoid_word = descriptors[indices[medoid_index]]
-
+        medoid_explanation = explanations[indices[medoid_index]]
+        medoid_words_and_explanations.append([medoid_word, medoid_explanation])
+        
         # Store the group with the medoid as the key
-        group_dict[medoid_word] = [descriptors[idx] for idx in indices]
+        group_dict[medoid_word] = [(descriptors[idx], explanations[idx]) for idx in indices]
+        
+    return group_dict, medoid_words_and_explanations
 
-    if save_groups:
-        # Save groups for later inspection
-        with open("../results/synonyms.json", "a") as f:
-            f.write(json.dumps(group_dict, ensure_ascii=False, indent=4))
-            f.write("========================================\n")
 
-    return group_dict
+def save_synonym_dict(groups, path, run_id):
+    # Save groups for later inspection
+    with open(path / f"synonyms_{run_id}.jsonl", "a") as f:
+        json_line = json.dumps(groups, ensure_ascii=False, indent=4)
+        f.write(json_line + "\n")
 
 
 def replace_synonyms(synonyms, results):
     # Create a mapping from synonym to its group for fast lookup
-    synonym_map = {syn: group for group, members in synonyms.items() for syn in members}
+    synonym_map = {syn[0]: group for group, members in synonyms.items() for syn in members}
 
     for doc in results.values():
         replaced = [synonym_map.get(desc, desc) for desc in doc["general"]]
@@ -580,7 +585,7 @@ def replace_synonyms(synonyms, results):
 
 
 def update_descriptor_vocab(
-    results, descriptor_counts, descriptor_path, run_id, max_vocab
+    results, descs_and_explanations, descriptor_counts, descriptor_path, path, run_id, max_vocab
 ):
     # Update the descriptor counts
     for doc in results.values():
@@ -592,8 +597,8 @@ def update_descriptor_vocab(
     descriptor_counts_sorted = sorted(
         descriptor_counts.items(), key=lambda item: item[1], reverse=True
     )
-    save_descriptors(descriptor_counts_sorted, descriptor_path)
-    count_unique_descriptors(descriptor_counts_sorted, run_id)
+    save_descriptors(descriptor_counts_sorted, descs_and_explanations, descriptor_path)
+    count_unique_descriptors(descs_and_explanations, path, run_id)
 
     # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
     descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
@@ -644,6 +649,8 @@ def main(args):
     synonym_threshold = args.synonym_threshold
     global temperature
     temperature = args.temperature
+    
+    base_dir = Path(f"../results") / run_id
 
     logging.info("Loading model...")
     llm = LLM_setup(model, cache_dir)
@@ -651,7 +658,7 @@ def main(args):
     data = load_documents()
 
     if not descriptor_path:
-        descriptor_path = f"../results/descriptor_vocab_{run_id}.tsv"
+        descriptor_path = base_dir / f"descriptor_vocab_{run_id}.tsv"
     descriptor_counts = initialise_descriptor_vocab(
         use_previous_descriptors, descriptor_path
     )
@@ -676,20 +683,22 @@ def main(args):
         stage = "initial"
         logging.info(f"Stage: {stage}.")
         model_outputs = initial_stage(stage, documents, descriptor_vocab, llm)
-
+        
         # Extract output and append to results.
-        general_descriptors = [
-            output.get("general", "Generation failed.") for output in model_outputs
-        ]
-        specific_descriptors = [
-            output.get("specific", "Generation failed.") for output in model_outputs
-        ]
+        general_descriptors = [[desc.split(":")[0].strip() for desc in out.get("general", ["Generation failed.: Generation failed."])] for out in model_outputs]
+        general_explanations = [[desc.split(":")[1].strip() for desc in out.get("general", ["Generation failed.: Generation failed."])] for out in model_outputs]
+        specific_descriptors = [[desc.split(":")[0].strip() for desc in out.get("specific", ["Generation failed.: Generation failed."])] for out in model_outputs]
+        specific_explanations = [[desc.split(":")[1].strip() for desc in out.get("specific", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                
         for index in results:
             results[index]["general"].append(general_descriptors[index])
+            results[index]["general_explanations"].append(general_explanations[index])
             results[index]["specific"].append(specific_descriptors[index])
+            results[index]["specific_explanations"].append(specific_explanations[index])
 
         # Generate num_rewrites rewrites of the document based on descriptors.
         # After the rewrite, we revise the descriptors to create an even better rewrite.
+        
         for round_num in range(num_rewrites):
             # Rewrite doc based on the descriptors.
             stage = "rewrite"
@@ -699,12 +708,10 @@ def main(args):
             )
 
             # Extract output and append to results.
-            rewrites = [
-                output.get("document", "Generation failed.") for output in model_outputs
-            ]
+            rewrites = [out.get("document", "Generation failed") for out in model_outputs]
             for index in results:
                 results[index]["rewrite"].append(rewrites[index])
-
+            
             if not round_num == num_rewrites - 1:
                 # Evaluate rewrite and revise descriptors.
                 # This stage is skipped on the last round: since we do not do another rewrite
@@ -722,17 +729,16 @@ def main(args):
                 )
 
                 # Extract output and append to results.
-                general_descriptors = [
-                    output.get("general", "Generation failed.")
-                    for output in model_outputs
-                ]
-                specific_descriptors = [
-                    output.get("specific", "Generation failed.")
-                    for output in model_outputs
-                ]
+                general_descriptors = [[desc.split(":")[0].strip() for desc in out.get("general", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                general_explanations = [[desc.split(":")[1].strip() for desc in out.get("general", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                specific_descriptors = [[desc.split(":")[0].strip() for desc in out.get("specific", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                specific_explanations = [[desc.split(":")[1].strip() for desc in out.get("specific", ["Generation failed.: Generation failed."])] for out in model_outputs]
+                
                 for index in results:
                     results[index]["general"].append(general_descriptors[index])
+                    results[index]["general_explanations"].append(general_explanations[index])
                     results[index]["specific"].append(specific_descriptors[index])
+                    results[index]["specific_explanations"].append(specific_explanations[index])
 
         # Calculate similarity between rewrites and original.
         # Append to results.
@@ -742,34 +748,38 @@ def main(args):
             )
             results[index]["similarity"].extend(similarities)
 
-        save_results(results, run_id, only_best=False)
+        save_results(results, base_dir, run_id, only_best=False)
         logging.info("Results saved.")
 
-        # Get the descriptors that produced the best rewrite
-        best_descriptors = get_best_descriptors(results)
+        # Get the descriptors that produced the best rewrite and their explanations
+        best_descriptors, explanations = get_best_descriptors(results)
         # Get all results from the round that produced the best rewrite
         best_results = get_best_results(results)
 
-        logging.info("Combining synonymous descriptors.")
+        stage = "synonyms"
+        logging.info(f"Stage: {stage}.")
         # Load full vocabulary (if it exists) and append it to this round of descriptors
         try:
-            with open(f"../results/descriptor_vocab_{run_id}.tsv", "r") as f:
+            with open(base_dir / f"descriptor_vocab_{run_id}.tsv", "r") as f:
                 file = f.readlines()
-                descriptors = [line.split("\t")[0] for line in file] + best_descriptors
+                descriptors = [line.split("\t")[1] for line in file] + best_descriptors
+                explanations = [line.split("\t")[2] for line in file] + explanations
         except FileNotFoundError:
             descriptors = best_descriptors
         # Embed best descriptors
         embedder = StellaEmbedder()
-        embeddings = embedder.embed_descriptors(descriptors)
+        embeddings = embedder.embed_descriptors([desc + ": " + exp for desc, exp in zip(descriptors, explanations)])
         # Combine similar descriptors
-        synonyms = find_synonyms(
-            descriptors, embeddings, synonym_threshold, save_groups=True
+        synonyms, descs_and_explanations = find_synonyms(
+            stage, llm, descriptors, explanations, embeddings, synonym_threshold,
         )
+        # Save synonyms for later inspection
+        save_synonym_dict(synonyms, base_dir, run_id)
         replace_synonyms(synonyms, best_results)
 
         # Update the descriptor vocabulary with new descriptors
         descriptor_vocab = update_descriptor_vocab(
-            best_results, descriptor_counts, descriptor_path, run_id, max_vocab
+            best_results, descs_and_explanations, descriptor_counts, descriptor_path, base_dir, run_id, max_vocab
         )
 
         # Now that we have combined similar descriptors,
@@ -799,7 +809,8 @@ def main(args):
             best_results[index]["similarity"] = similarities
 
         # Save the new results with the new descriptors to a separate file.
-        save_results(best_results, run_id=run_id + "_syn_replaced", only_best=False)
+        save_results(best_results, base_dir, run_id=run_id + "_syn_replaced", only_best=False)
+        logging.info("Results saved.")
 
         end_time = time.time()
 
@@ -888,16 +899,17 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Create required directories
+    os.makedirs("../logs", exist_ok=True)
+    os.makedirs("../results", exist_ok=True)
+    os.makedirs(f"../results/{args.run_id}", exist_ok=True)
+    
     # Log the run settings
-    with open(f"../results/{args.run_id}_settings.txt", "w") as f:
+    with open(f"../results/{args.run_id}/{args.run_id}_settings.txt", "w") as f:
         f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
         for arg, value in vars(args).items():
             logging.info(f"{arg}: {value}")
             f.write(f"{arg}: {value}\n")
-
-    # Create required directories
-    os.makedirs("../logs", exist_ok=True)
-    os.makedirs("../results", exist_ok=True)
 
     main(args)
     logging.info("Done.")
