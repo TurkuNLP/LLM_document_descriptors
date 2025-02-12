@@ -216,9 +216,10 @@ def reformat_output_prompt(invalid_json):
 
 ###Instructions
 
-You will be provided with a JSON string that contains formatting errors, making it invalid. Your task is to correct the JSON string so that it can be successfully parsed in Python using json.loads().
+You will be provided with a JSON object that contains formatting errors, making it invalid. Your task is to correct the JSON string so that it can be successfully parsed in Python using json.loads().
 
     - Do not alter the content or structure of the data within the JSON, except as necessary to fix formatting issues (e.g., missing commas, unmatched brackets, incorrect quotes).
+    - If there are more than 50 items in the JSON object, you can truncate it.
     - If there is any extraneous text or preamble outside the JSON object, remove it entirely.
     - Ensure the corrected output adheres strictly to JSON standards.
     - Output only the corrected JSON string—do not include any explanations, commentary, or additional text.
@@ -228,7 +229,5 @@ You will be provided with a JSON string that contains formatting errors, making 
               "role": "user",
               "content": f"""
 {invalid_json}
-
-The corrected JSON looks like this:
 """
             }]
