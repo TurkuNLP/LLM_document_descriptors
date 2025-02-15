@@ -56,8 +56,8 @@ def save_descriptors(desc_counts, path):
         A tab-separated file with each line containing a descriptor and its frequency.
     """
     with open(path, "w", encoding="utf8") as f:
-        for desc, freq in desc_counts.items():
-            f.write(f"{desc}\t{freq}\n")
+        for item in desc_counts.most_common():
+            f.write(f"{item[0]}\t{item[1]}\n")
             
 
 def load_documents(source="40k"):
