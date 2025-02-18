@@ -385,21 +385,25 @@ def synonym_stage(
     ]
     
     json_schema = get_response_format(stage)
-    batched_outputs = generate(llm, prompts, json_schema)
+    
+    # Since the number of synonym groups can grow quite large,
+    # we split the prompts into batches
     validated_outputs = []
-    for idx, output in enumerate(batched_outputs):
-        valid_json = validate_output(output)
-        if valid_json:
-            validated_outputs.append(json.loads(output, strict=False))
-        else:
-            reformatted = reformat_output(llm, output)
-            if reformatted == "FAIL":
-                # If model fails, use the default synonyms generated from embeddings.
-                key = list(synonyms.keys())[idx]
-                values = list(synonyms.values())[idx]
-                validated_outputs.append({key: values})
+    for prompt_batch in batched(prompts, batch_size=200, start_index=0):
+        batched_outputs = generate(llm, prompt_batch, json_schema)
+        for idx, output in enumerate(batched_outputs):
+            valid_json = validate_output(output)
+            if valid_json:
+                validated_outputs.append(json.loads(output, strict=False))
             else:
-                validated_outputs.append(reformatted)
+                reformatted = reformat_output(llm, output)
+                if reformatted == "FAIL":
+                    # If model fails, use the default synonyms generated from embeddings.
+                    key = list(synonyms.keys())[idx]
+                    values = list(synonyms.values())[idx]
+                    validated_outputs.append({key: values})
+                else:
+                    validated_outputs.append(reformatted)
 
     # Make dictionary from LLM outputs
     synonyms = {}
@@ -844,11 +848,12 @@ def main(args):
 
         # Stop run after num_batches batches have been processed.
         # If -1, we continue until we run out of data or time.
-        if num_batches == -1:
+        if num_batches == -1 and (batch_num+1) * batch_size < len(data):
             continue
-        elif batch_num + 1 >= num_batches:
-            # Now that we have combined similar descriptors,
-            # we do one more rewrite to see how much is has changed.
+        
+        # When we have processed all batches or all data,
+        # we do one more rewrite to see how much has changed due to synonym replacement.
+        elif batch_num + 1 >= num_batches or (batch_num+1) * batch_size >= len(data):
             logging.info(f"Generating rewrites with final descriptor set.")
             with open(base_dir / f"descriptors_{run_id}_syn_replaced.jsonl", "r") as f:
                 results = {}
@@ -856,24 +861,26 @@ def main(args):
                 for idx, doc in enumerate(file):
                     results[idx] = doc
             
-            general_descriptors = []
-            specific_descriptors = []
-            for index in results:
-                general_descriptors.append(results[index]["general"])
-                specific_descriptors.append(results[index]["specific"])
-        
-            model_outputs = rewrite_stage(general_descriptors, specific_descriptors, llm)
-            rewrites = [
-                output.get("document", "Generation failed.") for output in model_outputs
-            ]
-            for index in results:
-                results[index]["rewrite"].append(rewrites[index])
+            # Process in batches of batch_size
+            for batch in batched(results, batch_size, start_index=0):
+                general_descriptors = []
+                specific_descriptors = []
+                for index in batch:
+                    general_descriptors.append(results[index]["general"])
+                    specific_descriptors.append(results[index]["specific"])
             
-            for index in results:
-                similarities = calculate_doc_similarity(
-                    results[index]["document"], results[index]["rewrite"], cache_dir
-                )
-                results[index]["similarity"].extend(similarities)
+                model_outputs = rewrite_stage(general_descriptors, specific_descriptors, llm)
+                rewrites = [
+                    output.get("document", "Generation failed.") for output in model_outputs
+                ]
+                for index in batch:
+                    results[index]["rewrite"].append(rewrites[index])
+                
+                for index in batch:
+                    similarities = calculate_doc_similarity(
+                        results[index]["document"], results[index]["rewrite"], cache_dir
+                    )
+                    results[index]["similarity"].extend(similarities)
 
             with open(base_dir / f"descriptors_{run_id}_syn_replaced.jsonl", "w") as f:
                 for doc in results.values():
