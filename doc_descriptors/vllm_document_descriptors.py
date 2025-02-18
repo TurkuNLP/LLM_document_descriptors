@@ -15,9 +15,11 @@ from random import shuffle
 import argparse
 import re
 import logging
-from pydantic import BaseModel  # type: ignore
+from pydantic import BaseModel, RootModel  # type: ignore
 from pathlib import Path
 from embed import StellaEmbedder
+import pandas as pd # type: ignore
+from collections import Counter
 from utils import (
     load_documents,
     save_descriptors,
@@ -231,8 +233,8 @@ def get_response_format(stage):
 
     elif stage == "synonyms":
 
-        class ResponseFormat(BaseModel):
-            __root__: dict[str, list[str]]
+        class ResponseFormat(RootModel):
+            root: dict[str, list[str]]
 
     json_schema = ResponseFormat.model_json_schema()
 
@@ -366,18 +368,22 @@ def synonym_stage(
             descriptors = [line.split("\t")[0] for line in file] + best_descriptors
     except FileNotFoundError:
         descriptors = best_descriptors
+        
     # Embed best descriptors
     embedder = StellaEmbedder()
     embeddings = embedder.embed_descriptors(descriptors)
-    # Combine similar descriptors
+    
+    # Group similar descriptors
     synonyms = find_synonyms(
-        descriptors, embeddings, synonym_threshold, save_groups=True
+        descriptors, embeddings, synonym_threshold, save_groups=False
     )
-
+    
+    # Use LLM to evaluate and form final synonyms
     prompts = [
         format_prompt(stage=stage, group_name=group_name, synonyms=syns)
-        for group_name, syns in synonyms.item()
+        for group_name, syns in synonyms.items()
     ]
+    
     json_schema = get_response_format(stage)
     batched_outputs = generate(llm, prompts, json_schema)
     validated_outputs = []
@@ -388,12 +394,14 @@ def synonym_stage(
         else:
             reformatted = reformat_output(llm, output)
             if reformatted == "FAIL":
+                # If model fails, use the default synonyms generated from embeddings.
                 key = list(synonyms.keys())[idx]
                 values = list(synonyms.values())[idx]
                 validated_outputs.append({key: values})
             else:
                 validated_outputs.append(reformatted)
 
+    # Make dictionary from LLM outputs
     synonyms = {}
     for d in validated_outputs:
         for key, value in d.items():
@@ -402,9 +410,26 @@ def synonym_stage(
             else:
                 synonyms[key] = value
 
+    # Replace the original descriptors
     save_synonym_dict(synonyms, base_dir, run_id)
     replace_synonyms(synonyms, best_results)
+    
+    # Also update the descriptors of previously processed and saved documents
+    try:
+        with open(base_dir / f"descriptors_{run_id}_syn_replaced.jsonl", "r") as f:
+            prev_results = {}
+            file = [json.loads(line.strip()) for line in f.readlines()]
+            for idx, doc in enumerate(file):
+                prev_results[idx] = doc
 
+        replace_synonyms(synonyms, prev_results)
+        with open(base_dir / f"descriptors_{run_id}_syn_replaced.jsonl", "w") as f:
+            for doc in prev_results.values():
+                json_line = json.dumps(doc, ensure_ascii=False)
+                f.write(json_line + "\n")
+    except FileNotFoundError:
+        pass
+    
     return best_results
 
 
@@ -503,7 +528,7 @@ def get_best_descriptors(results):
     return best_descriptors
 
 
-def count_unique_descriptors(vocab, run_id):
+def log_descriptor_growth(vocab, path, run_id):
     """
     Counts the number of unique descriptors in the given vocabulary and appends the count to a results file.
 
@@ -514,25 +539,8 @@ def count_unique_descriptors(vocab, run_id):
     Writes:
         Appends the count of unique descriptors to a file named "descriptor_count_growth_<run_id>.txt" located in the "../results/" directory.
     """
-    with open(f"../results/descriptor_count_growth_{run_id}.txt", "a") as f:
+    with open(path / f"descriptor_count_growth_{run_id}.txt", "a") as f:
         f.write(f"{len(vocab)}\n")
-
-
-def return_top_descriptors(descriptor_counts_sorted, max_vocab):
-    """
-    Returns the top descriptors from a sorted list of descriptor counts.
-
-    Args:
-        descriptor_counts_sorted (list of tuples): A list of tuples where each tuple contains a descriptor and its count, sorted by count in descending order.
-        max_vocab (int): The maximum number of descriptors to return. If -1, all descriptors are returned.
-
-    Returns:
-        list: A list of the top descriptors, limited by max_vocab if specified.
-    """
-    if max_vocab == -1:
-        return [desc[0] for desc in descriptor_counts_sorted]
-    else:
-        return [desc[0] for desc in descriptor_counts_sorted][:max_vocab]
 
 
 def batched(data, batch_size, start_index):
@@ -619,13 +627,13 @@ def find_synonyms(descriptors, embeddings, distance_threshold, save_groups=False
         medoid_word = descriptors[indices[medoid_index]]
 
         # Store the group with the medoid as the key
-        group_dict[medoid_word] = [descriptors[idx] for idx in indices]
+        # Remove duplicates in each group
+        group_dict[medoid_word] = list(set([descriptors[idx] for idx in indices]))
 
     if save_groups:
         # Save groups for later inspection
-        with open("../results/synonyms.json", "a") as f:
-            f.write(json.dumps(group_dict, ensure_ascii=False, indent=4))
-            f.write("========================================\n")
+        with open("../results/synonyms.jsonl", "a") as f:
+            f.write(json.dumps(group_dict, ensure_ascii=False)+"\n")
 
     return group_dict
 
@@ -634,29 +642,32 @@ def replace_synonyms(synonyms, results):
     # Create a mapping from synonym to its group for fast lookup
     synonym_map = {syn: group for group, members in synonyms.items() for syn in members}
 
+    # Replace synonyms and remove possible duplicates
     for doc in results.values():
         replaced = [synonym_map.get(desc, desc) for desc in doc["general"]]
-        doc["general"] = replaced
+        seen = set()
+        no_dups = []
+        for item in replaced:
+            if item not in seen:
+                no_dups.append(item)
+                seen.add(item)
+        doc["general"] = no_dups
 
 
 def update_descriptor_vocab(
-    results, descriptor_counts, descriptor_path, run_id, max_vocab
+    results, descriptor_path, path, run_id, max_vocab
 ):
-    # Update the descriptor counts
-    for doc in results.values():
-        for desc in doc["general"]:
-            descriptor_counts[desc] += 1
+    results = pd.read_json(path /f"descriptors_{run_id}_syn_replaced.jsonl", lines=True, orient='records')
+    desc_counts = Counter()
+    for descs in results["general"].to_list():
+        desc_counts.update(descs)
 
-    # Sort descriptors by their frequency.
-    # This creates a sorted list of tuples (descriptor, count)
-    descriptor_counts_sorted = sorted(
-        descriptor_counts.items(), key=lambda item: item[1], reverse=True
-    )
-    save_descriptors(descriptor_counts_sorted, descriptor_path)
-    count_unique_descriptors(descriptor_counts_sorted, run_id)
+    save_descriptors(desc_counts, descriptor_path)
+    log_descriptor_growth(desc_counts, path, run_id)
 
     # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
-    descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
+    descriptor_vocab = desc_counts.most_common(max_vocab) if max_vocab != -1 else desc_counts.most_common()
+    descriptor_vocab = [item[0] for item in descriptor_vocab]
     # Shuffle the list of descriptors to avoid ordering bias
     shuffle(descriptor_vocab)
 
@@ -709,23 +720,21 @@ def main(args):
 
     logging.info("Loading model...")
     llm = LLM_setup(model, cache_dir)
-    logging.info("Loading data...")
+    logging.info("Model loaded.")
     data = load_documents()
+    logging.info("Data loaded.")
 
     if not descriptor_path:
         descriptor_path = base_dir / f"descriptor_vocab_{run_id}.tsv"
     descriptor_counts = initialise_descriptor_vocab(
         use_previous_descriptors, descriptor_path
     )
-    # Keep the top 100 general descriptors. These will be given to the model as possible options.
-    descriptor_counts_sorted = sorted(
-        descriptor_counts.items(), key=lambda item: item[1], reverse=True
-    )
-    descriptor_vocab = return_top_descriptors(descriptor_counts_sorted, max_vocab)
+    # Keep the top max_vocab general descriptors. These will be given to the model as possible options.
+    descriptor_vocab = descriptor_counts.most_common(max_vocab) if max_vocab != -1 else descriptor_counts.most_common()
+    descriptor_vocab = [item[0] for item in descriptor_vocab]
     # Shuffle the list of descriptors to avoid ordering bias
     shuffle(descriptor_vocab)
-
-    logging.info("Starting document processing pipeline...")
+    
     for batch_num, batch in enumerate(batched(data, batch_size, start_index)):
 
         start_time = time.time()
@@ -813,37 +822,19 @@ def main(args):
             best_results, best_descriptors, synonym_threshold, base_dir, run_id, llm
         )
 
+        # Save the new results with the new descriptors to a separate file.
+        # Empty "rewrite" and "similarity" since they refer to text and scores
+        # generated with the old descriptors.
+        for index in best_results:
+            best_results[index]["rewrite"] = []
+            best_results[index]["similarity"] = []
+        save_results(best_results, base_dir, run_id=run_id + "_syn_replaced", only_best=False)
+        
         # Update the descriptor vocabulary with new descriptors
         descriptor_vocab = update_descriptor_vocab(
-            best_results, descriptor_counts, descriptor_path, run_id, max_vocab
+            best_results, descriptor_path, base_dir, run_id, max_vocab
         )
-
-        # Now that we have combined similar descriptors,
-        # we do one more rewrite to see how much is has changed.
-        logging.info(f"Generating rewrites after synonym replacement.")
-        general_descriptors = [doc["general"] for doc in best_results.values()]
-        specific_descriptors = [doc["specific"] for doc in best_results.values()]
-        model_outputs = rewrite_stage(general_descriptors, specific_descriptors, llm)
-
-        # Extract rewrites and append to best_results.
-        rewrites = [
-            output.get("document", "Generation failed.") for output in model_outputs
-        ]
-        for index in best_results:
-            best_results[index]["rewrite"] = [rewrites[index]]
-
-        # Get similarity score between original and rewrite and append to best_results.
-        for index in best_results:
-            similarities = calculate_doc_similarity(
-                best_results[index]["document"],
-                best_results[index]["rewrite"],
-                cache_dir,
-            )
-            best_results[index]["similarity"] = similarities
-
-        # Save the new results with the new descriptors to a separate file.
-        save_results(best_results, run_id=run_id + "_syn_replaced", only_best=False)
-
+        
         end_time = time.time()
 
         logging.info(
@@ -856,6 +847,40 @@ def main(args):
         if num_batches == -1:
             continue
         elif batch_num + 1 >= num_batches:
+            # Now that we have combined similar descriptors,
+            # we do one more rewrite to see how much is has changed.
+            logging.info(f"Generating rewrites with final descriptor set.")
+            with open(base_dir / f"descriptors_{run_id}_syn_replaced.jsonl", "r") as f:
+                results = {}
+                file = [json.loads(line.strip()) for line in f.readlines()]
+                for idx, doc in enumerate(file):
+                    results[idx] = doc
+            
+            general_descriptors = []
+            specific_descriptors = []
+            for index in results:
+                general_descriptors.append(results[index]["general"])
+                specific_descriptors.append(results[index]["specific"])
+        
+            model_outputs = rewrite_stage(general_descriptors, specific_descriptors, llm)
+            rewrites = [
+                output.get("document", "Generation failed.") for output in model_outputs
+            ]
+            for index in results:
+                results[index]["rewrite"].append(rewrites[index])
+            
+            for index in results:
+                similarities = calculate_doc_similarity(
+                    results[index]["document"], results[index]["rewrite"], cache_dir
+                )
+                results[index]["similarity"].extend(similarities)
+
+            with open(base_dir / f"descriptors_{run_id}_syn_replaced.jsonl", "w") as f:
+                for doc in results.values():
+                    json_line = json.dumps(doc, ensure_ascii=False)
+                    f.write(json_line + "\n")
+
+            logging.info("Final results saved.")
             break
 
 

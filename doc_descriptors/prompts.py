@@ -19,23 +19,19 @@ You will be given a document. Your task is to create a comprehensive list of des
 
 3. Order:
     - Sequence: Order the descriptors in the sequence they appear in the document.
-    
-4. Descriptor explanations:
-    - After each descriptor, add a one or two sentence explanation for what the descriptor describes in the document.
 
-5. Format:
+4. Format:
     - The output must be formatted as a JSON object. Follow this formatting exactly.
-    - Separate the descriptor and its explanation with a colon ":".
     - Never add any preamble or anything else outside the JSON object.
     - Example: {{"general": [
-                            "<descriptor>: <explanation>",
-                            "<descriptor>: <explanation>",
-                            "<descriptor>: <explanation>",
+                            "<descriptor>",
+                            "<descriptor>",
+                            "<descriptor>",
                             ...],
                  "specific": [
-                             "<descriptor>: <explanation>",
-                             "<descriptor>: <explanation>",
-                             "<descriptor>: <explanation>",
+                             "<descriptor>,
+                             "<descriptor>,
+                             "<descriptor>,
                              ...]
                 }}
 
@@ -55,7 +51,7 @@ def rewrite_prompt(general, specific):
 ##Instruction:
 
 You will be given two lists of descriptors:
-- General Descriptors: General Descriptors: Describe the document in aspects including, but not limited to, style, tone, genre, topic, domain, length, language, quality, etc.
+- General Descriptors: Describe the document in aspects including, but not limited to, style, tone, genre, topic, domain, length, language, quality, etc.
 - Specific Descriptors: Describe minute details specific to a document such as individual words and phrases, emphasis, structure, etc.
 
 ##Your Task:
@@ -127,22 +123,20 @@ You will be given:
 3. Completeness: Cover all aspects where the rewritten document deviates from the original.
 4. Conciseness: Do not make the descriptors overly long. They should typically
 not be longer than 3 to 5 words. Do not repeat descriptors.
-5. Descriptor explanations: After each descriptor, add a one or two sentence explanation for what the descriptor describes in the document.
-6. Format:
+5. Format:
     - The output must be formatted as a JSON object. Follow this formatting exactly.
     - Never add any preamble or anything else outside the JSON object.
     - Place double quotes around the discussion about differences.
-    - Separate the descriptor and its explanation with a colon ":".
     - Example: {{"differences": <"differences between original and rewrite">,
                  "general": [
-                            "<descriptor>: <explanation>",
-                            "<descriptor>: <explanation>",
-                            "<descriptor>: <explanation>",
+                            "<descriptor>2,
+                            "<descriptor>",
+                            "<descriptor>",
                             ...],
                  "specific": [
-                             "<descriptor>: <explanation>",
-                             "<descriptor>: <explanation>",
-                             "<descriptor>: <explanation>",
+                             "<descriptor>",
+                             "<descriptor>",
+                             "<descriptor>",
                              ...]
                 }} <|eot_id|><|start_header_id|>user<|end_header_id|>
                 
@@ -192,7 +186,7 @@ Your task is to analyze the list and decide whether all words are sufficiently s
    - The name of the group should be central to the meaning of the group, i.e., all words in the group should be synonymous with the name. 
 
 4. **Output Format:**
-   - Present your results as a list of groups. Each group should be numbered.
+   - Present your results as a list of groups. Each group should be named.
    - Do not modify the words in any way. Each word must appear in exactly one group.
    - Your output should be in JSON format. Do not add any text or explanation outside the JSON object.
     - Example: {{"group_name": [<"word">,
@@ -222,9 +216,10 @@ def reformat_output_prompt(invalid_json):
 
 ###Instructions
 
-You will be provided with a JSON string that contains formatting errors, making it invalid. Your task is to correct the JSON string so that it can be successfully parsed in Python using json.loads().
+You will be provided with a JSON object that contains formatting errors, making it invalid. Your task is to correct the JSON string so that it can be successfully parsed in Python using json.loads().
 
     - Do not alter the content or structure of the data within the JSON, except as necessary to fix formatting issues (e.g., missing commas, unmatched brackets, incorrect quotes).
+    - If there are more than 50 items in the JSON object, you can truncate it.
     - If there is any extraneous text or preamble outside the JSON object, remove it entirely.
     - Ensure the corrected output adheres strictly to JSON standards.
     - Output only the corrected JSON string—do not include any explanations, commentary, or additional text.
@@ -234,7 +229,5 @@ You will be provided with a JSON string that contains formatting errors, making 
               "role": "user",
               "content": f"""
 {invalid_json}
-
-The corrected JSON looks like this:
 """
             }]

@@ -1,6 +1,6 @@
 import json
 from datasets import load_dataset  # type: ignore
-from collections import defaultdict
+from collections import Counter
 import copy
 
 def save_results(results, path, run_id, only_best=True):
@@ -56,8 +56,8 @@ def save_descriptors(desc_counts, path):
         A tab-separated file with each line containing a descriptor and its frequency.
     """
     with open(path, "w", encoding="utf8") as f:
-        for desc, freq in desc_counts:
-            f.write(f"{desc}\t{freq}\n")
+        for item in desc_counts.most_common():
+            f.write(f"{item[0]}\t{item[1]}\n")
             
 
 def load_documents(source="40k"):
@@ -111,7 +111,7 @@ def initialise_descriptor_vocab(use_previous_descriptors, path):
     Returns:
         defaultdict: A dictionary with descriptors as keys and their frequencies as values.
     """
-    descriptors = defaultdict(int)
+    descriptors = Counter()
 
     if use_previous_descriptors:
         try:
@@ -120,7 +120,7 @@ def initialise_descriptor_vocab(use_previous_descriptors, path):
                 for line in file:
                     line = line.strip().split("\t")
                     desc, freq = line
-                    descriptors[desc] = int(freq)
+                    descriptors.update([desc])
             return descriptors
         except FileNotFoundError:
             return descriptors
@@ -131,5 +131,5 @@ def initialise_descriptor_vocab(use_previous_descriptors, path):
 def save_synonym_dict(groups, path, run_id):
     # Save groups for later inspection
     with open(path / f"synonyms_{run_id}.jsonl", "a") as f:
-        json_line = json.dumps(groups, ensure_ascii=False, indent=4)
+        json_line = json.dumps(groups, ensure_ascii=False)
         f.write(json_line + "\n")

@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=vllm_inference
 #SBATCH --account=project_462000353
-#SBATCH --partition=dev-g
-#SBATCH --time=00:39:00
+#SBATCH --partition=standard-g
+#SBATCH --time=6:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=15
@@ -27,15 +27,17 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-srun python3 vllm_document_descriptors.py --run-id="70B_3.3_0_syn-test1" \
+run_id="70B_3.3_4"
+
+srun python3 vllm_document_descriptors.py --run-id=$run_id \
                                           --temperature=0.1 \
-                                          --batch-size=10 \
-                                          --num-batches=20 \
+                                          --batch-size=50 \
+                                          --num-batches=5 \
                                           --num-rewrites=2 \
-                                          --start-index=0 \
+                                          --start-index=4750 \
                                           --max-vocab=50 \
                                           --synonym-threshold=0.3 \
-                                          #--use-previous-descriptors \
-                                          #--descriptor-path="/scratch/project_462000353/tarkkaot/LLM_document_descriptors/results/descriptor_vocab_70B_3.3_0_full-vocab.tsv" \
+                                          --use-previous-descriptors \
+                                          --descriptor-path="../results/$run_id/descriptor_vocab_$run_id.tsv"
 
 gpu-energy --diff
