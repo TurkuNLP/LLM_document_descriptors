@@ -400,12 +400,6 @@ def synonym_stage(
                 validated_outputs.append({key: values})
             else:
                 validated_outputs.append(reformatted)
-    
-    for idx, syns in enumerate(validated_outputs):
-        if len(syns) > 1:
-            logging.info("Synonym group split by LLM:")
-            logging.info(syns)
-            logging.info(list(synonyms.items())[idx])
 
     # Make dictionary from LLM outputs
     synonyms = {}
@@ -664,11 +658,9 @@ def update_descriptor_vocab(
     results, descriptor_path, path, run_id, max_vocab
 ):
     results = pd.read_json(path /f"descriptors_{run_id}_syn_replaced.jsonl", lines=True, orient='records')
-    gen = results["general"].to_list()
     desc_counts = Counter()
-    for l in gen:
-        for item in l:
-            desc_counts.update([item])
+    for descs in results["general"].to_list():
+        desc_counts.update(descs)
 
     save_descriptors(desc_counts, descriptor_path)
     log_descriptor_growth(desc_counts, path, run_id)
@@ -890,6 +882,7 @@ def main(args):
 
             logging.info("Final results saved.")
             break
+
 
 if __name__ == "__main__":
 
