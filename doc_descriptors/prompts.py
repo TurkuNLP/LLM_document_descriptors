@@ -207,27 +207,16 @@ Words:
 
 
 def reformat_output_prompt(invalid_json):
-    # This prompt is in the "chat" format unlike the others, because we call the model with LLM.chat() to reformat outputs.
-    # The other prompts are used with LLM.generate() for batched input.
-
-    return [{
-              "role": "system",
-              "content": """
+    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 ###Instructions
 
 You will be provided with a JSON object that contains formatting errors, making it invalid. Your task is to correct the JSON string so that it can be successfully parsed in Python using json.loads().
 
-    - Do not alter the content or structure of the data within the JSON, except as necessary to fix formatting issues (e.g., missing commas, unmatched brackets, incorrect quotes).
-    - If there are more than 50 items in the JSON object, you can truncate it.
-    - If there is any extraneous text or preamble outside the JSON object, remove it entirely.
-    - Ensure the corrected output adheres strictly to JSON standards.
-    - Output only the corrected JSON string—do not include any explanations, commentary, or additional text.
-    """
-            },
-            {
-              "role": "user",
-              "content": f"""
-{invalid_json}
-"""
-            }]
+- Do not alter the content or structure of the data within the JSON, except as necessary to fix formatting issues (e.g., missing commas, unmatched brackets, incorrect quotes).
+- If there are more than 50 items in the JSON object, you can truncate it.
+- If there is any extraneous text or preamble outside the JSON object, remove it entirely.
+- Ensure the corrected output adheres strictly to JSON standards.
+- Output only the corrected JSON string—do not include any explanations, commentary, or additional text.<|eot_id|><|start_header_id|>user<|end_header_id|>
+    
+{invalid_json}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
