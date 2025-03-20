@@ -9,46 +9,62 @@ import time
 # Get the root logger (inherits settings from main function)
 logger = logging.getLogger(__name__)
 
+def log_execution_time(func):
+    """Decorator that logs the execution time of a function."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        logging.info(f"Execution of {func.__name__} took {time.strftime('%H:%M:%S', time.gmtime(execution_time))}.")
+        return result
+    return wrapper
+        
+
 def save_results(results, path, run_id, only_best=True):
-    """
-    Save the best results from the given results dictionary to a JSONL file.
+    output_file = path / f"descriptors_{run_id}.jsonl"
 
-    This function iterates through the results dictionary, finds the best result
-    based on the highest similarity score, and writes the best result to a JSONL
-    file. The file is named using the provided run_id.
+    with open(output_file, "a", encoding="utf-8") as f:
+        if only_best:
+            best_results = get_best_results(results)
+            for doc in best_results.values():
+                json.dump(doc, f, ensure_ascii=False)
+                f.write("\n")
+        else:
+            for doc in results.values():
+                json.dump(doc, f, ensure_ascii=False)
+                f.write("\n")
 
-    Args:
-        results (dict): A dictionary where keys are document identifiers and values
-                        are dictionaries containing the following keys:
-                        - "general": List of general descriptors.
-                        - "specific": List of specific descriptors.
-                        - "rewrite": List of document rewrites.
-                        - "similarity": List of similarity scores.
-        run_id (str): Identifier for the current run, used to name the output file.
-        only_best (bool): Whether to save all results or only those with best rewrite score.
-    """
-    if only_best:
-        with open(path / f"descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
-            for doc in results.values():
-                doc_copy = copy.deepcopy(doc)  # Create a deep copy of the one set of results
-                best_index = doc_copy["similarity"].index(max(doc_copy["similarity"]))
-                doc_copy["general"] = doc_copy["general"][best_index]
-                doc_copy["specific"] = doc_copy["specific"][best_index]
-                doc_copy["rewrite"] = (
-                    doc_copy["rewrite"][best_index]
-                    .encode("utf-8", errors="ignore")
-                    .decode("utf-8"),
-                )  # Remove possible code breaking chars.
-                doc_copy["similarity"] = doc_copy["similarity"][best_index]
-                json_line = json.dumps(doc_copy, ensure_ascii=False)
-                f.write(json_line + "\n")
-                
-    else:
-        with open(path / f"descriptors_{run_id}.jsonl", "a", encoding="utf8") as f:
-            for doc in results.values():
-                json_line = json.dumps(doc, ensure_ascii=False)
-                f.write(json_line + "\n")
-                
+
+def get_best_results(results):
+    best_results = {}
+    for idx, doc in results.items():
+        # Find index of results with best similarity score
+        best_index = max(range(len(doc["similarity"])), key=doc["similarity"].__getitem__)
+
+        best_results[idx] = {
+            "document": doc["document"],
+            "doc_id": doc["doc_id"],
+            "general": doc["general"][best_index],
+            "specific": doc["specific"][best_index],
+            "rewrite": doc["rewrite"][best_index],
+            "similarity": doc["similarity"][best_index],
+        }
+
+    return best_results
+
+
+def get_best_descriptors(results):
+    best_descriptors = []
+    
+    for doc in results.values():
+        # Find index of descriptors with best similarity score
+        best_index = max(range(len(doc["similarity"])), key=doc["similarity"].__getitem__)
+        best_descriptors.extend(doc["general"][best_index])
+
+    return best_descriptors
+
 
 def save_descriptors(desc_counts, path):
     """
@@ -78,7 +94,7 @@ def load_documents(source, cache):
     """
 
     # Original fineweb sample
-    if source == "original":
+    if source.lower() == "fineweb":
         return load_dataset("HuggingFaceFW/fineweb",
                             name="sample-10BT",
                             split="train",
@@ -86,13 +102,13 @@ def load_documents(source, cache):
                             cache_dir=cache)
 
     # Our 40k sample
-    elif source == "40k":
+    elif source.lower() == "40k":
         with open("../data/fineweb_40k.jsonl", "r") as f:
             lines = f.readlines()
             return [json.loads(line) for line in lines]
         
         
-    elif source =="oscar":
+    elif source.lower() =="core":
         data = []
         with open("../data/en.tsv", "r") as f:
             lines = f.readlines()
@@ -102,7 +118,7 @@ def load_documents(source, cache):
         return data
     
     else:
-        raise ValueError(f"Invalid data source '{source}'. Should be 'original', '40k' or 'oscar'.")
+        raise ValueError(f"Invalid data source '{source}'. Should be 'fineweb', '40k' or 'core'.")
     
     
 def init_results(batch):
@@ -150,18 +166,4 @@ def save_synonym_dict(groups, path, run_id):
     with open(path / f"synonyms_{run_id}.jsonl", "a") as f:
         json_line = json.dumps(groups, ensure_ascii=False)
         f.write(json_line + "\n")
-        
-
-def log_execution_time(func):
-    """Decorator that logs the execution time of a function."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        execution_time = end_time - start_time
-        logging.info(f"Execution of {func.__name__} took {time.strftime('%H:%M:%S', time.gmtime(execution_time))}.")
-        return result
-    return wrapper
-        
         

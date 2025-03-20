@@ -10,6 +10,7 @@ from pathlib import Path
 from random import shuffle
 import re
 import time
+import warnings
 
 # Third party imports
 import json_repair  # type: ignore
@@ -19,7 +20,6 @@ from sentence_transformers import SentenceTransformer  # type: ignore
 from scipy.spatial.distance import cdist  # type: ignore
 from sklearn.cluster import AgglomerativeClustering  # type: ignore
 import torch  # type: ignore
-import torch.distributed as dist  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 
@@ -34,6 +34,8 @@ from utils import (
     save_results,
     save_synonym_dict,
     log_execution_time,
+    get_best_results,
+    get_best_descriptors,
 )
 
 
@@ -50,6 +52,8 @@ logging.basicConfig(
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 # Suppress transformers logging (used internally by sentence_transformers)
 logging.getLogger("transformers").setLevel(logging.WARNING)
+# Suppress FutureWarnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
 class DescriptorGenerator:
@@ -66,7 +70,9 @@ class DescriptorGenerator:
         self.data_source = args.data_source
         self.temperature = args.temperature
         self.base_dir = Path(f"../results") / self.run_id
+        self.embedder = StellaEmbedder(self.cache_dir)
 
+    @log_execution_time
     def LLM_setup(self):
         return LLM(
             model=self.model,
@@ -98,7 +104,7 @@ class DescriptorGenerator:
                 "initial": 500,
                 "rewrite": 3000,
                 "revise": 4000,
-                "synonyms": 500,
+                "synonyms": 1000,
             }
             sampling_params = SamplingParams(
                 temperature=self.temperature,
@@ -112,12 +118,11 @@ class DescriptorGenerator:
                 input, sampling_params=sampling_params, use_tqdm=False
             )
 
-            return [out.outputs[0].text.strip(" `\njson") for out in outputs]
+            return [out.outputs[0].text.strip(" `\n").removeprefix("json") for out in outputs]
 
         else:
             return self.fix_json(input)
 
-    @log_execution_time
     def reformat_output(self, output):
         logging.warning("Fixing JSON formatting.")
         stage = "fix"
@@ -170,20 +175,20 @@ class DescriptorGenerator:
             logging.debug(repr(output))
             return False
 
-    def calculate_doc_similarity(self, original, rewrite):
-        model = SentenceTransformer(
+    def calculate_doc_similarity(self, original, rewrites):
+        sent_sim_model = SentenceTransformer(
             "jinaai/jina-embeddings-v3",
             trust_remote_code=True,
-            cache_folder=self.cache_dir,
+            cache_folder=self.cache_dir
         )
-
-        if not isinstance(rewrite, list):
-            rewrite = [rewrite]
-        original_embedding = model.encode([original])
-        rewrite_embeddings = model.encode(rewrite)
+        
+        # Convert to list if necessary
+        rewrites = [rewrites] if isinstance(rewrites, str) else rewrites
+        original_embedding = sent_sim_model.encode([original])
+        rewrite_embeddings = sent_sim_model.encode(rewrites)
 
         # Compute cosine similarities
-        similarity = model.similarity(original_embedding, rewrite_embeddings)
+        similarity = sent_sim_model.similarity(original_embedding, rewrite_embeddings)
 
         # Return similarity between documents
         return [round(float(sim), 4) for sim in similarity[0]]
@@ -219,18 +224,8 @@ class DescriptorGenerator:
         ]
         batched_output = self.generate(prompts, stage)
         validated_outputs = [
-            json_repair.loads(output, ensure_ascii=False) for output in batched_output
+            json_repair.loads(output) for output in batched_output
         ]
-        # for output in batched_output:
-        #     valid_json = self.validate_output(output)
-        #     if valid_json:
-        #         validated_outputs.append(json.loads(output, strict=False))
-        #     else:
-        #         reformatted = self.reformat_output(output)
-        #         if reformatted == "FAIL":
-        #             validated_outputs.append(json.loads("{}"))
-        #         else:
-        #             validated_outputs.append(reformatted)
 
         return validated_outputs
 
@@ -254,19 +249,9 @@ class DescriptorGenerator:
             prompts.append(self.format_prompt(stage=stage, general=g, specific=s))
         batched_output = self.generate(prompts, stage)
         validated_outputs = [
-            json_repair.loads(output, ensure_ascii=False) for output in batched_output
+            json_repair.loads(output) for output in batched_output
         ]
-        # for output in batched_output:
-        #     valid_json = self.validate_output(output)
-        #     if valid_json:
-        #         validated_outputs.append(json.loads(output, strict=False))
-        #     else:
-        #         reformatted = self.reformat_output(output)
-        #         if reformatted == "FAIL":
-        #             validated_outputs.append(json.loads("{}"))
-        #         else:
-        #             validated_outputs.append(reformatted)
-
+        
         return validated_outputs
 
     @log_execution_time
@@ -302,19 +287,9 @@ class DescriptorGenerator:
             )
         batched_output = self.generate(prompts, stage)
         validated_outputs = [
-            json_repair.loads(output, ensure_ascii=False) for output in batched_output
+            json_repair.loads(output) for output in batched_output
         ]
-        # for output in batched_output:
-        #     valid_json = self.validate_output(output)
-        #     if valid_json:
-        #         validated_outputs.append(json.loads(output, strict=False))
-        #     else:
-        #         reformatted = self.reformat_output(output)
-        #         if reformatted == "FAIL":
-        #             validated_outputs.append(json.loads("{}"))
-        #         else:
-        #             validated_outputs.append(reformatted)
-
+        
         return validated_outputs
 
     @log_execution_time
@@ -334,8 +309,7 @@ class DescriptorGenerator:
             descriptors = best_descriptors
 
         # Embed best descriptors
-        embedder = StellaEmbedder()
-        embeddings = embedder.embed_descriptors(descriptors)
+        embeddings = self.embedder.embed_descriptors(descriptors)
 
         # Group similar descriptors
         synonyms = self.find_synonyms(
@@ -354,19 +328,7 @@ class DescriptorGenerator:
         for prompt_batch in self.batched(prompts, batch_size=200, start_index=0):
             batched_output = self.generate(prompt_batch, stage)
             for idx, output in enumerate(batched_output):
-                validated_outputs.append(json_repair.loads(output, ensure_ascii=False))
-                # valid_json = self.validate_output(output)
-                # if valid_json:
-                #     validated_outputs.append(json.loads(output, strict=False))
-                # else:
-                #     reformatted = self.reformat_output(output)
-                #     if reformatted == "FAIL":
-                #         # If model fails, use the default synonyms generated from embeddings.
-                #         key = list(synonyms.keys())[idx]
-                #         values = list(synonyms.values())[idx]
-                #         validated_outputs.append({key: values})
-                #     else:
-                #         validated_outputs.append(reformatted)
+                validated_outputs.append(json_repair.loads(output))
 
         # Make dictionary from LLM outputs
         synonyms = {}
@@ -500,29 +462,6 @@ class DescriptorGenerator:
 
         return tokenizer.decode(prompt_token_ids)
 
-    def get_best_descriptors(self, results):
-        best_descriptors = []
-        for doc in results.values():
-            best_index = doc["similarity"].index(max(doc["similarity"]))
-            best_descriptors.extend(doc["general"][best_index])
-
-        return best_descriptors
-
-    def get_best_results(self, results):
-        for doc in results.values():
-            best_index = doc["similarity"].index(max(doc["similarity"]))
-            doc["general"] = doc["general"][best_index]
-            doc["specific"] = doc["specific"][best_index]
-            doc["rewrite"] = (
-                doc["rewrite"][best_index]
-                .encode("utf-8", errors="ignore")
-                .decode("utf-8"),
-            )  # Remove possible code breaking chars.
-            doc["similarity"] = doc["similarity"][best_index]
-
-        return results
-
-    @log_execution_time
     def find_synonyms(
         self, descriptors, embeddings, distance_threshold, save_groups=False
     ):
@@ -570,7 +509,6 @@ class DescriptorGenerator:
 
         return group_dict
 
-    @log_execution_time
     def replace_synonyms(self, synonyms, results):
         # Create a mapping from synonym to its group for fast lookup
         synonym_map = {
@@ -588,8 +526,17 @@ class DescriptorGenerator:
                     seen.add(item)
             doc["general"] = no_dups
 
+    def update_results(self, results, general=None, specific=None, rewrites=None):
+        """Updates results dictionary with new descriptors or rewrites."""
+        for index in results:
+            if general:
+                results[index]["general"].append(general[index])
+            if specific:
+                results[index]["specific"].append(specific[index])
+            if rewrites:
+                results[index]["rewrite"].append(rewrites[index])
+
     def generate_final_rewrites(self):
-        logging.info(f"Generating rewrites with final descriptor set.")
         with open(
             self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl", "r"
         ) as f:
@@ -621,7 +568,7 @@ class DescriptorGenerator:
                 results[index]["rewrite"].append(rewrites[i])
 
             for index in batch:
-                similarities = self.calculate_doc_similarity(
+                similarities = self.embedder.calculate_similarity(
                     results[index]["document"], results[index]["rewrite"]
                 )
                 results[index]["similarity"].extend(similarities)
@@ -655,7 +602,8 @@ class DescriptorGenerator:
 
         for batch_num, batch in enumerate(self.batched(data)):
             start_time = time.time()
-
+            logging.info("==========New Batch==========")
+            
             # Initialise empty results dictionary
             results = init_results(batch)
 
@@ -671,11 +619,9 @@ class DescriptorGenerator:
             specific_descriptors = [
                 output.get("specific", "Generation failed.") for output in model_outputs
             ]
-            for index in results:
-                results[index]["general"].append(general_descriptors[index])
-                results[index]["specific"].append(specific_descriptors[index])
+            self.update_results(results, general=general_descriptors, specific=specific_descriptors)
 
-            # Generate num_rewrites rewrites of the document based on descriptors.
+            # Generate rewrites of the document based on descriptors.
             # After the rewrite, we revise the descriptors to create an even better rewrite.
             for round_num in range(self.num_rewrites):
                 # Rewrite doc based on the descriptors.
@@ -689,8 +635,7 @@ class DescriptorGenerator:
                     output.get("document", "Generation failed.")
                     for output in model_outputs
                 ]
-                for index in results:
-                    results[index]["rewrite"].append(rewrites[index])
+                self.update_results(results, rewrites=rewrites)
 
                 if not round_num == self.num_rewrites - 1:
                     # Evaluate rewrite and revise descriptors.
@@ -714,26 +659,26 @@ class DescriptorGenerator:
                         output.get("specific", "Generation failed.")
                         for output in model_outputs
                     ]
-                    for index in results:
-                        results[index]["general"].append(general_descriptors[index])
-                        results[index]["specific"].append(specific_descriptors[index])
+                    self.update_results(results, general=general_descriptors, specific=specific_descriptors)
 
             # Calculate similarity between rewrites and original.
             # Append to results.
             for index in results:
-                similarities = self.calculate_doc_similarity(
+                similarities = self.embedder.calculate_similarity(
                     results[index]["document"], results[index]["rewrite"]
                 )
                 results[index]["similarity"].extend(similarities)
 
+            # Save all results so far
             save_results(results, self.base_dir, self.run_id, only_best=False)
-            logging.info("Results saved.")
 
             # Get the descriptors that produced the best rewrite
-            best_descriptors = self.get_best_descriptors(results)
-            # Get all results from the round that produced the best rewrite
-            best_results = self.get_best_results(results)
+            best_descriptors = get_best_descriptors(results)
+            # Get results from the round that produced the best rewrite
+            best_results = get_best_results(results)
 
+            # For best descriptors, find and combine synonyms
+            # This will limit the number of unique descriptors
             logging.info("Stage: synonyms")
             best_results = self.synonym_stage(
                 best_results, best_descriptors, self.synonym_threshold
@@ -760,7 +705,8 @@ class DescriptorGenerator:
             end_time = time.time()
 
             logging.info(
-                f"Processed {len(results)} documents in {time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}."
+                f"Processed {len(results)} documents in "
+                f"{time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}."
             )
             logging.info(
                 f"Processed a total of {(batch_num+1)*self.batch_size} documents."
@@ -771,6 +717,8 @@ class DescriptorGenerator:
             if self.num_batches == -1 or batch_num + 1 < self.num_batches:
                 continue
 
+            logging.info("==============================================")
+            logging.info("Generating rewrites with final descriptor set.")
             # When we have processed all batches or all data,
             # we do one more rewrite to see how much has changed due to synonym replacement.
             self.generate_final_rewrites()

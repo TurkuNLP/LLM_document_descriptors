@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=vllm_inference
 #SBATCH --account=project_462000353
-#SBATCH --partition=dev-g
-#SBATCH --time=00:45:00
+#SBATCH --partition=standard-g
+#SBATCH --time=2-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=15
@@ -24,7 +24,7 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-run_id="oscar"
+run_id="biggest_run"
 
 srun python3 vllm_document_descriptors.py --run-id=$run_id \
                                           --temperature=0.1 \
@@ -34,6 +34,6 @@ srun python3 vllm_document_descriptors.py --run-id=$run_id \
                                           --start-index=0 \
                                           --max-vocab=50 \
                                           --synonym-threshold=0.3 \
-                                          --data-source="oscar" \
+                                          --data-source="fineweb" \
 
 gpu-energy --diff
