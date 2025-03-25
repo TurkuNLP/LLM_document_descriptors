@@ -1,6 +1,6 @@
 # Standard libraries
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 import logging
 import math
@@ -16,7 +16,6 @@ import warnings
 import json_repair  # type: ignore
 import pandas as pd  # type: ignore
 from pydantic import BaseModel, RootModel  # type: ignore
-from sentence_transformers import SentenceTransformer  # type: ignore
 from scipy.spatial.distance import cdist  # type: ignore
 from sklearn.cluster import AgglomerativeClustering  # type: ignore
 import torch  # type: ignore
@@ -166,32 +165,8 @@ class DescriptorGenerator:
         return "FAIL"
 
     def validate_output(self, output):
-        try:
-            json.loads(output, strict=False)
-            return True
-        except json.JSONDecodeError as e:
-            logging.debug(e)
-            logging.debug("Invalid JSON output:")
-            logging.debug(repr(output))
-            return False
-
-    def calculate_doc_similarity(self, original, rewrites):
-        sent_sim_model = SentenceTransformer(
-            "jinaai/jina-embeddings-v3",
-            trust_remote_code=True,
-            cache_folder=self.cache_dir
-        )
-        
-        # Convert to list if necessary
-        rewrites = [rewrites] if isinstance(rewrites, str) else rewrites
-        original_embedding = sent_sim_model.encode([original])
-        rewrite_embeddings = sent_sim_model.encode(rewrites)
-
-        # Compute cosine similarities
-        similarity = sent_sim_model.similarity(original_embedding, rewrite_embeddings)
-
-        # Return similarity between documents
-        return [round(float(sim), 4) for sim in similarity[0]]
+        validated = json_repair.loads(output)
+        return validated if isinstance(validated, dict) else {}
 
     def batched(self, data, batch_size=None, start_index=None):
         if not batch_size:
@@ -224,7 +199,7 @@ class DescriptorGenerator:
         ]
         batched_output = self.generate(prompts, stage)
         validated_outputs = [
-            json_repair.loads(output) for output in batched_output
+            self.validate_output(output) for output in batched_output
         ]
 
         return validated_outputs
@@ -249,7 +224,7 @@ class DescriptorGenerator:
             prompts.append(self.format_prompt(stage=stage, general=g, specific=s))
         batched_output = self.generate(prompts, stage)
         validated_outputs = [
-            json_repair.loads(output) for output in batched_output
+            self.validate_output(output) for output in batched_output
         ]
         
         return validated_outputs
@@ -287,7 +262,7 @@ class DescriptorGenerator:
             )
         batched_output = self.generate(prompts, stage)
         validated_outputs = [
-            json_repair.loads(output) for output in batched_output
+            self.validate_output(output) for output in batched_output
         ]
         
         return validated_outputs
@@ -327,21 +302,17 @@ class DescriptorGenerator:
         validated_outputs = []
         for prompt_batch in self.batched(prompts, batch_size=200, start_index=0):
             batched_output = self.generate(prompt_batch, stage)
-            for idx, output in enumerate(batched_output):
-                validated_outputs.append(json_repair.loads(output))
+            validated_outputs.extend([self.validate_output(output) for output in batched_output])
 
         # Make dictionary from LLM outputs
-        synonyms = {}
+        synonyms = defaultdict(list)
         for d in validated_outputs:
             for key, value in d.items():
-                if key in synonyms:
-                    synonyms[key].extend(value)
-                else:
-                    synonyms[key] = value
+                synonyms[key].extend(value)
 
         # Replace the original descriptors
-        save_synonym_dict(synonyms, self.base_dir, self.run_id)
         self.replace_synonyms(synonyms, best_results)
+        save_synonym_dict(synonyms, self.base_dir, self.run_id)
 
         # Also update the descriptors of previously processed and saved documents
         try:
@@ -510,21 +481,23 @@ class DescriptorGenerator:
         return group_dict
 
     def replace_synonyms(self, synonyms, results):
-        # Create a mapping from synonym to its group for fast lookup
+        # Create a mapping from descriptor to its synonym for fast lookup
         synonym_map = {
             syn: group for group, members in synonyms.items() for syn in members
         }
-
+            
         # Replace synonyms and remove possible duplicates
         for doc in results.values():
-            replaced = [synonym_map.get(desc, desc) for desc in doc["general"]]
-            seen = set()
-            no_dups = []
-            for item in replaced:
-                if item not in seen:
-                    no_dups.append(item)
-                    seen.add(item)
-            doc["general"] = no_dups
+            replaced = []
+            for descriptor in doc["general"]:
+                if descriptor in synonym_map:
+                    if descriptor not in replaced:
+                        replaced.append(synonym_map[descriptor])
+                else:
+                    synonyms[descriptor] = [descriptor]
+                    if descriptor not in replaced:
+                        replaced.append(descriptor)
+            doc["general"] = replaced
 
     def update_results(self, results, general=None, specific=None, rewrites=None):
         """Updates results dictionary with new descriptors or rewrites."""
@@ -573,12 +546,12 @@ class DescriptorGenerator:
                 )
                 results[index]["similarity"].extend(similarities)
 
-        with open(
-            self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl", "w"
-        ) as f:
-            for doc in results.values():
-                json_line = json.dumps(doc, ensure_ascii=False)
-                f.write(json_line + "\n")
+            with open(
+                self.base_dir / f"descriptors_{self.run_id}_final.jsonl", "a"
+            ) as f:
+                for doc in results.values():
+                    json_line = json.dumps(doc, ensure_ascii=False)
+                    f.write(json_line + "\n")
 
     def pipeline(self):
 
@@ -601,8 +574,10 @@ class DescriptorGenerator:
         shuffle(descriptor_vocab)
 
         for batch_num, batch in enumerate(self.batched(data)):
+            if self.num_batches == 0:
+                break
             start_time = time.time()
-            logging.info("==========New Batch==========")
+            logging.info("================New Batch================")
             
             # Initialise empty results dictionary
             results = init_results(batch)
@@ -712,18 +687,18 @@ class DescriptorGenerator:
                 f"Processed a total of {(batch_num+1)*self.batch_size} documents."
             )
 
-            # Stop run after num_batches batches have been processed.
-            # If -1, we continue until we run out of data or time.
-            if self.num_batches == -1 or batch_num + 1 < self.num_batches:
+            # Stop iterating through new data after num_batches batches have been processed.
+            if self.num_batches == -1:
                 continue
+            elif batch_num + 1 >= self.num_batches:
+                break
 
-            logging.info("==============================================")
-            logging.info("Generating rewrites with final descriptor set.")
-            # When we have processed all batches or all data,
-            # we do one more rewrite to see how much has changed due to synonym replacement.
-            self.generate_final_rewrites()
-            logging.info("Final results saved.")
-            break
+        logging.info("==============================================")
+        logging.info("Generating rewrites with final descriptor set.")
+        # When we have processed all batches or all data,
+        # we do one more rewrite to see how much has changed due to synonym replacement.
+        self.generate_final_rewrites()
+        logging.info("Final results saved.")
 
 
 def main(args):

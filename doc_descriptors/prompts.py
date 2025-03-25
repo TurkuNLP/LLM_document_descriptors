@@ -182,12 +182,13 @@ Your task is to analyze the list and decide whether all words are sufficiently s
    - Outlier words should form their own individual groups if they do not match any of the other words.
    
 4. **Naming the Groups:**
-   - The name of the group should be one of the words in the group.
+   - The name of the group can be one of the words in the group or it can be a separate term.
+   - If the given name for the group does not represent the contents of the group, you should change it.
    - The name of the group should be central to the meaning of the group, i.e., all words in the group should be synonymous with the name. 
 
 4. **Output Format:**
    - Present your results as a list of groups. Each group should be named.
-   - Do not modify the words in any way. Each word must appear in exactly one group.
+   - Do not modify the words in the groups any way. Each word must appear in exactly one group.
    - Your output should be in JSON format. Do not add any text or explanation outside the JSON object.
     - Example: {{"group_name": [<"word">,
                                <"word">,
@@ -200,9 +201,8 @@ Your task is to analyze the list and decide whether all words are sufficiently s
                 }}<|eot_id|><|start_header_id|>user<|end_header_id|>
                 
 Now, here are the possible synonyms:
-Name: {group_name}
-Words:
-{synonyms}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+Group name: {group_name}
+Words in group:{synonyms}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
 
 
