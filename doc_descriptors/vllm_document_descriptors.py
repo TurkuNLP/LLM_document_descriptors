@@ -83,86 +83,27 @@ class DescriptorGenerator:
             gpu_memory_utilization=0.8,
         )
 
-    def fix_json(self, message):
+    def generate(self, input, stage):
+        response_schema = self.get_response_format(stage)
+        max_tokens = {
+            "initial": 500,
+            "rewrite": 3000,
+            "revise": 4000,
+            "synonyms": 1000,
+        }
         sampling_params = SamplingParams(
             temperature=self.temperature,
             top_p=0.5,
-            max_tokens=4_000,  # max tokens to generate
+            repetition_penalty=1,  # 1 = no penalty, >1 penalty
+            max_tokens=max_tokens[stage],  # max tokens to generate
+            guided_decoding=response_schema,
         )
 
-        output = self.llm.generate(
-            message, sampling_params=sampling_params, use_tqdm=False
+        outputs = self.llm.generate(
+            input, sampling_params=sampling_params, use_tqdm=False
         )
 
-        return output[0].outputs[0].text.strip(" `\n").removeprefix("json")
-
-    def generate(self, input, stage):
-        if stage != "fix":
-            response_schema = self.get_response_format(stage)
-            max_tokens = {
-                "initial": 500,
-                "rewrite": 3000,
-                "revise": 4000,
-                "synonyms": 1000,
-            }
-            sampling_params = SamplingParams(
-                temperature=self.temperature,
-                top_p=0.5,
-                repetition_penalty=1,  # 1 = no penalty, >1 penalty
-                max_tokens=max_tokens[stage],  # max tokens to generate
-                guided_decoding=response_schema,
-            )
-
-            outputs = self.llm.generate(
-                input, sampling_params=sampling_params, use_tqdm=False
-            )
-
-            return [out.outputs[0].text.strip(" `\n").removeprefix("json") for out in outputs]
-
-        else:
-            return self.fix_json(input)
-
-    def reformat_output(self, output):
-        logging.warning("Fixing JSON formatting.")
-        stage = "fix"
-        for i in range(2):
-            # Remove newlines and spaces from start and end
-            output = output.strip(" \n")
-            # Remove any text outside curly brackets
-            json_start = output.find("{")
-            json_end = output.find("}")
-            if json_start != -1 and json_end != -1:
-                output = output[json_start : json_end + 1]  # Include the '}'
-            # Remove trailing commas
-            output = re.sub(r",\s*([\]}])", r"\1", output)
-            # Add double quotes around keys (if missing)
-            output = re.sub(
-                r"([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:", r'\1"\2":', output
-            )
-            # Add double quotes around string values (if missing)
-            output = re.sub(r':\s*([^"\s\d\[{].*?)(?=[,}\]])', r':"\1"', output)
-            valid_json = self.validate_output(output)
-            if valid_json:
-                logging.warning(f"Fixed JSON formatting with {i} LLM call(s).")
-                return json.loads(output, strict=False)
-
-            # If fixing JSON with regex does not work,
-            # we try giving it to the model to fix.
-            # This takes quite a lot of time (~1-2 min/attempt), so consider lowering
-            # number of attempts to speed up the process.
-            prompt = self.format_prompt(stage, original=output)
-            output = self.generate(prompt, stage)
-            valid_json = self.validate_output(output)
-            if valid_json:
-                logging.warning(f"Fixed JSON formatting with {i+1} LLM call(s).")
-                return json.loads(output, strict=False)
-
-        # If fixing does not work, save the malformed JSON to disk for later inspection.
-        # Return "FAIL"
-        logging.warning("Failed to fix JSON formatting.")
-        with open("../results/malformed_JSON_output.txt", "a") as f:
-            f.write(f"{output}\n======================\n")
-        return "FAIL"
+        return [out.outputs[0].text.strip(" `\n").removeprefix("json") for out in outputs]
 
     def validate_output(self, output):
         validated = json_repair.loads(output)
@@ -291,12 +232,13 @@ class DescriptorGenerator:
             descriptors, embeddings, synonym_threshold, save_groups=False
         )
 
-        # Use LLM to evaluate and form final synonyms
+        # Format synonym groups into LLM prompts
         prompts = [
             self.format_prompt(stage=stage, group_name=group_name, synonyms=syns)
             for group_name, syns in synonyms.items()
         ]
 
+        # Use LLM to evaluate and form final synonyms
         # Since the number of synonym groups can grow quite large,
         # we split the prompts into batches
         validated_outputs = []
@@ -514,44 +456,44 @@ class DescriptorGenerator:
             self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl", "r"
         ) as f:
             results = {}
-            file = [json.loads(line.strip()) for line in f.readlines()]
-            for idx, doc in enumerate(file):
+            idx = 0
+            for line in f.readlines():
+                doc = json.loads(line.strip())
                 results[idx] = doc
+                idx += 1
+                
+                # Process in batches of batch_size
+                if idx == self.batch_size:
+                    general_descriptors = []
+                    specific_descriptors = []
+                    for index in results:
+                        general_descriptors.append(results[index]["general"])
+                        specific_descriptors.append(results[index]["specific"])
 
-        # Process in batches of batch_size
-        for batch_num, batch in enumerate(
-            self.batched(results, self.batch_size, start_index=0)
-        ):
-            logging.info(
-                f"Batch {batch_num+1} out of {math.ceil(len(results)/self.batch_size)}"
-            )
-            general_descriptors = []
-            specific_descriptors = []
-            for index in batch:
-                general_descriptors.append(results[index]["general"])
-                specific_descriptors.append(results[index]["specific"])
+                    model_outputs = self.rewrite_stage(
+                        general_descriptors, specific_descriptors
+                    )
+                    rewrites = [
+                        output.get("document", "Generation failed.") for output in model_outputs
+                    ]
+                    for i, index in enumerate(results):
+                        results[index]["rewrite"].append(rewrites[i])
 
-            model_outputs = self.rewrite_stage(
-                general_descriptors, specific_descriptors
-            )
-            rewrites = [
-                output.get("document", "Generation failed.") for output in model_outputs
-            ]
-            for i, index in enumerate(batch):
-                results[index]["rewrite"].append(rewrites[i])
+                    for index in results:
+                        similarities = self.embedder.calculate_similarity(
+                            results[index]["document"], results[index]["rewrite"]
+                        )
+                        results[index]["similarity"].extend(similarities)
 
-            for index in batch:
-                similarities = self.embedder.calculate_similarity(
-                    results[index]["document"], results[index]["rewrite"]
-                )
-                results[index]["similarity"].extend(similarities)
-
-            with open(
-                self.base_dir / f"descriptors_{self.run_id}_final.jsonl", "a"
-            ) as f:
-                for doc in results.values():
-                    json_line = json.dumps(doc, ensure_ascii=False)
-                    f.write(json_line + "\n")
+                    with open(
+                        self.base_dir / f"descriptors_{self.run_id}_final.jsonl", "a"
+                    ) as f:
+                        for doc in results.values():
+                            json_line = json.dumps(doc, ensure_ascii=False)
+                            f.write(json_line + "\n")
+                            
+                    idx = 0
+                    results = {}
 
     def pipeline(self):
 
@@ -577,7 +519,7 @@ class DescriptorGenerator:
             if self.num_batches == 0:
                 break
             start_time = time.time()
-            logging.info("================New Batch================")
+            logging.info(f"===============New Batch: {batch_num}===============")
             
             # Initialise empty results dictionary
             results = init_results(batch)
@@ -682,9 +624,6 @@ class DescriptorGenerator:
             logging.info(
                 f"Processed {len(results)} documents in "
                 f"{time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}."
-            )
-            logging.info(
-                f"Processed a total of {(batch_num+1)*self.batch_size} documents."
             )
 
             # Stop iterating through new data after num_batches batches have been processed.

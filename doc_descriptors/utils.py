@@ -107,7 +107,6 @@ def load_documents(source, cache):
             lines = f.readlines()
             return [json.loads(line) for line in lines]
         
-        
     elif source.lower() =="core":
         data = []
         with open("../data/en.tsv", "r") as f:
@@ -166,4 +165,3 @@ def save_synonym_dict(groups, path, run_id):
     with open(path / f"synonyms_{run_id}.jsonl", "a") as f:
         json_line = json.dumps(groups, ensure_ascii=False)
         f.write(json_line + "\n")
-        
