@@ -29,9 +29,9 @@ You will be given a document. Your task is to create a comprehensive list of des
                             "<descriptor>",
                             ...],
                  "specific": [
-                             "<descriptor>,
-                             "<descriptor>,
-                             "<descriptor>,
+                             "<descriptor>",
+                             "<descriptor>",
+                             "<descriptor>",
                              ...]
                 }}
 
@@ -129,7 +129,7 @@ not be longer than 3 to 5 words. Do not repeat descriptors.
     - Place double quotes around the discussion about differences.
     - Example: {{"differences": <"differences between original and rewrite">,
                  "general": [
-                            "<descriptor>2,
+                            "<descriptor>",
                             "<descriptor>",
                             "<descriptor>",
                             ...],
@@ -190,14 +190,14 @@ Your task is to analyze the list and decide whether all words are sufficiently s
    - Present your results as a list of groups. Each group should be named.
    - Do not modify the words in the groups any way. Each word must appear in exactly one group.
    - Your output should be in JSON format. Do not add any text or explanation outside the JSON object.
-    - Example: {{"group_name": [<"word">,
-                               <"word">,
-                               <"word">,
-                               ...],
-                 "group_name": [<"word">,
-                               <"word">,
-                               <"word">,
-                               ...]
+    - Example: {{"<group_name>": [<"word">,
+                                 <"word">,
+                                 <"word">,
+                                 ...],
+                 "<group_name>": [<"word">,
+                                 <"word">,
+                                 <"word">,
+                                 ...]
                 }}<|eot_id|><|start_header_id|>user<|end_header_id|>
                 
 Now, here are the possible synonyms:
