@@ -157,6 +157,8 @@ def initialise_descriptor_vocab(path):
                 descriptors[desc] += freq
         return descriptors
     except FileNotFoundError:
+        logging.info(f"No previous descriptors found at {path}")
+        logging.info(f"Initialising with empty descriptor vocabulary.")
         return descriptors
     
     

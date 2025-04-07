@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from random import shuffle
 import re
+import shutil
 import time
 import warnings
 
@@ -68,7 +69,8 @@ class DescriptorGenerator:
         self.synonym_threshold = args.synonym_threshold
         self.data_source = args.data_source
         self.temperature = args.temperature
-        self.base_dir = Path(f"../results") / self.run_id
+        self.checkpoint_interval = args.checkpoint_interval
+        self.base_dir = Path("..") / "results" / self.run_id
         self.embedder = StellaEmbedder(self.cache_dir)
 
     @log_execution_time
@@ -86,16 +88,16 @@ class DescriptorGenerator:
     def generate(self, input, stage):
         response_schema = self.get_response_format(stage)
         max_tokens = {
-            "initial": 500,
-            "rewrite": 3000,
-            "revise": 4000,
-            "synonyms": 1000,
+            "initial": 1000,
+            "rewrite": 4000,
+            "revise": 5000,
+            "synonyms": 2000,
         }
         sampling_params = SamplingParams(
             temperature=self.temperature,
             top_p=0.5,
             repetition_penalty=1,  # 1 = no penalty, >1 penalty
-            max_tokens=max_tokens[stage],  # max tokens to generate
+            max_tokens=max_tokens.get(stage, 5000),  # max tokens to generate
             guided_decoding=response_schema,
         )
 
@@ -218,19 +220,23 @@ class DescriptorGenerator:
         # Load full vocabulary (if it exists) and append it to this round of descriptors
         stage = "synonyms"
         try:
+            logging.info("Opening previous descriptors")
             with open(self.base_dir / f"descriptor_vocab_{self.run_id}.tsv", "r") as f:
                 file = f.readlines()
                 descriptors = [line.split("\t")[0] for line in file] + best_descriptors
         except FileNotFoundError:
+            logging.info("Failed to locate previous descriptors. Not using them.")
             descriptors = best_descriptors
 
         # Embed best descriptors
         embeddings = self.embedder.embed_descriptors(descriptors)
 
-        # Group similar descriptors
+        # Group similar descriptors with agglomerative clustering
         synonyms = self.find_synonyms(
             descriptors, embeddings, synonym_threshold, save_groups=False
         )
+        
+        logging.info(f"Synonym groups after clustering: {len(synonyms)}")
 
         # Format synonym groups into LLM prompts
         prompts = [
@@ -252,10 +258,13 @@ class DescriptorGenerator:
             for key, value in d.items():
                 synonyms[key].extend(value)
 
+        logging.info(f"Synonyms groups after LLM: {len(synonyms)}")
+
         # Replace the original descriptors
         self.replace_synonyms(synonyms, best_results)
-        save_synonym_dict(synonyms, self.base_dir, self.run_id)
-
+        
+        logging.info(f"Synonyms groups after replacement: {len(synonyms)}")
+        
         # Also update the descriptors of previously processed and saved documents
         try:
             with open(
@@ -275,18 +284,19 @@ class DescriptorGenerator:
                     f.write(json_line + "\n")
         except FileNotFoundError:
             pass
+        
+        save_synonym_dict(synonyms, self.base_dir, self.run_id)
+        
+        logging.info(f"Synonyms groups after updating old results: {len(synonyms)}")
 
         return best_results
 
-    def update_descriptor_vocab(self, results, descriptor_path):
-        results = pd.read_json(
-            self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl",
-            lines=True,
-            orient="records",
-        )
+    def update_descriptor_vocab(self, descriptor_path):
         desc_counts = Counter()
-        for descs in results["general"].to_list():
-            desc_counts.update(descs)
+        with open(self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl", "r") as f:
+            for line in f.readlines():
+                doc = json.loads(line.strip())
+                desc_counts.update(doc["general"])
 
         save_descriptors(desc_counts, descriptor_path)
         self.log_descriptor_growth(desc_counts)
@@ -381,13 +391,13 @@ class DescriptorGenerator:
         # Convert embeddings to NumPy array if needed
         embeddings = np.array(embeddings)
 
-        # Identify and remove zero vectors
-        valid_indices = [
-            i for i, vec in enumerate(embeddings) if np.linalg.norm(vec) > 0
-        ]
+        # # Identify and remove zero vectors
+        # valid_indices = [
+        #     i for i, vec in enumerate(embeddings) if np.linalg.norm(vec) > 0
+        # ]
 
-        descriptors = [descriptors[i] for i in valid_indices]
-        embeddings = embeddings[valid_indices]
+        # descriptors = [descriptors[i] for i in valid_indices]
+        # embeddings = embeddings[valid_indices]
 
         # Perform Agglomerative Clustering
         clustering = AgglomerativeClustering(
@@ -452,9 +462,15 @@ class DescriptorGenerator:
                 results[index]["rewrite"].append(rewrites[index])
 
     def generate_final_rewrites(self):
-        with open(
-            self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl", "r"
-        ) as f:
+        filepath = self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl"
+        
+        # Calculate the number of docs we have processed for logging purpses
+        with open(filepath, 'rb') as f:
+            num_docs= sum(buf.count(b'\n') for buf in iter(lambda: f.read(1024 * 1024), b''))
+        
+        
+        with open(filepath, "r") as f:
+            batch_num = 0
             results = {}
             idx = 0
             for line in f.readlines():
@@ -464,6 +480,9 @@ class DescriptorGenerator:
                 
                 # Process in batches of batch_size
                 if idx == self.batch_size:
+                    batch_num += 1
+                    logging.info(f"Processing batch {batch_num} out of "
+                                 f"{math.ceil(num_docs/self.batch_size)}.")
                     general_descriptors = []
                     specific_descriptors = []
                     for index in results:
@@ -494,6 +513,19 @@ class DescriptorGenerator:
                             
                     idx = 0
                     results = {}
+
+    def make_checkpoint(self, batch_num):
+        checkpoint_dir = os.path.join(self.base_dir, f"checkpoint_{batch_num}")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        # Iterate through the files in the directory
+        for item in os.listdir(self.base_dir):
+            item_path = os.path.join(self.base_dir, item)
+            if os.path.isfile(item_path):
+                # Destination path in the checkpoint directory
+                destination_path = os.path.join(checkpoint_dir, item)
+                # Copy the file
+                shutil.copy2(item_path, destination_path)
 
     def pipeline(self):
 
@@ -615,9 +647,7 @@ class DescriptorGenerator:
             )
 
             # Update the descriptor vocabulary with new descriptors
-            descriptor_vocab = self.update_descriptor_vocab(
-                best_results, descriptor_path
-            )
+            descriptor_vocab = self.update_descriptor_vocab(descriptor_path)
 
             end_time = time.time()
 
@@ -625,6 +655,9 @@ class DescriptorGenerator:
                 f"Processed {len(results)} documents in "
                 f"{time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}."
             )
+            
+            if batch_num +1 % self.checkpoint_interval == 0:
+                self.make_checkpoint(batch_num)
 
             # Stop iterating through new data after num_batches batches have been processed.
             if self.num_batches == -1:
@@ -706,6 +739,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--data-source", type=str, default="original", help="Which data set to process."
+    )
+    parser.add_argument(
+        "--checkpoint-interval", type=int, default=50,
+        help="Number of batches after which all results so far will be saved into a checkpoint."
     )
 
     args = parser.parse_args()
