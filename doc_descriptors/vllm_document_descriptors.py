@@ -243,14 +243,22 @@ class DescriptorGenerator:
             self.format_prompt(stage=stage, group_name=group_name, synonyms=syns)
             for group_name, syns in synonyms.items()
         ]
+        
+        logging.info(f"Number of synonym prompts: {len(prompts)}")
 
         # Use LLM to evaluate and form final synonyms
         # Since the number of synonym groups can grow quite large,
         # we split the prompts into batches
         validated_outputs = []
-        for prompt_batch in self.batched(prompts, batch_size=200, start_index=0):
-            batched_output = self.generate(prompt_batch, stage)
-            validated_outputs.extend([self.validate_output(output) for output in batched_output])
+        prompt_batch = []
+        for idx, prompt in enumerate(prompts):
+            prompt_batch.append(prompt)
+            if len(prompt_batch) == 200 or idx+1 == len(prompts):    
+                batched_output = self.generate(prompt_batch, stage)
+                validated_outputs.extend([self.validate_output(output) for output in batched_output])
+                prompt_batch = []
+                
+        logging.info(f"Number of validated LLM outputs: {len(validated_outputs)}")
 
         # Make dictionary from LLM outputs
         synonyms = defaultdict(list)
@@ -515,15 +523,16 @@ class DescriptorGenerator:
                     results = {}
 
     def make_checkpoint(self, batch_num):
-        checkpoint_dir = os.path.join(self.base_dir, f"checkpoint_{batch_num}")
+        docs_processed = batch_num * self.batch_size
+        checkpoint_dir = self.base_dir / f"checkpoint_{docs_processed}"
         os.makedirs(checkpoint_dir, exist_ok=True)
 
         # Iterate through the files in the directory
         for item in os.listdir(self.base_dir):
-            item_path = os.path.join(self.base_dir, item)
+            item_path = self.base_dir / item
             if os.path.isfile(item_path):
                 # Destination path in the checkpoint directory
-                destination_path = os.path.join(checkpoint_dir, item)
+                destination_path = checkpoint_dir / item
                 # Copy the file
                 shutil.copy2(item_path, destination_path)
 
@@ -656,7 +665,7 @@ class DescriptorGenerator:
                 f"{time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}."
             )
             
-            if batch_num +1 % self.checkpoint_interval == 0:
+            if (batch_num + 1) % self.checkpoint_interval == 0:
                 self.make_checkpoint(batch_num)
 
             # Stop iterating through new data after num_batches batches have been processed.
