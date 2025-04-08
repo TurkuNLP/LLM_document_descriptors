@@ -220,12 +220,10 @@ class DescriptorGenerator:
         # Load full vocabulary (if it exists) and append it to this round of descriptors
         stage = "synonyms"
         try:
-            logging.info("Opening previous descriptors")
             with open(self.base_dir / f"descriptor_vocab_{self.run_id}.tsv", "r") as f:
                 file = f.readlines()
                 descriptors = [line.split("\t")[0] for line in file] + best_descriptors
         except FileNotFoundError:
-            logging.info("Failed to locate previous descriptors. Not using them.")
             descriptors = best_descriptors
 
         # Embed best descriptors
@@ -235,17 +233,13 @@ class DescriptorGenerator:
         synonyms = self.find_synonyms(
             descriptors, embeddings, synonym_threshold, save_groups=False
         )
-        
-        logging.info(f"Synonym groups after clustering: {len(synonyms)}")
 
         # Format synonym groups into LLM prompts
         prompts = [
             self.format_prompt(stage=stage, group_name=group_name, synonyms=syns)
             for group_name, syns in synonyms.items()
         ]
-        
-        logging.info(f"Number of synonym prompts: {len(prompts)}")
-
+    
         # Use LLM to evaluate and form final synonyms
         # Since the number of synonym groups can grow quite large,
         # we split the prompts into batches
@@ -258,20 +252,14 @@ class DescriptorGenerator:
                 validated_outputs.extend([self.validate_output(output) for output in batched_output])
                 prompt_batch = []
                 
-        logging.info(f"Number of validated LLM outputs: {len(validated_outputs)}")
-
         # Make dictionary from LLM outputs
         synonyms = defaultdict(list)
         for d in validated_outputs:
             for key, value in d.items():
                 synonyms[key].extend(value)
 
-        logging.info(f"Synonyms groups after LLM: {len(synonyms)}")
-
         # Replace the original descriptors
         self.replace_synonyms(synonyms, best_results)
-        
-        logging.info(f"Synonyms groups after replacement: {len(synonyms)}")
         
         # Also update the descriptors of previously processed and saved documents
         try:
@@ -294,8 +282,6 @@ class DescriptorGenerator:
             pass
         
         save_synonym_dict(synonyms, self.base_dir, self.run_id)
-        
-        logging.info(f"Synonyms groups after updating old results: {len(synonyms)}")
 
         return best_results
 
@@ -476,17 +462,19 @@ class DescriptorGenerator:
         with open(filepath, 'rb') as f:
             num_docs= sum(buf.count(b'\n') for buf in iter(lambda: f.read(1024 * 1024), b''))
         
-        
         with open(filepath, "r") as f:
             batch_num = 0
             results = {}
             idx = 0
-            for line in f.readlines():
+            for line in f():
                 doc = json.loads(line.strip())
                 results[idx] = doc
                 idx += 1
                 
                 # Process in batches of batch_size
+                
+                # TO FIX: if document do not neatly divide into batch_size
+                # last documents will not be processed!
                 if idx == self.batch_size:
                     batch_num += 1
                     logging.info(f"Processing batch {batch_num} out of "
@@ -525,14 +513,13 @@ class DescriptorGenerator:
     def make_checkpoint(self, batch_num):
         docs_processed = batch_num * self.batch_size
         checkpoint_dir = self.base_dir / f"checkpoint_{docs_processed}"
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         # Iterate through the files in the directory
-        for item in os.listdir(self.base_dir):
-            item_path = self.base_dir / item
-            if os.path.isfile(item_path):
+        for item_path in self.base_dir.iterdir():
+            if item_path.is_file():
                 # Destination path in the checkpoint directory
-                destination_path = checkpoint_dir / item
+                destination_path = checkpoint_dir / item_path.name
                 # Copy the file
                 shutil.copy2(item_path, destination_path)
 
