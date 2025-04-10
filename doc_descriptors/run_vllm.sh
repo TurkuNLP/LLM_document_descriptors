@@ -24,17 +24,17 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-run_id="final_500_vocab"
+run_id="final_zero_vocab"
 
 srun python3 vllm_document_descriptors.py --run-id=$run_id \
                                           --temperature=0.1 \
                                           --batch-size=200 \
-                                          --num-batches=200 \
+                                          --num-batches=20 \
                                           --num-rewrites=3 \
-                                          --start-index=0 \
-                                          --max-vocab=500 \
+                                          --start-index=16000 \
+                                          --max-vocab=0 \
                                           --synonym-threshold=0.3 \
                                           --data-source="fineweb" \
-                                          --checkpoint-interval=50 \
+                                          --checkpoint-interval=20 \
 
 gpu-energy --diff

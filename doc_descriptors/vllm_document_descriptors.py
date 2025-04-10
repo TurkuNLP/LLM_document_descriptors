@@ -510,8 +510,11 @@ class DescriptorGenerator:
                     idx = 0
                     results = {}
 
-    def make_checkpoint(self, batch_num):
-        docs_processed = batch_num * self.batch_size
+    def make_checkpoint(self):
+        # Calculate how many documents we have processed so far
+        with open(self.base_dir / f"descriptor_count_growth_{self.run_id}", "r") as f:
+            num_batches = len(f.readlines())
+        docs_processed = num_batches * self.batch_size
         checkpoint_dir = self.base_dir / f"checkpoint_{docs_processed}"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -652,8 +655,9 @@ class DescriptorGenerator:
                 f"{time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}."
             )
             
+            # Make checkpoint of results so far every checkpoint_interval
             if (batch_num + 1) % self.checkpoint_interval == 0:
-                self.make_checkpoint(batch_num)
+                self.make_checkpoint()
 
             # Stop iterating through new data after num_batches batches have been processed.
             if self.num_batches == -1:
