@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 import time
+import numpy as np
 
 # Get the root logger (inherits settings from main function)
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ def get_best_results(results):
     best_results = {}
     for idx, doc in results.items():
         # Find index of results with best similarity score
-        best_index = max(range(len(doc["similarity"])), key=doc["similarity"].__getitem__)
+        best_index = np.argmax(doc["similarity"])
 
         best_results[idx] = {
             "document": doc["document"],
@@ -60,7 +61,7 @@ def get_best_descriptors(results):
     
     for doc in results.values():
         # Find index of descriptors with best similarity score
-        best_index = max(range(len(doc["similarity"])), key=doc["similarity"].__getitem__)
+        best_index = np.argmax(doc["similarity"])
         best_descriptors.extend(doc["general"][best_index])
 
     return best_descriptors

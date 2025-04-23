@@ -8,7 +8,6 @@ import numpy as np
 import os
 from pathlib import Path
 from random import shuffle
-import re
 import shutil
 import time
 import warnings
@@ -385,14 +384,6 @@ class DescriptorGenerator:
         # Convert embeddings to NumPy array if needed
         embeddings = np.array(embeddings)
 
-        # # Identify and remove zero vectors
-        # valid_indices = [
-        #     i for i, vec in enumerate(embeddings) if np.linalg.norm(vec) > 0
-        # ]
-
-        # descriptors = [descriptors[i] for i in valid_indices]
-        # embeddings = embeddings[valid_indices]
-
         # Perform Agglomerative Clustering
         clustering = AgglomerativeClustering(
             n_clusters=None,
@@ -466,7 +457,7 @@ class DescriptorGenerator:
             batch_num = 0
             results = {}
             idx = 0
-            for line in f():
+            for line in f:
                 doc = json.loads(line.strip())
                 results[idx] = doc
                 idx += 1
@@ -512,7 +503,7 @@ class DescriptorGenerator:
 
     def make_checkpoint(self):
         # Calculate how many documents we have processed so far
-        with open(self.base_dir / f"descriptor_count_growth_{self.run_id}", "r") as f:
+        with open(self.base_dir / f"descriptor_count_growth_{self.run_id}.txt", "r") as f:
             num_batches = len(f.readlines())
         docs_processed = num_batches * self.batch_size
         checkpoint_dir = self.base_dir / f"checkpoint_{docs_processed}"
