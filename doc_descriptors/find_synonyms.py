@@ -8,16 +8,13 @@ import numpy as np
 import os
 from pathlib import Path
 import warnings
-from random import shuffle
-import shutil
-import time
 
 # Third party imports
 import json_repair  # type: ignore
 import pandas as pd  # type: ignore
 from pydantic import BaseModel, RootModel  # type: ignore
 from scipy.spatial.distance import cdist  # type: ignore
-from sklearn.cluster import AgglomerativeClustering  # type: ignore
+from sklearn.cluster import AgglomerativeClustering, HDBSCAN  # type: ignore
 import torch  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
@@ -29,6 +26,7 @@ from utils import (
     save_synonym_dict,
     log_execution_time,
     get_best_results,
+    get_best_descriptors,
 )
 
 
@@ -59,7 +57,8 @@ class SynonymFinder:
             "run_id",
             "batch_size",
             "synonym_threshold",
-            "temperature"
+            "temperature",
+            "clustering_algorithm",
             ]:
             setattr(self, attr, getattr(args, attr))
         self.cache_dir = args.cache_dir or os.environ["HF_HOME"]
@@ -108,20 +107,30 @@ class SynonymFinder:
         # Convert embeddings to NumPy array if needed
         embeddings = np.array(embeddings)
 
-        # Perform Agglomerative Clustering
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=distance_threshold,
-            metric="cosine",
-            linkage="average",
-        )
-        labels = clustering.fit_predict(embeddings)
+        if self.clustering_algorithm == "agglomerative":
+            # Perform Agglomerative Clustering
+            clustering = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=distance_threshold,
+                metric="cosine",
+                linkage="average",
+            )
+            labels = clustering.fit_predict(embeddings)
+            # Group words by cluster labels
+            groups = {}
+            for idx, label in enumerate(labels):
+                groups.setdefault(label, []).append(idx)
+        
+        elif self.clustering_algorithm =="hdbscan" or self.clustering_algorithm =="hbdscan":
+            clustering = HDBSCAN(min_cluster_size=2)
+            labels = clustering.fit_predict(embeddings)
 
-        # Group words by cluster labels
-        groups = {}
-        for idx, label in enumerate(labels):
-            groups.setdefault(label, []).append(idx)
-
+            groups = {}
+            for idx, label in enumerate(labels):
+                if label == -1:  # -1 is noise
+                    continue
+                groups.setdefault(label, []).append(idx)
+        
         # Find the medoid for each group
         group_dict = {}
         for label, indices in groups.items():
@@ -163,11 +172,8 @@ class SynonymFinder:
     def format_prompt(
         self,
         stage,
-        original=None,
-        rewritten=None,
         general=None,
         specific=None,
-        vocab=None,
         group_name=None,
         synonyms=None,
     ):
@@ -319,7 +325,7 @@ class SynonymFinder:
         self.llm = self.LLM_setup()
         data = self.load_data()
         best_results = get_best_results(data)
-        best_descriptors = [doc["general"] for doc in best_results.values()]
+        best_descriptors = get_best_descriptors(data)
         syn_replaced = self.synonym_stage(best_descriptors, best_results)
         with open(
             self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl", "a") as f:
@@ -372,6 +378,12 @@ if __name__ == "__main__":
         default=0.2,
         help="""Distance threshold for when two descriptors should count as synonyms.
         Smaller value means words are less likely to count as synonyms.""",
+    )
+    parser.add_argument(
+        "--clustering-algorithm",
+        type=str,
+        default="agglomerative",
+        help="""Which clustering algorithm to use. Choose either 'agglomerative' or 'hdbscan'.""",
     )
     args = parser.parse_args()
 
