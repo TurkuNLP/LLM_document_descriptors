@@ -3,7 +3,7 @@ def initial_prompt(document, vocab):
 
 ##Instruction:
 
-You will be given a document. Your task is to create a comprehensive list of descriptors—words or phrases that distill the meaning, tone, style, genre, topics, and other characteristics of the document. Do not focus solely on the topics; also include phrases that describe the tone and style. Order the descriptors as they appear in the document.
+You will be given a document. Your task is to create a comprehensive list of descriptors — words or phrases that distill the meaning, tone, style, genre, topics, and other characteristics of the document. Do not focus solely on the topics; also include phrases that describe the tone and style. Order the descriptors as they appear in the document.
 
 ##Requirements:
 
