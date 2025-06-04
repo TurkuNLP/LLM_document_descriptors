@@ -29,7 +29,7 @@ class NNSearcher:
     def __init__(self, args):
         self.run_id = args.run_id
         self.data_path = Path(args.data_path)
-        self.base_dir = Path(args.save_dir) if args.sqlite_path else Path(f"../data/faiss/{self.run_id}")
+        self.base_dir = Path(args.save_dir) if args.save_dir else Path(f"../data/faiss/{self.run_id}")
         self.checkpoint_dir = self.base_dir / "checkpoints"
         self.merge_log_path = self.base_dir/ "merge_log.jsonl"
         self.last_checkpoint_path = self.base_dir / "last_checkpoint.txt"
