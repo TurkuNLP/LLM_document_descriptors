@@ -230,7 +230,7 @@ class NNSearcher:
                                                                                mutual_pairs,
                                                                                iteration
                                                                                )
-            self.remove_merged_entries(remove_ids, embeddings, descriptors)
+            embeddings, descriptors = self.remove_merged_entries(remove_ids, embeddings, descriptors)
             
             # Combine old and new embeddings and descriptors
             embeddings = np.concatenate((embeddings, new_embeddings))
