@@ -177,15 +177,28 @@ class NNSearcher:
         if self.last_checkpoint_path.exists():
             return int(self.last_checkpoint_path.read_text().strip())
         return 0
-
+    
+    def save_final_results(self, index, descriptor_db):
+        results = []
+        for i in range(index.ntotal):
+            results.append({
+                "embedding": index.reconstruct(i).tolist(),
+                "descriptor": descriptor_db[i]
+            })
+        with open(self.base_dir / "merge_results.jsonl", "w") as f:
+            for res in results:
+                f.write(json.dumps(res) + "\n")
+                
     def find_nn(self):
         if self.resume:
+            # If continuing from a checkpoint, load the last saved index and descriptors
             iteration = self.get_last_checkpoint()
             self.logger.info(f"Resuming from iteration {iteration}")
             index = faiss.read_index(str(self.checkpoint_dir / f"faiss_index_iter{iteration}.index"))
             descriptor_db = SqliteDict(str(self.checkpoint_dir / f"descriptors_iter{iteration}.sqlite"))
             embeddings, descriptors = self.reconstruct_embeddings_and_descriptors(index, descriptor_db)
         else:
+            # If starting fresh, load data and build index
             embeddings, descriptors = self.load_data(self.data_path, stop_index=self.stop_index)
             iteration = 0
             index, ids = self.build_index(embeddings, iteration)
@@ -237,16 +250,8 @@ class NNSearcher:
         self.logger.info(f"Merging done. Final number of vectors in index: {index.ntotal}")
         self.logger.info(f"Saving final results to {self.base_dir / 'merge_results.jsonl'}")
         
-        results = []
-        for i in range(index.ntotal):
-            results.append({
-                "embedding": index.reconstruct(i).tolist(),
-                "descriptor": descriptor_db[i]
-            })
-        with open(self.base_dir / "merge_results.jsonl", "w") as f:
-            for res in results:
-                f.write(json.dumps(res) + "\n")
-        
+        # Save final results
+        self.save_final_results(index, descriptor_db)
         descriptor_db.close()
         self.logger.info("Results saved. Exiting.")
         
