@@ -6,9 +6,7 @@ import logging
 import numpy as np
 import os
 from pathlib import Path
-import shutil
 import time
-from tqdm import tqdm
 
 # Third-party imports
 import faiss
@@ -31,11 +29,11 @@ class NNSearcher:
     def __init__(self, args):
         self.run_id = args.run_id
         self.data_path = Path(args.data_path)
-        self.base_dir = Path(f"../data/faiss/{self.run_id}")
-        self.sqlite_path = Path(args.sqlite_path) if args.sqlite_path else self.base_dir / "descriptors.sqlite"
-        self.faiss_index_path = Path(args.faiss_index_path) if args.faiss_index_path else self.base_dir / "index.index"
-        self.checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else self.base_dir / "checkpoints"
+        self.base_dir = Path(args.save_dir) if args.sqlite_path else Path(f"../data/faiss/{self.run_id}")
+        self.checkpoint_dir = self.base_dir / "checkpoints"
         self.merge_log_path = self.base_dir/ "merge_log.jsonl"
+        self.last_checkpoint_path = self.base_dir / "last_checkpoint.txt"
+        self.resume = args.resume
         self.k = args.k
         self.stop_index = args.stop_index
         self.nlist = args.nlist
@@ -73,35 +71,34 @@ class NNSearcher:
         return embeddings, descriptors
 
     @log_execution_time
-    def build_index(self, embeddings):        
+    def build_index(self, embeddings, iteration):        
         # Build FAISS index
         self.logger.info("Building FAISS index...")
         dimension = embeddings.shape[1]
-        index_flat = faiss.IndexFlatL2(dimension)
-        index = faiss.IndexIDMap2(index_flat)
+        quantizer = faiss.IndexFlatL2(dimension)
+        index = faiss.IndexIVFFlat(quantizer, dimension, self.nlist, faiss.METRIC_L2)
 
+        # Fit the embeddings to self.nlist voronoi cells
+        index.train(embeddings)
         ids = np.arange(len(embeddings), dtype=np.int64)
         index.add_with_ids(embeddings, ids)
-
+        index.nprobe = self.nprobe
+        index.make_direct_map()
+        # Save index to file        
+        faiss.write_index(index, str(self.checkpoint_dir / f"faiss_index_iter{iteration}.index"))
+        
         return index, ids
 
     @log_execution_time
-    def initialize_sqlite(self, ids, descriptors):
+    def build_sqlite(self, ids, descriptors, iteration):
+        assert len(ids) == len(descriptors), "IDs and descriptors should have the same length"
         self.logger.info("Initializing SQLite database...")
-        descriptor_db = SqliteDict(self.sqlite_path, autocommit=False)
+        descriptor_db = SqliteDict(str(self.checkpoint_dir / f"descriptors_iter{iteration}.sqlite"))
         for idx, descriptor in zip(ids, descriptors):
             descriptor_db[int(idx)] = descriptor
         descriptor_db.commit()
         return descriptor_db
 
-    def save_checkpoint(self, index, descriptor_db, iteration):
-        # Save current state to checkpoint
-        faiss.write_index(index, str(self.checkpoint_dir / f"faiss_index_iter{iteration}.index"))
-        descriptor_checkpoint = self.checkpoint_dir / f"descriptors_iter{iteration}.sqlite"
-        shutil.copy(self.sqlite_path, descriptor_checkpoint)
-        descriptor_db.commit()
-        self.logger.info(f"Checkpoint saved: Iteration {iteration}")
-        
     @log_execution_time
     def merge_neighbors(self, index, descriptor_db, mutual_pairs, iteration):
         new_embeddings = []
@@ -124,6 +121,8 @@ class NNSearcher:
             # Log merge operation
             self.log_merge(iteration, [int(i), int(j)], merged_desc)
             
+        new_embeddings = np.stack(new_embeddings).astype(np.float32)
+            
         return new_embeddings, new_descriptors, remove_ids
     
     def log_merge(self, iteration, merged_ids, merged_descriptors):
@@ -135,61 +134,78 @@ class NNSearcher:
                 "merged_descriptors": merged_descriptors
             }) + "\n")
     
+    def remove_merged_entries(self, remove_ids, embeddings, descriptors):
+        # Remove merged emebeddings
+        embeddings = np.delete(embeddings, remove_ids, 0)
+        
+        # Remove merged descriptors
+        mask = np.ones(len(descriptors), dtype=bool)
+        mask[remove_ids] = False
+        descriptors = [desc for i, desc in enumerate(descriptors) if mask[i]]
+
+        return embeddings, descriptors
+    
     @log_execution_time
-    def remove_merged(self, remove_ids, index, descriptor_db):
-        # Remove merged vectors
-        remove_ids_np = np.array(remove_ids, dtype=np.int64)
-        selector = faiss.IDSelectorBatch(remove_ids_np.astype(np.int64))
-        index.remove_ids(selector)
-        for rid in remove_ids:
-            del descriptor_db[rid]
-        descriptor_db.commit()
+    def search_index(self, index, embeddings):
+        _, neighbors = index.search(embeddings, self.k + 1)
+        all_neighbors = neighbors[:, 1:]
+        if self.k == 1:
+            all_neighbors = all_neighbors.reshape(-1, 1)
+            
+        return all_neighbors
+    
+    def find_mutual_pairs(self, neighbors):
+        mutual_pairs = []
+        visited = set()
+        for i in range(len(neighbors)):
+            for j in neighbors[i]:
+                if i in visited or j in visited:
+                    continue
+                if j < len(neighbors) and i in neighbors[j]:
+                    mutual_pairs.append((i, j))
+                    visited.update([i, j])
+                    break
+        
+        return mutual_pairs
+    
+    def reconstruct_embeddings_and_descriptors(self, index, descriptor_db):
+        embeddings = np.stack([index.reconstruct(i) for i in range(index.ntotal)]).astype(np.float32)
+        descriptors = [descriptor_db[i] for i in range(index.ntotal)]
+        return embeddings, descriptors
+    
+    def get_last_checkpoint(self):
+        if self.last_checkpoint_path.exists():
+            return int(self.last_checkpoint_path.read_text().strip())
+        return 0
 
     def find_nn(self):
-        # Load data
-        embeddings, descriptors = self.load_data(args.data_path, stop_index=args.stop_index)
-
-        # Build FAISS index
-        index, ids = self.build_index(embeddings)
-
-        # Initialize SQLite database
-        descriptor_db = self.initialize_sqlite(ids, descriptors)
-
-        # Prepare for merging
-        next_id = ids.max() + 1
-        iteration = 0
+        if self.resume:
+            iteration = self.get_last_checkpoint()
+            self.logger.info(f"Resuming from iteration {iteration}")
+            index = faiss.read_index(str(self.checkpoint_dir / f"faiss_index_iter{iteration}.index"))
+            descriptor_db = SqliteDict(str(self.checkpoint_dir / f"descriptors_iter{iteration}.sqlite"))
+            embeddings, descriptors = self.reconstruct_embeddings_and_descriptors(index, descriptor_db)
+        else:
+            embeddings, descriptors = self.load_data(self.data_path, stop_index=self.stop_index)
+            iteration = 0
+            index, ids = self.build_index(embeddings, iteration)
+            descriptor_db = self.build_sqlite(ids, descriptors, iteration)
         
-        # Save initial checkpoint
-        self.save_checkpoint(index, descriptor_db, iteration)
-        
+        ntotal = index.ntotal
         self.logger.info("Starting merge loop...")
-        
         while True:
             iteration += 1
             self.logger.info(f"[Iteration {iteration}] Searching for mutual nearest neighbors...")
-            ntotal = index.ntotal
+            self.logger.info(f"Total vectors in index: {ntotal}")
+            # Check if there are enough vectors to merge
             if ntotal < 2:
                 self.logger.info("Not enough vectors left to merge.")
                 break
-
+            
             # Query nearest neighbors
-            _, neighbors = index.search(embeddings, self.k + 1)
-            all_neighbors = neighbors[:, 1:]
-            if self.k == 1:
-                all_neighbors = all_neighbors.reshape(-1, 1)
-
-            # Find mutual pairs
-            mutual_pairs = []
-            visited = set()
-
-            for i in range(len(all_neighbors)):
-                for j in all_neighbors[i]:
-                    if i in visited or j in visited:
-                        continue
-                    if j < len(all_neighbors) and i in all_neighbors[j]:
-                        mutual_pairs.append((i, j))
-                        visited.update([i, j])
-                        break
+            nearest_neighbors = self.search_index(index, embeddings)
+            # Find mutual nearest pairs
+            mutual_pairs = self.find_mutual_pairs(nearest_neighbors)
 
             if not mutual_pairs:
                 self.logger.info("No more mutual nearest neighbors found. Halting.")
@@ -201,23 +217,38 @@ class NNSearcher:
                                                                                mutual_pairs,
                                                                                iteration
                                                                                )
-
-            self.remove_merged(remove_ids, index, descriptor_db)
+            self.remove_merged_entries(remove_ids, embeddings, descriptors)
             
-            # Add new averaged vectors
-            new_embeddings_np = np.stack(new_embeddings).astype(np.float32)
-            new_ids = np.arange(next_id, next_id + len(new_embeddings), dtype=np.int64)
-            index.add_with_ids(new_embeddings_np, new_ids)
-            for nid, desc in zip(new_ids, new_descriptors):
-                descriptor_db[int(nid)] = desc
+            # Combine old and new embeddings and descriptors
+            embeddings = np.concatenate((embeddings, new_embeddings))
+            descriptors = descriptors + new_descriptors
+            
+            assert len(embeddings) == len(descriptors), "Embeddings and descriptors should have the same length after merging"
 
-            next_id += len(new_embeddings)
-            embeddings = new_embeddings_np
+            # Save checkpoint and build new index
+            index, ids= self.build_index(embeddings, iteration)
+            ntotal = index.ntotal
+            # Close old SQLite database and build a new one
+            descriptor_db.close()
+            descriptor_db = self.build_sqlite(ids, descriptors, iteration)
+            
+            self.last_checkpoint_path.write_text(str(iteration))
 
-            # Save checkpoint
-            self.save_checkpoint(index, descriptor_db, iteration)
-
-        self.logger.info(f"Done. Final number of vectors in index: {index.ntotal}")
+        self.logger.info(f"Merging done. Final number of vectors in index: {index.ntotal}")
+        self.logger.info(f"Saving final results to {self.base_dir / 'merge_results.jsonl'}")
+        
+        results = []
+        for i in range(index.ntotal):
+            results.append({
+                "embedding": index.reconstruct(i).tolist(),
+                "descriptor": descriptor_db[i]
+            })
+        with open(self.base_dir / "merge_results.jsonl", "w") as f:
+            for res in results:
+                f.write(json.dumps(res) + "\n")
+        
+        descriptor_db.close()
+        self.logger.info("Results saved. Exiting.")
         
 def main(args):
     searcher = NNSearcher(args)
@@ -227,14 +258,13 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Merge FAISS neighbors and descriptors.")
     parser.add_argument("--run-id", type=str, required=True, help="Unique identifier for this run")
-    parser.add_argument("--data-path", type=str, required=True, help="Path to the JSONL data file")
-    parser.add_argument("--sqlite-path", type=str, help="Path to the SQLite database file")
-    parser.add_argument("--faiss-index-path", type=str, help="Path to the FAISS index file")
-    parser.add_argument("--checkpoint-dir", type=str, help="Directory to save checkpoints")
+    parser.add_argument("--data-path", type=str, help="Path to the JSONL data file")
+    parser.add_argument("--save-dir", type=str, help="Directory to save results and checkpoints")
+    parser.add_argument("--resume", action='store_true', help="Resume from last checkpoint")
     parser.add_argument("--k", type=int, default=1, help="Number of nearest neighbors to consider")
     parser.add_argument("--stop-index", type=int, default=-1, help="Stop loading data after this many records (-1 for all)")
-    parser.add_argument("--nlist", type=int, default=1000, help="Number of clusters (nlist) for IVFFlat")
-    parser.add_argument("--nprobe", type=int, default=50, help="Number of clusters to search (nprobe)")
+    parser.add_argument("--nlist", type=int, default=100, help="Number of clusters (nlist) for IVFFlat")
+    parser.add_argument("--nprobe", type=int, default=10, help="Number of clusters to search (nprobe)")
     args = parser.parse_args()
     
     main(args)
