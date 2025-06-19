@@ -21,7 +21,17 @@ def log_execution_time(func):
         logging.info(f"Execution of {func.__name__} took {time.strftime('%H:%M:%S', time.gmtime(execution_time))}.")
         return result
     return wrapper
-        
+
+
+def sanitize_unicode(obj):
+    if isinstance(obj, str):
+        return obj.encode('utf-8', 'surrogatepass').decode('utf-8', 'ignore')
+    elif isinstance(obj, dict):
+        return {sanitize_unicode(k): sanitize_unicode(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_unicode(i) for i in obj]
+    return obj  
+
 
 def save_results(results, path, run_id, only_best=True):
     output_file = path / f"descriptors_{run_id}.jsonl"
@@ -30,10 +40,14 @@ def save_results(results, path, run_id, only_best=True):
         if only_best:
             best_results = get_best_results(results)
             for doc in best_results.values():
+                # Sanitize the document to avoid encoding issues
+                doc = sanitize_unicode(doc)
                 json.dump(doc, f, ensure_ascii=False)
                 f.write("\n")
         else:
             for doc in results.values():
+                # Sanitize the document to avoid encoding issues
+                doc = sanitize_unicode(doc)
                 json.dump(doc, f, ensure_ascii=False)
                 f.write("\n")
 
@@ -47,8 +61,8 @@ def get_best_results(results):
         best_results[idx] = {
             "document": doc["document"],
             "doc_id": doc["doc_id"],
-            "general": doc["general"][best_index],
-            "specific": doc["specific"][best_index],
+            "descriptors": doc["general"][best_index],
+            "specifics": doc["specific"][best_index],
             "rewrite": doc["rewrite"][best_index],
             "similarity": doc["similarity"][best_index],
         }
@@ -62,7 +76,7 @@ def get_best_descriptors(results):
     for doc in results.values():
         # Find index of descriptors with best similarity score
         best_index = np.argmax(doc["similarity"])
-        best_descriptors.extend(doc["general"][best_index])
+        best_descriptors.extend(doc["descriptors"][best_index])
 
     return best_descriptors
 
@@ -126,8 +140,8 @@ def init_results(batch):
         index: {
             "document": doc["text"],
             "doc_id": doc["id"],
-            "general": [],
-            "specific": [],
+            "descriptors": [],
+            "specifics": [],
             "rewrite": [],
             "similarity": [],
         }
@@ -153,9 +167,13 @@ def initialise_descriptor_vocab(path):
         with open(path, "r") as f:
             file = f.readlines()
             for line in file:
-                line = line.strip().split("\t")
-                desc, freq = line[0], int(line[1])
-                descriptors[desc] += freq
+                try:
+                    line = line.strip().split("\t")
+                    desc, freq = line[0], int(line[1])
+                    descriptors[desc] += freq
+                except:
+                    logging.warning(f"Skipping malformed line in descriptor file: {line}")
+                    continue
         return descriptors
     except FileNotFoundError:
         logging.info(f"No previous descriptors found at {path}")

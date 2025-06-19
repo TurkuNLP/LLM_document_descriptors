@@ -101,7 +101,7 @@ def main(args):
         similarities_without_general.extend(similarities)
         
         
-    with open("../results/evaluations/similarity_scores_general_vs_specific.txt", "w") as f:
+    with Path("../results/evaluations/similarity_scores_general_vs_specific.txt").open("w") as f:
         f.write("Average similarity scores with all descriptors:\n")
         f.write(f"{np.mean(similarities_with_all_descriptors)}\n")
         f.write("Average similarity scores without specific descriptors:\n")

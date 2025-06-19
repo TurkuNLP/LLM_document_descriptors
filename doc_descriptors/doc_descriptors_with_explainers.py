@@ -521,7 +521,7 @@ class DescriptorGenerator:
                 
     def remove_explanations(self, list_of_descriptors):
         return [
-            descriptor.split(":")[0] if ":" in descriptor else descriptor 
+            descriptor.split(";")[0] if ";" in descriptor else descriptor 
             for descriptor in list_of_descriptors
             ]
 

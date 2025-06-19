@@ -190,6 +190,7 @@ class NNSearcher:
                 f.write(json.dumps(res) + "\n")
                 
     def find_nn(self):
+        self.logger.info("Starting run...")
         if self.resume:
             # If continuing from a checkpoint, load the last saved index and descriptors
             iteration = self.get_last_checkpoint()

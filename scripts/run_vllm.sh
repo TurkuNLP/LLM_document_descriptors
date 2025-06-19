@@ -24,17 +24,17 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-run_id="zero_vocab_rerun"
+run_id="new_descriptors_8"
 
-srun python3 ../doc_descriptors/vllm_document_descriptors.py --run-id=$run_id \
-                                                             --temperature=0.1 \
-                                                             --batch-size=200 \
-                                                             --num-batches=25 \
-                                                             --num-rewrites=3 \
-                                                             --start-index=5000 \
-                                                             --max-vocab=0 \
-                                                             --synonym-threshold=0.3 \
-                                                             --data-source="fineweb" \
-                                                             --checkpoint-interval=50 \
+srun python3 ../doc_descriptors/doc_descriptors_with_explainers.py --run-id=$run_id \
+                                                                   --temperature=0.1 \
+                                                                   --batch-size=200 \
+                                                                   --num-batches=40 \
+                                                                   --num-rewrites=3 \
+                                                                   --start-index=72000 \
+                                                                   --max-vocab=0 \
+                                                                   --synonym-threshold=0.3 \
+                                                                   --data-source="fineweb" \
+                                                                   --checkpoint-interval=50 \
 
 gpu-energy --diff

@@ -2,9 +2,8 @@
 #SBATCH --job-name=faiss_search
 #SBATCH --account=project_462000353
 #SBATCH --partition=standard
-#SBATCH --time=23:00:00
+#SBATCH --time=4:00:00
 #SBATCH --ntasks=1
-###SBATCH --cpus-per-task=96
 #SBATCH --mem=0 # Use all available memory
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
@@ -23,4 +22,5 @@ RUN_ID="$1"
 python3 faiss_neighbors.py --run-id "$RUN_ID" \
                            --data-path "/scratch/project_462000615/ehenriks/llm-descriptor-evaluation/data/processed/descriptors_with_explainers_embeddings_2.jsonl" \
                            --stop-index=-1 \
-                           --k=1
+                           --k=1 \
+                           --resume
