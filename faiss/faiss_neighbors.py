@@ -3,7 +3,7 @@ import argparse
 import functools
 import json
 import logging
-import numpy as np
+import numpy as np #type: ignore
 import os
 from pathlib import Path
 import time
@@ -35,9 +35,10 @@ class NNSearcher:
         self.last_checkpoint_path = self.base_dir / "last_checkpoint.txt"
         self.resume = args.resume
         self.k = args.k
-        self.stop_index = args.stop_index
+        self.data_size = args.data_size
         self.nlist = args.nlist
         self.nprobe = args.nprobe
+        self.max_iter = args.max_iter
 
         os.makedirs(self.base_dir, exist_ok=True)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
@@ -54,13 +55,15 @@ class NNSearcher:
         self.logger = logging.getLogger(__name__)
         faiss.omp_set_num_threads(os.cpu_count())
         self.logger.info(f"FAISS using {faiss.omp_get_max_threads()} threads")
+        if self.resume:
+            self.logger.info("Resuming from last checkpoint. If this is not intended, please remove the --resume flag.")
 
     @log_execution_time
-    def load_data(self, path, stop_index=-1):
+    def load_data(self, path, data_size=-1):
         self.logger.info("Loading JSONL data...")
         with open(path, "r") as f:
-            if stop_index > 0:
-                lines = [next(f) for _ in range(stop_index)]
+            if data_size > 0:
+                lines = [next(f) for _ in range(data_size)]
             else:
                 lines = f.readlines()
 
@@ -99,6 +102,11 @@ class NNSearcher:
         descriptor_db.commit()
         return descriptor_db
 
+    def log_descriptors(self, merged):
+        with open(self.base_dir / "descriptors.jsonl", "a") as f:
+            f.write(merged)
+            f.write("\n")
+
     @log_execution_time
     def merge_neighbors(self, index, descriptor_db, mutual_pairs, iteration):
         new_embeddings = []
@@ -113,10 +121,14 @@ class NNSearcher:
 
             desc_i = descriptor_db[int(i)]
             desc_j = descriptor_db[int(j)]
-            merged_desc = (desc_i, desc_j)
+            #merged_desc_for_logging = (desc_i, desc_j)
+            merged_desc = f"{desc_i} |M| {desc_j}"
             new_descriptors.append(merged_desc)
 
             remove_ids.extend([int(i), int(j)])
+
+            # This is just for debugging
+            self.log_descriptors(merged_desc)
 
             # Log merge operation
             self.log_merge(iteration, [int(i), int(j)], merged_desc)
@@ -131,7 +143,7 @@ class NNSearcher:
             f.write(json.dumps({
                 "iteration": iteration,
                 "merged_ids": merged_ids,
-                "merged_descriptors": merged_descriptors
+                "merged_descriptors": merged_descriptors.split(" |M| ")
             }) + "\n")
     
     def remove_merged_entries(self, remove_ids, embeddings, descriptors):
@@ -199,7 +211,7 @@ class NNSearcher:
             embeddings, descriptors = self.reconstruct_embeddings_and_descriptors(index, descriptor_db)
         else:
             # If starting fresh, load data and build index
-            embeddings, descriptors = self.load_data(self.data_path, stop_index=self.stop_index)
+            embeddings, descriptors = self.load_data(self.data_path, data_size=self.data_size)
             iteration = 0
             index, ids = self.build_index(embeddings, iteration)
             descriptor_db = self.build_sqlite(ids, descriptors, iteration)
@@ -208,6 +220,9 @@ class NNSearcher:
         self.logger.info("Starting merge loop...")
         while True:
             iteration += 1
+            if iteration > self.max_iter and self.max_iter != -1:
+                self.logger.info(f"Reached maximum iterations ({self.max_iter}). Stopping.")
+                break
             self.logger.info(f"[Iteration {iteration}] Searching for mutual nearest neighbors...")
             self.logger.info(f"Total vectors in index: {ntotal}")
             # Check if there are enough vectors to merge
@@ -267,9 +282,10 @@ if __name__ == "__main__":
     parser.add_argument("--save-dir", type=str, help="Directory to save results and checkpoints")
     parser.add_argument("--resume", action='store_true', help="Resume from last checkpoint")
     parser.add_argument("--k", type=int, default=1, help="Number of nearest neighbors to consider")
-    parser.add_argument("--stop-index", type=int, default=-1, help="Stop loading data after this many records (-1 for all)")
+    parser.add_argument("--data-size", type=int, default=-1, help="Number of embeddings and descriptors to load initially (-1 for full data).")
     parser.add_argument("--nlist", type=int, default=100, help="Number of clusters (nlist) for IVFFlat")
     parser.add_argument("--nprobe", type=int, default=10, help="Number of clusters to search (nprobe)")
+    parser.add_argument("--max-iter", type=int, default=-1, help="Maximum number of iterations to run (-1 for no limit)")
     args = parser.parse_args()
     
     main(args)

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=faiss_search
-#SBATCH --account=project_462000353
-#SBATCH --partition=standard
+#SBATCH --account=project_2011109
+#SBATCH --partition=medium
 #SBATCH --time=23:00:00
 #SBATCH --ntasks=1
 ###SBATCH --cpus-per-task=96
@@ -11,7 +11,7 @@
 
 # === Load Required Modules ===
 module purge
-module use /appl/local/csc/modulefiles
+#module use /appl/local/csc/modulefiles
 module load pytorch
 
 # === Activate Python Virtual Environment ===
@@ -21,6 +21,7 @@ source ../venv/bin/activate
 RUN_ID="$1"
 
 python3 faiss_neighbors.py --run-id "$RUN_ID" \
-                           --data-path "/scratch/project_462000615/ehenriks/llm-descriptor-evaluation/data/processed/descriptors_with_explainers_embeddings_2.jsonl" \
-                           --stop-index=-1 \
-                           --k=1
+                           --data-path "/scratch/project_2011109/erik/schema-on-demand/data/processed/descriptors_with_explainers_embeddings.jsonl" \
+                           --data-size=-1 \
+                           --k=1 \
+                           --max-iter=50 \
