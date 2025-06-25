@@ -37,11 +37,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # ---------------------------------------------------------------------------
 # logging configuration
 # ---------------------------------------------------------------------------
-slurm_job_id = os.environ.get("SLURM_JOB_ID", "default_id")
 logging.basicConfig(
-    filename=f"../logs/{slurm_job_id}.log",
-    filemode="a",
-    format="%(asctime)s ‑ %(levelname)s ‑ %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
@@ -79,8 +76,11 @@ class DescriptorMerger:
         # storage --------------------------------------------------------
         self.base_dir: Path = Path("..") / "results" / "LLM_merges" / self.run_id
         self.checkpoint_file: Path = self.base_dir / "checkpoint.json"
+        
+        # Set up logging
+        self._configure_logging()
 
-        # audit structures ----------------------------------------------
+        # audit structures
         # Tracks all mappings from original pairs to their current merged versions
         self.global_map: Dict[str, str] = {}
         
@@ -89,6 +89,34 @@ class DescriptorMerger:
 
         # to be initialised later in pipeline()
         self.llm: LLM | None = None
+        
+    
+    def _configure_logging(self) -> None:
+        """Configure logging to write to the run-specific log file."""
+        log_file = self.base_dir / f"{self.run_id}.log"
+        
+        # Remove any existing handlers (from the basicConfig above)
+        for handler in logging.root.handlers[:]:
+            logging.root.removeHandler(handler)
+            
+        # Add a new file handler
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        
+        # Add a console handler to still see output in the terminal
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        
+        # Configure the root logger
+        logging.root.setLevel(logging.INFO)
+        logging.root.addHandler(file_handler)
+        logging.root.addHandler(console_handler)
+        
+        # Log the configuration change
+        logging.info(f"Logging configured to: {log_file}")
+        # Also log the slurm job ID if available
+        slurm_job_id = os.environ.get("SLURM_JOB_ID", "N/A")
+        logging.info(f"SLURM Job ID: {slurm_job_id}")
 
     @log_execution_time
     def llm_setup(self) -> LLM:
@@ -140,24 +168,40 @@ class DescriptorMerger:
         
         return parsed_responses
 
-    def _save_checkpoint(self, groups: Dict[str, List[str]], iteration: int) -> None:
+    def _save_checkpoint(self, groups: Dict[str, List[str]], iteration: int, 
+                        batch_index: int = 0) -> None:
         state = {
             "iteration": iteration,
+            "batch_index": batch_index,
+            "batch_size": self.batch_size,
             "groups": groups,
             "global_map": self.global_map,
             "history": self.history,
         }
-        self.checkpoint_file.write_text(json.dumps(state, ensure_ascii=False))
-        logging.info("Saved checkpoint @ iteration %s → %s", iteration, self.checkpoint_file)
+        # Create a temporary file first for safer atomic writes
+        temp_file = self.checkpoint_file.with_suffix('.tmp')
+        temp_file.write_text(json.dumps(state, ensure_ascii=False))
+        temp_file.replace(self.checkpoint_file)  # Atomic replacement
+        logging.info("Saved checkpoint @ iteration %s, batch %s → %s", 
+                    iteration, batch_index, self.checkpoint_file)
 
-    def _load_checkpoint(self) -> Tuple[Dict[str, List[str]], int]:
+    def _load_checkpoint(self) -> Tuple[Dict[str, List[str]], int, int, List[str]]:
         data = json.loads(self.checkpoint_file.read_text())
         self.global_map = data.get("global_map", {})
         self.history = data.get("history", [])
         iteration = data.get("iteration", 0)
+        batch_index = data.get("batch_index", 0)
         groups = {k: v for k, v in data.get("groups", {}).items()}
-        logging.info("Loaded checkpoint with iteration=%s, |groups|=%s", iteration, len(groups))
-        return groups, iteration
+        
+        # Check for saved batch size and override if necessary
+        saved_batch_size = data.get("batch_size")
+        if saved_batch_size is not None and saved_batch_size != self.batch_size:
+            logging.warning(f"Overriding provided batch size ({self.batch_size}) with checkpoint batch size ({saved_batch_size})")
+            self.batch_size = saved_batch_size
+            
+        logging.info("Loaded checkpoint with iteration=%s, batch=%s, |groups|=%s, batch_size=%s", 
+                    iteration, batch_index, len(groups), self.batch_size)
+        return groups, iteration, batch_index
 
     @staticmethod
     def _response_format() -> GuidedDecodingParams:
@@ -254,10 +298,10 @@ class DescriptorMerger:
         self.llm = self.llm_setup()
 
         # Load data or resume from checkpoint
+        batch_index = 0
         if self.resume and self.checkpoint_file.exists():
             logging.info("Resuming from previous checkpoint")
-            groups, iteration = self._load_checkpoint()
-            iteration += 1  # resume *after* the checkpointed iteration
+            groups, iteration, batch_index= self._load_checkpoint()
         else:
             raw = self._load_raw_descriptor_strings(self.data_path)
             pairs = [self._split_pair(s) for s in raw]
@@ -270,9 +314,8 @@ class DescriptorMerger:
             logging.info("Iteration %s: |groups|=%s", iteration, len(groups))
             
             # split into singletons and multis
-            # (singletons are not processed, they are left untouched)
             singletons = {k: v for k, v in groups.items() if len(v) == 1}
-            multis      = {k: v for k, v in groups.items() if len(v) > 1}
+            multis = {k: v for k, v in groups.items() if len(v) > 1}
             if not multis:
                 logging.info("No multi‑explainer groups left → done")
                 break
@@ -283,8 +326,21 @@ class DescriptorMerger:
             iter_map: Dict[str, str] = {}
             changed = False
 
-            for batch in self._batch_dicts(multis, max_dicts=self.batch_size):
-                logging.info("Processing new batch...")
+            # Create a list of batches we'll process
+            all_batches = list(self._batch_dicts(multis, max_dicts=self.batch_size))
+            
+            # If batch_index > 0, we need to load the current merged state
+            if batch_index > 0:
+                # Add the existing processed keys to the merged dict
+                logging.info(f"Resuming from batch {batch_index} out of {len(all_batches)}")
+                # Reconstruct merged state from the current groups
+                for k, v in groups.items():
+                    if k not in singletons:
+                        merged[k].extend(v)
+            
+            # Start from the saved batch index if resuming
+            for i, batch in enumerate(all_batches[batch_index:], batch_index):
+                logging.info(f"Processing batch {i+1}/{len(all_batches)} in iteration {iteration}")
                 prompts = [merge_prompts.merge_descriptors_prompt(k, v) for d in batch for k, v in d.items()]
                 parsed_responses = self.generate(prompts)
                 
@@ -303,7 +359,9 @@ class DescriptorMerger:
                         f.write(f"{json.dumps(resp, ensure_ascii=False)}\n")
 
                     for g in resp.get("groups", []):
-                        merged[g.get("group_descriptor", "Error in descriptor merging").lower().strip()].append(g.get("group_explainer", "Error in descriptor merging").strip())
+                        merged[g.get("group_descriptor", "Error in descriptor merging").lower().strip()].append(
+                            g.get("group_explainer", "Error in descriptor merging").strip()
+                        )
                         changed = True
 
                     for old, new in mapping.items():
@@ -311,12 +369,22 @@ class DescriptorMerger:
                         root = self.global_map.get(old, old)
                         self.global_map[root] = new
                         self.global_map[old] = new
+                
 
+                # Save checkpoint after each batch
+                current_groups = self._group_pairs([(d, e) for d, lst in merged.items() for e in lst])
+                current_groups.update(singletons)  # Add singletons
+                self._save_checkpoint(current_groups, iteration, i+1)
+            
+            # After all batches are processed:
             groups = self._group_pairs([(d, e) for d, lst in merged.items() for e in lst])
             groups.update(singletons)  # re‑attach untouched singletons
             
             self.history.append({"iteration": iteration, "mapping": iter_map})
-            self._save_checkpoint(groups, iteration)
+            
+            # Reset for next iteration
+            batch_index = 0
+            self._save_checkpoint(groups, iteration, batch_index)
 
             if not changed:
                 logging.info("No changes in iteration %s → finishing", iteration)
@@ -326,7 +394,6 @@ class DescriptorMerger:
         # ----- final save ---------------------------------------------
         self._save_artifacts(groups)
         self.checkpoint_file.unlink(missing_ok=True)
-
 
 def replace_pairs_in_documents(
     source_jsonl: Path,
