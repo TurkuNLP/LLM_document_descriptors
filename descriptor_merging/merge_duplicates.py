@@ -8,23 +8,31 @@ from __future__ import annotations
 
 # ‑‑ standard library ‑‑
 import argparse
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
+import functools
 import json
 import logging
 import os
-from collections import defaultdict
 from pathlib import Path
+import time
 from typing import Any, Dict, List, Iterator, Tuple
 
 # ‑‑ third‑party ‑‑
 import json_repair  # type: ignore
 import numpy as np  # type: ignore
-import torch  # type: ignore
 from pydantic import BaseModel  # type: ignore
+import torch  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 
 # ‑‑ local imports ‑‑
 import merge_prompts  # type: ignore
+
+# ---------------------------------------------------------------------------
+# environment configuration
+# ---------------------------------------------------------------------------
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # ---------------------------------------------------------------------------
 # logging configuration
@@ -36,6 +44,18 @@ logging.basicConfig(
     format="%(asctime)s ‑ %(levelname)s ‑ %(message)s",
     level=logging.INFO,
 )
+
+def log_execution_time(func):
+    """Decorator that logs the execution time of a function."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        logging.info(f"Execution of {func.__name__} took {time.strftime('%H:%M:%S', time.gmtime(execution_time))}.")
+        return result
+    return wrapper
 
 # ---------------------------------------------------------------------------
 # main class
@@ -61,15 +81,16 @@ class DescriptorMerger:
         self.checkpoint_file: Path = self.base_dir / "checkpoint.json"
 
         # audit structures ----------------------------------------------
+        # Tracks all mappings from original pairs to their current merged versions
         self.global_map: Dict[str, str] = {}
+        
+        # Records each merge decision for audit trail purposes
         self.history: List[Dict[str, Any]] = []
 
-        # to be initialised later
+        # to be initialised later in pipeline()
         self.llm: LLM | None = None
 
-    # ────────────────────────────────────────────────────────────────────
-    # LLM helpers
-    # ────────────────────────────────────────────────────────────────────
+    @log_execution_time
     def llm_setup(self) -> LLM:
         logging.info("Loading LLM model…")
         return LLM(
@@ -82,31 +103,43 @@ class DescriptorMerger:
             gpu_memory_utilization=0.8,
         )
 
-    def generate(self, prompts: List[str]) -> List[str]:
+    @log_execution_time
+    def generate(self, prompts: List[str]) -> List[Dict]:
         params = SamplingParams(
             temperature=self.temperature,
             top_p=0.5,
             repetition_penalty=1.0,
-            max_tokens=1024,
+            max_tokens=10_000,
             stop=["<|eot_id|>"],
             guided_decoding=self._response_format(),
         )
+        start = time.perf_counter()
         outputs = self.llm.generate(prompts, sampling_params=params, use_tqdm=False)  # type: ignore[arg-type]
+        elapsed = time.perf_counter() - start if start else 0.0
+        
+        # Log throughput
+        gen_tok = sum(len(o.outputs[0].token_ids) for o in outputs if getattr(o.outputs[0], "token_ids", None))
+        in_tok = sum(len(o.prompt_token_ids) for o in outputs if getattr(o, "prompt_token_ids", None))
+        tot_tok = gen_tok + in_tok
+        if elapsed > 0 and tot_tok > 0:
+            logging.info("LLM throughput: %.1f tok/s (%.1f gen tok/s) — %s tokens in %.2fs", tot_tok / elapsed, gen_tok / elapsed if gen_tok else 0, tot_tok, elapsed)
+        
+        response_texts = [out.outputs[0].text.strip(" `\n").removeprefix("json") for out in outputs]
+    
+        # Parallel validation if there are many responses
+        if len(response_texts) > 10:
+            try:
+                with ProcessPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as executor:
+                    parsed_responses = list(executor.map(validate_json, response_texts))
+            except Exception as e:
+                logging.error(f"Error in parallel JSON validation, falling back to sequential processing. Error: {e}")
+                # Fallback to sequential processing
+                parsed_responses = [validate_json(text) for text in response_texts]
+        else:
+            parsed_responses = [validate_json(text) for text in response_texts]
+        
+        return parsed_responses
 
-        return [out.outputs[0].text.strip(" `\n").removeprefix("json") for out in outputs]
-
-    @staticmethod
-    def validate_output(text: str) -> Dict[str, Any]:
-        try:
-            obj = json_repair.loads(text)
-            return obj if isinstance(obj, dict) else {}
-        except Exception as exc:  # noqa: BLE001
-            logging.warning("JSON parse failed: %s", exc)
-            return {}
-
-    # ------------------------------------------------------------------
-    # checkpoint helpers ------------------------------------------------
-    # ------------------------------------------------------------------
     def _save_checkpoint(self, groups: Dict[str, List[str]], iteration: int) -> None:
         state = {
             "iteration": iteration,
@@ -126,9 +159,6 @@ class DescriptorMerger:
         logging.info("Loaded checkpoint with iteration=%s, |groups|=%s", iteration, len(groups))
         return groups, iteration
 
-    # ------------------------------------------------------------------
-    # schema helpers ----------------------------------------------------
-    # ------------------------------------------------------------------
     @staticmethod
     def _response_format() -> GuidedDecodingParams:
         class G(BaseModel):  # type: ignore[misc]
@@ -142,9 +172,6 @@ class DescriptorMerger:
 
         return GuidedDecodingParams(json=R.model_json_schema())
 
-    # ------------------------------------------------------------------
-    # batching ----------------------------------------------------------
-    # ------------------------------------------------------------------
     @staticmethod
     def _batch_dicts(
         groups: Dict[str, List[str]],
@@ -160,9 +187,6 @@ class DescriptorMerger:
         for i in range(0, len(normalised), max_dicts):
             yield normalised[i : i + max_dicts]
 
-    # ------------------------------------------------------------------
-    # util helpers ------------------------------------------------------
-    # ------------------------------------------------------------------
     @staticmethod
     def _split_pair(text: str) -> Tuple[str, str]:
         try:
@@ -178,28 +202,28 @@ class DescriptorMerger:
             d[desc].append(expl)
         return d
 
-    # ------------------------------------------------------------------
-    # create mapping ----------------------------------------------------
-    # ------------------------------------------------------------------
-    def _create_mapping(self, resp: Dict[str, Any]) -> Dict[str, str]:
-        mapping: Dict[str, str] = {}
-        base = resp.get("original_descriptor", "")
-        for g in resp.get("groups", []):
-            new_pair = f"{g['group_descriptor']}; {g['group_explainer']}"
-            for old in g.get("original_explainers_in_this_group", []):
-                mapping[f"{base}; {old}"] = new_pair
-        return mapping
-
-    # ------------------------------------------------------------------
-    # mapping collapse & save ------------------------------------------
-    # ------------------------------------------------------------------
     def _collapse_map(self) -> Dict[str, str]:
+        def find_final_mapping(key: str, cache: Dict[str, str], path: set) -> str:
+            if key not in self.global_map or key == self.global_map[key]:
+                return key
+                
+            if key in cache:
+                return cache[key]
+                
+            if key in path:  # Detect cycle
+                logging.warning(f"Circular reference detected in _collapse_map() for key: {key}")
+                return key  # Break the cycle
+                
+            path.add(key)
+            result = find_final_mapping(self.global_map[key], cache, path)
+            path.remove(key)
+            cache[key] = result
+            return result
+        
         out: Dict[str, str] = {}
+        cache: Dict[str, str] = {}
         for src in self.global_map:
-            dst = self.global_map[src]
-            while dst in self.global_map and dst != self.global_map[dst]:
-                dst = self.global_map[dst]
-            out[src] = dst
+            out[src] = find_final_mapping(src, cache, set())
         return out
 
     def _save_artifacts(self, groups: Dict[str, List[str]]) -> None:
@@ -214,10 +238,7 @@ class DescriptorMerger:
             json.dumps(self.history, ensure_ascii=False, indent=2)
         )
         logging.info("Artifacts written to %s", self.base_dir)
-        
-    # ------------------------------------------------------------------
-    # raw data load helper ---------------------------------------------
-    # ------------------------------------------------------------------
+
     @staticmethod
     def _load_raw_descriptor_strings(path: Path) -> List[str]:
         logging.info("Loading descriptor strings from %s", path)
@@ -229,14 +250,12 @@ class DescriptorMerger:
                 out.extend(doc["descriptors"][best])
         return out
 
-    # ------------------------------------------------------------------
-    # pipeline ----------------------------------------------------------
-    # ------------------------------------------------------------------
     def pipeline(self) -> None:
         self.llm = self.llm_setup()
 
-        # ----- load / resume -------------------------------------------
+        # Load data or resume from checkpoint
         if self.resume and self.checkpoint_file.exists():
+            logging.info("Resuming from previous checkpoint")
             groups, iteration = self._load_checkpoint()
             iteration += 1  # resume *after* the checkpointed iteration
         else:
@@ -244,9 +263,9 @@ class DescriptorMerger:
             pairs = [self._split_pair(s) for s in raw]
             groups = self._group_pairs(pairs)
             iteration = 1
-            logging.info("Starting fresh run with %s groups", len(groups))
+            logging.info("Starting new run with %s groups", len(groups))
 
-        # ----- main loop ----------------------------------------------
+        # Main loop
         while True:
             logging.info("Iteration %s: |groups|=%s", iteration, len(groups))
             
@@ -265,15 +284,26 @@ class DescriptorMerger:
             changed = False
 
             for batch in self._batch_dicts(multis, max_dicts=self.batch_size):
+                logging.info("Processing new batch...")
                 prompts = [merge_prompts.merge_descriptors_prompt(k, v) for d in batch for k, v in d.items()]
-                resp_texts = self.generate(prompts)
-                parsed = [self.validate_output(t) for t in resp_texts]
-
-                for resp in parsed:
-                    mapping = self._create_mapping(resp)
+                parsed_responses = self.generate(prompts)
+                
+                # Process responses to create mappings
+                try:
+                    with ProcessPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as executor:
+                        results = list(executor.map(create_mapping, parsed_responses))
+                except Exception as e:
+                    logging.error(f"Error in parallel processing, fallback to sequential processing. Error: {e}")
+                    # Fallback to sequential processing
+                    results = [create_mapping(resp) for resp in parsed_responses]
+                    
+                for mapping, resp in results:
+                    # Log model responses for visual inspection
+                    with open(self.base_dir / f"iteration_{iteration}_response.jsonl", "a", encoding="utf-8") as f:
+                        f.write(f"{json.dumps(resp, ensure_ascii=False)}\n")
 
                     for g in resp.get("groups", []):
-                        merged[g["group_descriptor"].lower().strip()].append(g["group_explainer"].strip())
+                        merged[g.get("group_descriptor", "Error in descriptor merging").lower().strip()].append(g.get("group_explainer", "Error in descriptor merging").strip())
                         changed = True
 
                     for old, new in mapping.items():
@@ -297,9 +327,6 @@ class DescriptorMerger:
         self._save_artifacts(groups)
         self.checkpoint_file.unlink(missing_ok=True)
 
-# ---------------------------------------------------------------------------
-# document rewrite helper
-# ---------------------------------------------------------------------------
 
 def replace_pairs_in_documents(
     source_jsonl: Path,
@@ -312,6 +339,24 @@ def replace_pairs_in_documents(
             doc["descriptors"] = [pair_map.get(s, s) for s in doc.get("descriptors", [])]
             fout.write(json.dumps(doc, ensure_ascii=False) + "\n")
     logging.info("Rewrote descriptors → %s", target_jsonl)
+
+
+def validate_json(text: str) -> Dict[str, Any]:
+    try:
+        obj = json_repair.loads(text)
+        return obj if isinstance(obj, dict) else {}
+    except (json.JSONDecodeError, ValueError) as exc:
+        logging.warning("JSON parse failed: %s", exc)
+        return {}
+    
+def create_mapping(resp: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    mapping: Dict[str, str] = {}
+    base = resp.get("original_descriptor", "")
+    for g in resp.get("groups", []):
+        new_pair = f"{g.get('group_descriptor', 'Error in descriptor merging')}; {g.get('group_explainer', 'Error in descriptor merging')}"
+        for old in g.get("original_explainers_in_this_group", []):
+            mapping[f"{base}; {old}"] = new_pair
+    return mapping, resp  # Return both mapping and original response
 
 # ---------------------------------------------------------------------------
 # CLI entry‑point
