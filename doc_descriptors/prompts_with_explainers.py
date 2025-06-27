@@ -1,4 +1,4 @@
-def initial_prompt_one_descriptor_type(document, vocab):
+def initial_prompt_one_descriptor_type(document):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 ##Instruction:
@@ -88,7 +88,7 @@ Reconstruct the original document as accurately as possible using both the descr
 
 
 
-def revise_keyphrases_prompt_one_descriptor_type(original_document, rewritten_document, descriptors, specifics, vocab):
+def revise_keyphrases_prompt_one_descriptor_type(original_document, rewritten_document, descriptors, specifics):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 ##Instruction:

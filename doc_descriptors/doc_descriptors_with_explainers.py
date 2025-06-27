@@ -64,8 +64,6 @@ class DescriptorGenerator:
         self.run_id = args.run_id
         self.num_rewrites = args.num_rewrites
         self.batch_size = args.batch_size
-        self.max_vocab = args.max_vocab
-        self.synonym_threshold = args.synonym_threshold
         self.data_source = args.data_source
         self.temperature = args.temperature
         self.checkpoint_interval = args.checkpoint_interval
@@ -90,7 +88,6 @@ class DescriptorGenerator:
             "initial": 2000,
             "rewrite": 4000,
             "revise": 5000,
-            "synonyms": 2000,
         }
         sampling_params = SamplingParams(
             temperature=self.temperature,
@@ -128,15 +125,10 @@ class DescriptorGenerator:
             yield batch
 
     @log_execution_time
-    def initial_stage(self, documents, vocab):
-        if len(vocab) == 0:
-            vocab = "The list of general descriptors is currently empty."
-        else:
-            vocab = "\n".join(vocab)
-
+    def initial_stage(self, documents):
         stage = "initial"
         prompts = [
-            self.format_prompt(stage=stage, original=document, vocab=vocab)
+            self.format_prompt(stage=stage, original=document)
             for document in documents
         ]
         batched_output = self.generate(prompts, stage)
@@ -172,7 +164,7 @@ class DescriptorGenerator:
         return validated_outputs
 
     @log_execution_time
-    def revise_stage(self, document, rewritten, general, specific, vocab):
+    def revise_stage(self, document, rewritten, general, specific):
         """
         Processes lists of descriptors and rewrites through the revise generation stage.
 
@@ -182,14 +174,12 @@ class DescriptorGenerator:
             rewritten (list of str): The rewritten documents.
             general (list of list): General descriptors for the documents.
             specific (list of list): Specific descriptors for the documents.
-            vocab (list of str): The current general descriptor vocabulary.
             llm (object): The language model used for generating outputs.
 
         Returns:
             list of dict: A list of validated outputs, each containing general and specific descriptors.
         """
         stage = "revise"
-        vocab = "\n".join(vocab)
         prompts = []
         for d, r, g, s in zip(document, rewritten, general, specific):
             prompts.append(
@@ -199,7 +189,6 @@ class DescriptorGenerator:
                     rewritten=r,
                     descriptors=g,
                     specifics=s,
-                    vocab=vocab,
                 )
             )
         batched_output = self.generate(prompts, stage)
@@ -208,81 +197,6 @@ class DescriptorGenerator:
         ]
         
         return validated_outputs
-
-    @log_execution_time
-    def synonym_stage(
-        self,
-        best_results,
-        best_descriptors,
-        synonym_threshold,
-    ):
-        # Load full vocabulary (if it exists) and append it to this round of descriptors
-        stage = "synonyms"
-        try:
-            with open(self.base_dir / f"descriptor_vocab_{self.run_id}.tsv", "r") as f:
-                file = f.readlines()
-                descriptors = [line.split("\t")[0] for line in file] + best_descriptors
-        except FileNotFoundError:
-            descriptors = best_descriptors
-
-        # Embed best descriptors
-        embeddings = self.embedder.embed_descriptors(descriptors)
-
-        # Group similar descriptors with agglomerative clustering
-        synonyms = self.find_synonyms(
-            descriptors, embeddings, synonym_threshold, save_groups=False
-        )
-
-        # Format synonym groups into LLM prompts
-        prompts = [
-            self.format_prompt(stage=stage, group_name=group_name, synonyms=syns)
-            for group_name, syns in synonyms.items()
-        ]
-    
-        # Use LLM to evaluate and form final synonyms
-        # Since the number of synonym groups can grow quite large,
-        # we split the prompts into batches
-        validated_outputs = []
-        prompt_batch = []
-        for idx, prompt in enumerate(prompts):
-            prompt_batch.append(prompt)
-            if len(prompt_batch) == 200 or idx+1 == len(prompts):    
-                batched_output = self.generate(prompt_batch, stage)
-                validated_outputs.extend([self.validate_output(output) for output in batched_output])
-                prompt_batch = []
-                
-        # Make dictionary from LLM outputs
-        synonyms = defaultdict(list)
-        for d in validated_outputs:
-            for key, value in d.items():
-                synonyms[key].extend(value)
-
-        # Replace the original descriptors
-        self.replace_synonyms(synonyms, best_results)
-        
-        # Also update the descriptors of previously processed and saved documents
-        try:
-            with open(
-                self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl", "r"
-            ) as f:
-                prev_results = {}
-                file = [json.loads(line.strip()) for line in f.readlines()]
-                for idx, doc in enumerate(file):
-                    prev_results[idx] = doc
-
-            self.replace_synonyms(synonyms, prev_results)
-            with open(
-                self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl", "w"
-            ) as f:
-                for doc in prev_results.values():
-                    json_line = json.dumps(doc, ensure_ascii=False)
-                    f.write(json_line + "\n")
-        except FileNotFoundError:
-            pass
-        
-        save_synonym_dict(synonyms, self.base_dir, self.run_id)
-
-        return best_results
 
     def update_descriptor_vocab(self, descriptor_path):
         desc_counts = Counter()
@@ -295,18 +209,6 @@ class DescriptorGenerator:
 
         save_descriptors(desc_counts, descriptor_path)
         self.log_descriptor_growth(desc_counts)
-
-        # Keep max_vocab most common general descriptors. These will be given to the model as possible options.
-        descriptor_vocab = (
-            desc_counts.most_common(self.max_vocab)
-            if self.max_vocab != -1
-            else desc_counts.most_common()
-        )
-        descriptor_vocab = [item[0] for item in descriptor_vocab]
-        # Shuffle the list of descriptors to avoid ordering bias
-        shuffle(descriptor_vocab)
-
-        return descriptor_vocab
 
     def log_descriptor_growth(self, vocab):
         with open(
@@ -321,26 +223,18 @@ class DescriptorGenerator:
         rewritten=None,
         descriptors=None,
         specifics=None,
-        vocab=None,
-        group_name=None,
-        synonyms=None,
     ):
         # Truncate original document to max length
         if original:
             original = self.tokenize_and_truncate(original, 100_000)
 
         if stage == "initial":
-            return prompts_with_explainers.initial_prompt_one_descriptor_type(original, vocab)
+            return prompts_with_explainers.initial_prompt_one_descriptor_type(original)
         elif stage == "rewrite":
             return prompts_with_explainers.rewrite_prompt_one_descriptor_type(descriptors, specifics)
         elif stage == "revise":
             return prompts_with_explainers.revise_keyphrases_prompt_one_descriptor_type(
-                original, rewritten, descriptors, specifics, vocab
-            )
-        elif stage == "synonyms":
-            return prompts_with_explainers.review_synonyms(group_name, synonyms)
-        elif stage == "fix":
-            return prompts_with_explainers.reformat_output_prompt(original)
+                original, rewritten, descriptors, specifics)
 
     def get_response_format(self, stage):
         if stage == "initial":
@@ -361,11 +255,6 @@ class DescriptorGenerator:
                 descriptors: list[str]
                 specifics: list[str]
 
-        elif stage == "synonyms":
-
-            class ResponseFormat(RootModel):
-                root: dict[str, list[str]]
-
         json_schema = ResponseFormat.model_json_schema()
         return GuidedDecodingParams(json=json_schema)
 
@@ -380,63 +269,6 @@ class DescriptorGenerator:
 
         return tokenizer.decode(prompt_token_ids)
 
-    def find_synonyms(
-        self, descriptors, embeddings, distance_threshold, save_groups=False
-    ):
-        # Convert embeddings to NumPy array if needed
-        embeddings = np.array(embeddings)
-
-        # Perform Agglomerative Clustering
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=distance_threshold,
-            metric="cosine",
-            linkage="average",
-        )
-        labels = clustering.fit_predict(embeddings)
-
-        # Group words by cluster labels
-        groups = {}
-        for idx, label in enumerate(labels):
-            groups.setdefault(label, []).append(idx)
-
-        # Find the medoid for each group
-        group_dict = {}
-        for label, indices in groups.items():
-            group_vectors = embeddings[indices]
-            distance_matrix = cdist(group_vectors, group_vectors, metric="cosine")
-            medoid_index = np.argmin(np.sum(distance_matrix, axis=1))
-            medoid_word = descriptors[indices[medoid_index]]
-
-            # Store the group with the medoid as the key
-            # Remove duplicates in each group
-            group_dict[medoid_word] = list(set([descriptors[idx] for idx in indices]))
-
-        if save_groups:
-            # Save groups for later inspection
-            with open("../results/synonyms.jsonl", "a") as f:
-                f.write(json.dumps(group_dict, ensure_ascii=False) + "\n")
-
-        return group_dict
-
-    def replace_synonyms(self, synonyms, results):
-        # Create a mapping from descriptor to its synonym for fast lookup
-        synonym_map = {
-            syn: group for group, members in synonyms.items() for syn in members
-        }
-            
-        # Replace synonyms and remove possible duplicates
-        for doc in results.values():
-            replaced = []
-            for descriptor in doc["general"]:
-                if descriptor in synonym_map:
-                    if descriptor not in replaced:
-                        replaced.append(synonym_map[descriptor])
-                else:
-                    synonyms[descriptor] = [descriptor]
-                    if descriptor not in replaced:
-                        replaced.append(descriptor)
-            doc["general"] = replaced
 
     def update_results(self, results, general=None, specific=None, rewrites=None):
         """Updates results dictionary with new descriptors or rewrites."""
@@ -532,18 +364,7 @@ class DescriptorGenerator:
         data = load_documents(self.data_source, self.cache_dir)
         logging.info("Data loaded.")
 
-        # Load previous descriptors or create an empty dictionary
         descriptor_path = self.base_dir / f"descriptor_vocab_{self.run_id}.tsv"
-        descriptor_counts = initialise_descriptor_vocab(descriptor_path)
-        # Keep the top max_vocab general descriptors. These will be given to the model as possible options.
-        descriptor_vocab = (
-            descriptor_counts.most_common(self.max_vocab)
-            if self.max_vocab != -1
-            else descriptor_counts.most_common()
-        )
-        descriptor_vocab = [item[0] for item in descriptor_vocab]
-        # Shuffle the list of descriptors to avoid ordering bias
-        shuffle(descriptor_vocab)
 
         for batch_num, batch in enumerate(self.batched(data)):
             if self.num_batches == 0:
@@ -557,7 +378,7 @@ class DescriptorGenerator:
             # Generate initial descriptors for document.
             documents = [doc["text"] for doc in batch]
             logging.info("Stage: initial.")
-            model_outputs = self.initial_stage(documents, descriptor_vocab)
+            model_outputs = self.initial_stage(documents)
 
             # Extract output and append to results.
             general_descriptors = [
@@ -601,7 +422,6 @@ class DescriptorGenerator:
                         rewrites,
                         general_descriptors,
                         specific_descriptors,
-                        descriptor_vocab,
                     )
 
                     # Extract output and append to results.
@@ -628,7 +448,7 @@ class DescriptorGenerator:
             logging.info("Results saved.")
             
             # Update the descriptor vocabulary with new descriptors
-            descriptor_vocab = self.update_descriptor_vocab(descriptor_path)
+            self.update_descriptor_vocab(descriptor_path)
             
             # Log execution time
             end = time.time()
@@ -680,33 +500,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-rewrites",
         type=int,
-        default=0,
+        default=3,
         help="How many rewriting cycles the script should go through.",
     )
     parser.add_argument(
-        "--temperature", type=float, default=0, help="Model temperature."
+        "--temperature", type=float, default=0.1, help="Model temperature."
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=100,
+        default=200,
         help="Number of documents given to the model at one time.",
     )
     parser.add_argument(
-        "--max-vocab",
-        type=int,
-        default=-1,
-        help="Max number of descriptors given in the prompt. Give -1 to use all descriptors.",
-    )
-    parser.add_argument(
-        "--synonym-threshold",
-        type=float,
-        default=0.2,
-        help="""Distance threshold for when two descriptors should count as synonyms.
-        Smaller value means words are less likely to count as synonyms.""",
-    )
-    parser.add_argument(
-        "--data-source", type=str, default="original", help="Which data set to process."
+        "--data-source", type=str, default="fineweb", help="Which data set to process."
     )
     parser.add_argument(
         "--checkpoint-interval", type=int, default=50,
