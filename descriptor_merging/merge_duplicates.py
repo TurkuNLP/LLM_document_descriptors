@@ -113,6 +113,7 @@ class DescriptorMerger:
         logging.root.addHandler(console_handler)
         
         # Log the configuration change
+        logging.info("="*40)
         logging.info(f"Logging configured to: {log_file}")
         # Also log the slurm job ID if available
         slurm_job_id = os.environ.get("SLURM_JOB_ID", "N/A")
@@ -182,10 +183,10 @@ class DescriptorMerger:
         temp_file = self.checkpoint_file.with_suffix('.tmp')
         temp_file.write_text(json.dumps(state, ensure_ascii=False))
         temp_file.replace(self.checkpoint_file)  # Atomic replacement
-        logging.info("Saved checkpoint @ iteration %s, batch %s → %s", 
-                    iteration, batch_index, self.checkpoint_file)
+        
+        logging.info(f"Saved checkpoint @ iteration {iteration}, batch {batch_index}")
 
-    def _load_checkpoint(self) -> Tuple[Dict[str, List[str]], int, int, List[str]]:
+    def _load_checkpoint(self) -> Tuple[Dict[str, List[str]], int, int]:
         data = json.loads(self.checkpoint_file.read_text())
         self.global_map = data.get("global_map", {})
         self.history = data.get("history", [])
@@ -292,120 +293,156 @@ class DescriptorMerger:
                 doc = json.loads(line)
                 best = int(np.argmax(doc["similarity"]))
                 out.extend(doc["descriptors"][best])
+                #out.extend(doc["descriptors"])
         return out
 
+    # ---------------------------------------------------------------------
+    # main driver
+    # ---------------------------------------------------------------------
     def pipeline(self) -> None:
         self.llm = self.llm_setup()
 
-        # Load data or resume from checkpoint
-        batch_index = 0
-        if self.resume and self.checkpoint_file.exists():
-            logging.info("Resuming from previous checkpoint")
-            groups, iteration, batch_index= self._load_checkpoint()
+        # ────────────────────────────────
+        # 1. (Re-)initialise state
+        # ────────────────────────────────
+        if self.resume:
+            if not self.checkpoint_file.exists():
+                raise FileNotFoundError(
+                    f"--resume was given but no checkpoint found at {self.checkpoint_file}"
+                )
+
+            ckpt = json.loads(self.checkpoint_file.read_text())
+            self.global_map = ckpt.get("global_map", {})
+            self.history = ckpt.get("history", [])
+            groups = ckpt.get("groups", {})
+            iteration = ckpt.get("iteration", 1)
+            batch_index = ckpt.get("batch_index", 0)
+            saved_bs = ckpt.get("batch_size", self.batch_size)
+
+            if saved_bs != self.batch_size:
+                logging.warning(
+                    "Overriding --batch-size %s with the value stored in the checkpoint (%s)",
+                    self.batch_size,
+                    saved_bs,
+                )
+                self.batch_size = saved_bs
+
+            logging.info(
+                "Resuming from iteration=%s, next batch=%s, groups=%s",
+                iteration,
+                batch_index,
+                len(groups),
+            )
+
         else:
-            raw = self._load_raw_descriptor_strings(self.data_path)
-            pairs = [self._split_pair(s) for s in raw]
+            raw    = self._load_raw_descriptor_strings(self.data_path)
+            pairs  = [self._split_pair(s) for s in raw]
             groups = self._group_pairs(pairs)
-            iteration = 1
-            logging.info("Starting new run with %s groups", len(groups))
+            iteration   = 1
+            batch_index = 0
+            self._save_checkpoint(groups, iteration, batch_index)
+            logging.info("New run started with groups=%s", len(groups))
 
-        # Main loop
+        # ────────────────────────────────
+        # 2. Iterative merge loop
+        # ────────────────────────────────
         while True:
-            logging.info("Iteration %s: |groups|=%s", iteration, len(groups))
-            
-            # split into singletons and multis
+            logging.info("── Iteration %s │ groups=%s", iteration, len(groups))
+
+            # split once per iteration (groups mutates in-place afterwards)
             singletons = {k: v for k, v in groups.items() if len(v) == 1}
-            multis = {k: v for k, v in groups.items() if len(v) > 1}
+            multis     = {k: v for k, v in groups.items() if len(v) > 1}
+
             if not multis:
-                logging.info("No multi‑explainer groups left → done")
+                logging.info("No multi-explainer groups left → finished")
                 break
-            
-            logging.info("Singleton groups: %s | Multi-explainer groups: %s", len(singletons), len(multis))
-            
-            merged: Dict[str, List[str]] = defaultdict(list)
-            iter_map: Dict[str, str] = {}
-            changed = False
 
-            # Create a list of batches we'll process
-            all_batches = list(self._batch_dicts(multis, max_dicts=self.batch_size))
-            
-            # If batch_index > 0, we need to load the current merged state
-            if batch_index > 0:
-                # Add the existing processed keys to the merged dict
-                logging.info(f"Resuming from batch {batch_index} out of {len(all_batches)}")
-                # Reconstruct merged state from the current groups
-                for k, v in groups.items():
-                    if k not in singletons:
-                        merged[k].extend(v)
-            
-            # Start from the saved batch index if resuming
-            for i, batch in enumerate(all_batches[batch_index:], batch_index):
-                logging.info(f"Processing batch {i+1}/{len(all_batches)} in iteration {iteration}")
-                prompts = [merge_prompts.merge_descriptors_prompt(k, v) for d in batch for k, v in d.items()]
+            batches = list(self._batch_dicts(multis, max_dicts=self.batch_size))
+            if batch_index >= len(batches):
+                # we somehow completed all batches the last time we ran
+                iteration   += 1
+                batch_index  = 0
+                self._save_checkpoint(groups, iteration, batch_index)
+                continue
+
+            changed   = False
+            iter_map  = {}
+
+            # ───────────────────────
+            #  per-batch processing
+            # ───────────────────────
+            for i in range(batch_index, len(batches)):
+                batch = batches[i]
+                logging.info("---> Processing batch %s/%s", i + 1, len(batches))
+
+                prompts          = [
+                    merge_prompts.merge_descriptors_prompt(desc, expls)
+                    for d in batch
+                    for desc, expls in d.items()
+                ]
                 parsed_responses = self.generate(prompts)
-                
-                # Process responses to create mappings
+
                 try:
-                    with ProcessPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as executor:
-                        results = list(executor.map(create_mapping, parsed_responses))
-                except Exception as e:
-                    logging.error(f"Error in parallel processing, fallback to sequential processing. Error: {e}")
-                    # Fallback to sequential processing
-                    results = [create_mapping(resp) for resp in parsed_responses]
-                    
+                    with ProcessPoolExecutor(
+                        max_workers=min(32, os.cpu_count() or 4)
+                    ) as ex:
+                        results = list(ex.map(create_mapping, parsed_responses))
+                except Exception as exc:
+                    logging.error("Fallback to sequential mapping: %s", exc)
+                    results = [create_mapping(r) for r in parsed_responses]
+
+                # ────────────────────────────
+                #  apply mappings in-place
+                # ────────────────────────────
                 for mapping, resp in results:
-                    # Log model responses for visual inspection
-                    with open(self.base_dir / f"iteration_{iteration}_response.jsonl", "a", encoding="utf-8") as f:
-                        f.write(f"{json.dumps(resp, ensure_ascii=False)}\n")
+                    # audit log
+                    with (self.base_dir / f"iteration_{iteration}_response.jsonl").open(
+                        "a", encoding="utf-8"
+                    ) as fh:
+                        fh.write(json.dumps(resp, ensure_ascii=False) + "\n")
 
+                    # for each new merged descriptor…
                     for g in resp.get("groups", []):
-                        merged[g.get("group_descriptor", "Error in descriptor merging").lower().strip()].append(
-                            g.get("group_explainer", "Error in descriptor merging").strip()
-                        )
-                        changed = True
+                        new_desc = g["group_descriptor"].lower().strip()
+                        new_expl = g["group_explainer"].strip()
+                        groups.setdefault(new_desc, []).append(new_expl)
 
+                    # global + iteration maps
                     for old, new in mapping.items():
                         iter_map[old] = new
                         root = self.global_map.get(old, old)
                         self.global_map[root] = new
                         self.global_map[old] = new
-                
 
-                # Save checkpoint after each batch
-                current_groups = self._group_pairs([(d, e) for d, lst in merged.items() for e in lst])
-                current_groups.update(singletons)  # Add singletons
-                self._save_checkpoint(current_groups, iteration, i+1)
-            
-            # After all batches are processed:
-            groups = self._group_pairs([(d, e) for d, lst in merged.items() for e in lst])
-            groups.update(singletons)  # re‑attach untouched singletons
-            
+                    # drop old descriptors that were merged in this response
+                    for old in mapping.keys():
+                        old_desc, _ = self._split_pair(old)
+                        groups.pop(old_desc, None)
+
+                    changed = changed or bool(mapping)
+
+                # ────────────────────────────
+                #  checkpoint after every batch
+                # ────────────────────────────
+                self._save_checkpoint(groups, iteration, i + 1)
+
+            # ─────────────────────────
+            #  post-iteration housekeeping
+            # ─────────────────────────
             self.history.append({"iteration": iteration, "mapping": iter_map})
-            
-            # Reset for next iteration
-            batch_index = 0
+            iteration   += 1
+            batch_index  = 0
             self._save_checkpoint(groups, iteration, batch_index)
 
             if not changed:
-                logging.info("No changes in iteration %s → finishing", iteration)
+                logging.info("Nothing changed during iteration %s → stopping", iteration - 1)
                 break
-            iteration += 1
 
-        # ----- final save ---------------------------------------------
+        # ────────────────────────────────
+        # 3. finalise artefacts
+        # ────────────────────────────────
         self._save_artifacts(groups)
         self.checkpoint_file.unlink(missing_ok=True)
-
-def replace_pairs_in_documents(
-    source_jsonl: Path,
-    target_jsonl: Path,
-    pair_map: Dict[str, str],
-) -> None:
-    with source_jsonl.open(encoding="utf-8") as fin, target_jsonl.open("w", encoding="utf-8") as fout:
-        for line in fin:
-            doc = json.loads(line)
-            doc["descriptors"] = [pair_map.get(s, s) for s in doc.get("descriptors", [])]
-            fout.write(json.dumps(doc, ensure_ascii=False) + "\n")
-    logging.info("Rewrote descriptors → %s", target_jsonl)
 
 
 def validate_json(text: str) -> Dict[str, Any]:
@@ -415,7 +452,8 @@ def validate_json(text: str) -> Dict[str, Any]:
     except (json.JSONDecodeError, ValueError) as exc:
         logging.warning("JSON parse failed: %s", exc)
         return {}
-    
+
+
 def create_mapping(resp: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, Any]]:
     mapping: Dict[str, str] = {}
     base = resp.get("original_descriptor", "")
@@ -424,6 +462,21 @@ def create_mapping(resp: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, Any]
         for old in g.get("original_explainers_in_this_group", []):
             mapping[f"{base}; {old}"] = new_pair
     return mapping, resp  # Return both mapping and original response
+
+
+def replace_pairs_in_documents(
+    source_jsonl: Path,
+    target_jsonl: Path,
+    pair_map: Dict[str, str],
+) -> None:
+    with source_jsonl.open(encoding="utf-8") as fin, target_jsonl.open("w", encoding="utf-8") as fout:
+        for line in fin:
+            doc = json.loads(line)
+            best = int(np.argmax(doc["similarity"]))
+            doc["descriptors"] = [pair_map.get(s, s) for s in doc["descriptors"][best]]
+            #doc["descriptors"] = [pair_map.get(s, s) for s in doc["descriptors"]]
+            fout.write(json.dumps(doc, ensure_ascii=False) + "\n")
+    logging.info("Rewrote descriptors → %s", target_jsonl)
 
 # ---------------------------------------------------------------------------
 # CLI entry‑point
