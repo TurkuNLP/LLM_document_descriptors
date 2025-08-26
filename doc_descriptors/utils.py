@@ -124,22 +124,46 @@ def load_documents(source, cache):
         
     elif source.lower() =="core":
         data = []
-        with open("../data/en.tsv", "r") as f:
+        with open("../data/core/train.tsv", "r") as f:
             lines = f.readlines()
             for line in lines:
-                line = line.split("\t", 1)
-                data.append({"id": line[0], "text": line[1].strip()})
+                line = line.split("\t")
+                data.append({"id": line[1], "text": line[2].strip()})
         return data
     
+    elif source.lower() == "tweet_sentiment_extraction":
+        return load_dataset("mteb/tweet_sentiment_extraction",
+                    split="train",
+                    streaming=True,
+                    cache_dir=cache)
+                
+    elif source.lower() == "emotion":
+        return load_dataset("mteb/emotion",
+                            split="train",
+                            streaming=True,
+                            cache_dir=cache)
+        
+    elif source.lower() == "arxiv":
+        return load_dataset("mteb/ArxivClassification",
+                            split="train",
+                            streaming=True,
+                            cache_dir=cache)
+        
+    elif source.lower() == "imdb":
+        return load_dataset("stanfordnlp/imdb",
+                            split="train",
+                            streaming=True,
+                            cache_dir=cache)
+        
     else:
-        raise ValueError(f"Invalid data source '{source}'. Should be 'fineweb', '40k' or 'core'.")
+        raise ValueError(f"Invalid data source '{source}'.")
     
     
 def init_results(batch):
     return {
         index: {
             "document": doc["text"],
-            "doc_id": doc["id"],
+            "doc_id": doc.get("id", 0),
             "descriptors": [],
             "specifics": [],
             "rewrite": [],
