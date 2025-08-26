@@ -7,9 +7,12 @@ figures/
 .ipynb_checkpoints/
 venv/
 .venv/
+venv2.7/
+.venv*
 __pycache__
 __pycache__/
 *.pyc
 .vscode/
 figures/
 mlruns/
+core
