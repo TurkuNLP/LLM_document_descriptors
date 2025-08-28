@@ -1,12 +1,6 @@
-"""Pipeline for merging semantically‑similar descriptor–explainer pairs
-using an LLM, while keeping a full mapping from *every* original pair to
-its final canonical version and an audit‑trail of each merge step. It
-also rewrites the source documents with the new pairs when finished.
-"""
-
 from __future__ import annotations
 
-# ‑‑ standard library ‑‑
+# -- standard library --
 import argparse
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -15,10 +9,11 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import time
-from typing import Any, Dict, List, Iterator, Tuple
+from typing import Any, Dict, List, Iterator, Tuple, Optional
 
-# ‑‑ third‑party ‑‑
+# -- third-party --
 import json_repair  # type: ignore
 import numpy as np  # type: ignore
 from pydantic import BaseModel  # type: ignore
@@ -26,17 +21,17 @@ import torch  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 
-# ‑‑ local imports ‑‑
+# -- local imports --
 import merge_prompts  # type: ignore
 
-# ---------------------------------------------------------------------------
-# environment configuration
-# ---------------------------------------------------------------------------
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+#Pipeline:
+#1. Read data
+#2. Identify duplicate descriptors
+#3. If there are more than 50 duplicates in group, split into even slices of max 50
+#4. For each slice, run LLM to generate merged descriptor(s) and canonical explainer(s)
+#5. Write merged descriptors to file
+#6. Repeat until no more duplicates are found
 
-# ---------------------------------------------------------------------------
-# logging configuration
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -50,84 +45,71 @@ def log_execution_time(func):
         result = func(*args, **kwargs)
         end_time = time.time()
         execution_time = end_time - start_time
-        logging.info(f"Execution of {func.__name__} took {time.strftime('%H:%M:%S', time.gmtime(execution_time))}.")
+        logging.info(
+            f"Execution of {func.__name__} took "
+            f"{time.strftime('%H:%M:%S', time.gmtime(execution_time))}."
+        )
         return result
     return wrapper
 
-# ---------------------------------------------------------------------------
-# main class
-# ---------------------------------------------------------------------------
-class DescriptorMerger:
-    """Merge duplicates and keep full provenance plus checkpointing."""
 
-    # ────────────────────────────────────────────────────────────────────
-    # construction
-    # ────────────────────────────────────────────────────────────────────
+class DescriptorMerger:
     def __init__(self, args: argparse.Namespace) -> None:
         # CLI params -----------------------------------------------------
         self.run_id: str = args.run_id
-        self.cache_dir: str = args.cache_dir or os.environ.get("HF_HOME", "~/.cache")
+        self.cache_dir: str = os.path.expanduser(args.cache_dir or os.environ.get("HF_HOME", "~/.cache"))
         self.model_name: str = args.model
         self.batch_size: int = args.batch_size
         self.temperature: float = args.temperature
         self.resume: bool = args.resume
         self.data_path: Path = Path(args.data_path)
+        self.test: bool = args.test
 
         # storage --------------------------------------------------------
         self.base_dir: Path = Path("..") / "results" / "LLM_merges" / self.run_id
-        self.checkpoint_file: Path = self.base_dir / "checkpoint.json"
-        
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.save_path = self.base_dir / "merged_descriptors.jsonl"
+
         # Set up logging
         self._configure_logging()
 
-        # audit structures
-        # Tracks all mappings from original pairs to their current merged versions
-        self.global_map: Dict[str, str] = {}
-        
-        # Records each merge decision for audit trail purposes
-        self.history: List[Dict[str, Any]] = []
-
         # to be initialised later in pipeline()
         self.llm: LLM | None = None
-        
-    
+
     def _configure_logging(self) -> None:
-        """Configure logging to write to the run-specific log file."""
         log_file = self.base_dir / f"{self.run_id}.log"
-        
-        # Remove any existing handlers (from the basicConfig above)
-        for handler in logging.root.handlers[:]:
-            logging.root.removeHandler(handler)
-            
-        # Add a new file handler
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-        
-        # Add a console handler to still see output in the terminal
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-        
-        # Configure the root logger
+
+        # reset handlers
+        for h in logging.root.handlers[:]:
+            logging.root.removeHandler(h)
+
+        file_h = logging.FileHandler(log_file)
+        file_h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+
+        stream_h = logging.StreamHandler()  # goes to stdout -> Slurm captures it
+        stream_h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+
         logging.root.setLevel(logging.INFO)
-        logging.root.addHandler(file_handler)
-        logging.root.addHandler(console_handler)
-        
-        # Log the configuration change
-        logging.info("="*40)
-        logging.info(f"Logging configured to: {log_file}")
-        # Also log the slurm job ID if available
-        slurm_job_id = os.environ.get("SLURM_JOB_ID", "N/A")
-        logging.info(f"SLURM Job ID: {slurm_job_id}")
+        logging.root.addHandler(file_h)
+        logging.root.addHandler(stream_h)
+
+        logging.info("=" * 40)
+        logging.info("Logging configured to: %s", log_file)
+        logging.info("SLURM Job ID: %s", os.environ.get("SLURM_JOB_ID", "N/A"))
 
     @log_execution_time
     def llm_setup(self) -> LLM:
-        logging.info("Loading LLM model…")
+        n_gpus = torch.cuda.device_count()
+        if n_gpus == 0:
+            raise RuntimeError("No GPU available.")
+        else:
+            logging.info(f"Using {n_gpus} GPU(s).")
         return LLM(
             model=self.model_name,
             download_dir=self.cache_dir,
             dtype="bfloat16",
             max_model_len=128_000,
-            tensor_parallel_size=torch.cuda.device_count(),
+            tensor_parallel_size=n_gpus,
             enforce_eager=False,
             gpu_memory_utilization=0.8,
         )
@@ -141,69 +123,56 @@ class DescriptorMerger:
             max_tokens=10_000,
             stop=["<|eot_id|>"],
             guided_decoding=self._response_format(),
+            seed=42,
         )
         start = time.perf_counter()
-        outputs = self.llm.generate(prompts, sampling_params=params, use_tqdm=False)  # type: ignore[arg-type]
+        outputs = self.llm.generate(prompts, sampling_params=params, use_tqdm=False)
         elapsed = time.perf_counter() - start if start else 0.0
+
+        response_texts: List[str] = []
+        in_tok = 0
+        gen_tok = 0
+        for o in outputs:
+            if getattr(o, "prompt_token_ids", None):
+                in_tok += len(o.prompt_token_ids)
+
+            outs = getattr(o, "outputs", None) or []
+            if outs:
+                cand = outs[0]
+                if getattr(cand, "token_ids", None):
+                    gen_tok += len(cand.token_ids)
+                txt = getattr(cand, "text", "") or ""
+                response_texts.append(txt.strip(" `\n").removeprefix("json"))
+            else:
+                # keep slot alignment; an empty dict will be ignored later
+                response_texts.append("{}")
         
         # Log throughput
-        gen_tok = sum(len(o.outputs[0].token_ids) for o in outputs if getattr(o.outputs[0], "token_ids", None))
-        in_tok = sum(len(o.prompt_token_ids) for o in outputs if getattr(o, "prompt_token_ids", None))
         tot_tok = gen_tok + in_tok
         if elapsed > 0 and tot_tok > 0:
-            logging.info("LLM throughput: %.1f tok/s (%.1f gen tok/s) — %s tokens in %.2fs", tot_tok / elapsed, gen_tok / elapsed if gen_tok else 0, tot_tok, elapsed)
-        
-        response_texts = [out.outputs[0].text.strip(" `\n").removeprefix("json") for out in outputs]
-    
+            logging.info(
+                "LLM throughput: %.1f tok/s (%.1f gen tok/s) — %s tokens in %.2fs",
+                tot_tok / elapsed,
+                gen_tok / elapsed if gen_tok else 0,
+                tot_tok,
+                elapsed,
+            )
+
         # Parallel validation if there are many responses
         if len(response_texts) > 10:
             try:
                 with ProcessPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) as executor:
                     parsed_responses = list(executor.map(validate_json, response_texts))
             except Exception as e:
-                logging.error(f"Error in parallel JSON validation, falling back to sequential processing. Error: {e}")
-                # Fallback to sequential processing
+                logging.error(
+                    f"Error in parallel JSON validation, falling back to sequential processing. Error: {e}"
+                )
                 parsed_responses = [validate_json(text) for text in response_texts]
         else:
             parsed_responses = [validate_json(text) for text in response_texts]
-        
+
         return parsed_responses
-
-    def _save_checkpoint(self, groups: Dict[str, List[str]], iteration: int, 
-                        batch_index: int = 0) -> None:
-        state = {
-            "iteration": iteration,
-            "batch_index": batch_index,
-            "batch_size": self.batch_size,
-            "groups": groups,
-            "global_map": self.global_map,
-            "history": self.history,
-        }
-        # Create a temporary file first for safer atomic writes
-        temp_file = self.checkpoint_file.with_suffix('.tmp')
-        temp_file.write_text(json.dumps(state, ensure_ascii=False))
-        temp_file.replace(self.checkpoint_file)  # Atomic replacement
         
-        logging.info(f"Saved checkpoint @ iteration {iteration}, batch {batch_index}")
-
-    def _load_checkpoint(self) -> Tuple[Dict[str, List[str]], int, int]:
-        data = json.loads(self.checkpoint_file.read_text())
-        self.global_map = data.get("global_map", {})
-        self.history = data.get("history", [])
-        iteration = data.get("iteration", 0)
-        batch_index = data.get("batch_index", 0)
-        groups = {k: v for k, v in data.get("groups", {}).items()}
-        
-        # Check for saved batch size and override if necessary
-        saved_batch_size = data.get("batch_size")
-        if saved_batch_size is not None and saved_batch_size != self.batch_size:
-            logging.warning(f"Overriding provided batch size ({self.batch_size}) with checkpoint batch size ({saved_batch_size})")
-            self.batch_size = saved_batch_size
-            
-        logging.info("Loaded checkpoint with iteration=%s, batch=%s, |groups|=%s, batch_size=%s", 
-                    iteration, batch_index, len(groups), self.batch_size)
-        return groups, iteration, batch_index
-
     @staticmethod
     def _response_format() -> GuidedDecodingParams:
         class G(BaseModel):  # type: ignore[misc]
@@ -223,12 +192,29 @@ class DescriptorMerger:
         max_items: int = 50,
         max_dicts: int = 200,
     ) -> Iterator[List[Dict[str, List[str]]]]:
+        """Split descriptor-explainer groups into max size of max_items.
+        Yield batches of size max_dicts.
+
+        Args:
+            groups (Dict[str, List[str]]): _description_
+            max_items (int, optional): _description_. Defaults to 50.
+            max_dicts (int, optional): _description_. Defaults to 200.
+
+        Yields:
+            Iterator[List[Dict[str, List[str]]]]: _description_
+        """
         def split(key: str, lst: List[str]) -> List[Dict[str, List[str]]]:
             return [{key: lst[i : i + max_items]} for i in range(0, len(lst), max_items)]
 
         normalised: List[Dict[str, List[str]]] = []
-        for k, v in groups.items():
-            normalised.extend(split(k, v) if len(v) > max_items else [{k: v}])
+        for descriptor, explainers in groups.items():
+            normalised.extend(
+                split(descriptor, explainers) if len(explainers) > max_items else [{descriptor: explainers}]
+                )
+
+        logging.info(f"Multi-explainer groups split into {len(normalised)} sub-groups with max 50 explainers.")
+        logging.info(f"Yielding batches of {max_dicts} groups at a time, for a total of {len(normalised) // max_dicts + 1} batches.")
+        
         for i in range(0, len(normalised), max_dicts):
             yield normalised[i : i + max_dicts]
 
@@ -236,7 +222,8 @@ class DescriptorMerger:
     def _split_pair(text: str) -> Tuple[str, str]:
         try:
             d, e = text.split(";", 1)
-            return d.lower().strip(), e.strip()
+            d = DescriptorMerger._normalize_descriptor(d)
+            return d, e.strip()
         except ValueError:
             return text.lower().strip(), ""
 
@@ -247,204 +234,214 @@ class DescriptorMerger:
             d[desc].append(expl)
         return d
 
-    def _collapse_map(self) -> Dict[str, str]:
-        def find_final_mapping(key: str, cache: Dict[str, str], path: set) -> str:
-            if key not in self.global_map or key == self.global_map[key]:
-                return key
-                
-            if key in cache:
-                return cache[key]
-                
-            if key in path:  # Detect cycle
-                logging.warning(f"Circular reference detected in _collapse_map() for key: {key}")
-                return key  # Break the cycle
-                
-            path.add(key)
-            result = find_final_mapping(self.global_map[key], cache, path)
-            path.remove(key)
-            cache[key] = result
-            return result
-        
-        out: Dict[str, str] = {}
-        cache: Dict[str, str] = {}
-        for src in self.global_map:
-            out[src] = find_final_mapping(src, cache, set())
-        return out
-
-    def _save_artifacts(self, groups: Dict[str, List[str]]) -> None:
-        (self.base_dir / f"final_merged_{self.run_id}.json").write_text(
-            json.dumps(groups, ensure_ascii=False, indent=2)
-        )
-        self.final_mapping = self._collapse_map()
-        (self.base_dir / f"{self.run_id}_pair_map.json").write_text(
-            json.dumps(self.final_mapping, ensure_ascii=False, indent=2)
-        )
-        (self.base_dir / f"{self.run_id}_merge_history.json").write_text(
-            json.dumps(self.history, ensure_ascii=False, indent=2)
-        )
-        logging.info("Artifacts written to %s", self.base_dir)
-
-    @staticmethod
-    def _load_raw_descriptor_strings(path: Path) -> List[str]:
+    def _load_initial_pairs(self, path: Path) -> List[Tuple[str, str]]:
         logging.info("Loading descriptor strings from %s", path)
-        out: List[str] = []
+
+        # Limit to a fixed number of descriptors if in test mode
+        TEST_SIZE=10_000
+        
+        descriptor_explainer_strings: List[str] = []
         with path.open(encoding="utf-8") as f:
             for line in f:
                 doc = json.loads(line)
                 best = int(np.argmax(doc["similarity"]))
-                out.extend(doc["descriptors"][best])
-                #out.extend(doc["descriptors"])
-        return out
+                descriptor_explainer_strings.extend(doc["descriptors"][best])
+                if self.test and len(descriptor_explainer_strings) >= TEST_SIZE:
+                    logging.info(f"Test mode: limiting to {TEST_SIZE} descriptors")
+                    break
+        
+        # Split desc;exp strings into (desc, exp) tuples
+        pairs: List[Tuple[str, str]] = [self._split_pair(s) for s in descriptor_explainer_strings]
+        return pairs
 
-    # ---------------------------------------------------------------------
-    # main driver
-    # ---------------------------------------------------------------------
-    def pipeline(self) -> None:
-        self.llm = self.llm_setup()
-
-        # ────────────────────────────────
-        # 1. (Re-)initialise state
-        # ────────────────────────────────
-        if self.resume:
-            if not self.checkpoint_file.exists():
-                raise FileNotFoundError(
-                    f"--resume was given but no checkpoint found at {self.checkpoint_file}"
-                )
-
-            ckpt = json.loads(self.checkpoint_file.read_text())
-            self.global_map = ckpt.get("global_map", {})
-            self.history = ckpt.get("history", [])
-            groups = ckpt.get("groups", {})
-            iteration = ckpt.get("iteration", 1)
-            batch_index = ckpt.get("batch_index", 0)
-            saved_bs = ckpt.get("batch_size", self.batch_size)
-
-            if saved_bs != self.batch_size:
-                logging.warning(
-                    "Overriding --batch-size %s with the value stored in the checkpoint (%s)",
-                    self.batch_size,
-                    saved_bs,
-                )
-                self.batch_size = saved_bs
-
-            logging.info(
-                "Resuming from iteration=%s, next batch=%s, groups=%s",
-                iteration,
-                batch_index,
-                len(groups),
-            )
-
-        else:
-            raw    = self._load_raw_descriptor_strings(self.data_path)
-            pairs  = [self._split_pair(s) for s in raw]
-            groups = self._group_pairs(pairs)
-            iteration   = 1
-            batch_index = 0
-            self._save_checkpoint(groups, iteration, batch_index)
-            logging.info("New run started with groups=%s", len(groups))
-
-        # ────────────────────────────────
-        # 2. Iterative merge loop
-        # ────────────────────────────────
-        while True:
-            logging.info("── Iteration %s │ groups=%s", iteration, len(groups))
-
-            # split once per iteration (groups mutates in-place afterwards)
-            singletons = {k: v for k, v in groups.items() if len(v) == 1}
-            multis     = {k: v for k, v in groups.items() if len(v) > 1}
-
-            if not multis:
-                logging.info("No multi-explainer groups left → finished")
-                break
-
-            batches = list(self._batch_dicts(multis, max_dicts=self.batch_size))
-            if batch_index >= len(batches):
-                # we somehow completed all batches the last time we ran
-                iteration   += 1
-                batch_index  = 0
-                self._save_checkpoint(groups, iteration, batch_index)
-                continue
-
-            changed   = False
-            iter_map  = {}
-
-            # ───────────────────────
-            #  per-batch processing
-            # ───────────────────────
-            for i in range(batch_index, len(batches)):
-                batch = batches[i]
-                logging.info("---> Processing batch %s/%s", i + 1, len(batches))
-
-                prompts          = [
+    def _process_batch(self, batch: List[Dict[str, List[str]]]) -> List[Dict[str, Any]]:
+        prompts = [
                     merge_prompts.merge_descriptors_prompt(desc, expls)
-                    for d in batch
-                    for desc, expls in d.items()
+                    for group in batch
+                    for desc, expls in group.items()
                 ]
-                parsed_responses = self.generate(prompts)
+        
+        return self.generate(prompts)
+    
+    @staticmethod
+    def _normalize_descriptor(s: str) -> str:
+        # replace runs of underscores/spaces with a single space, trim, lowercase
+        return re.sub(r'[_\s]+', ' ', (s or '')).strip().lower()
+        
+    @staticmethod
+    def _save_checkpoint(pairs: List[Tuple[str, str]], path: Path) -> None:
+        with path.open("w", encoding="utf-8") as f:
+            for desc, expl in pairs:
+                d = {"descriptor": desc, "explainer": expl}
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
 
+    @staticmethod
+    def _parse_output(merged_groups: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
+        pairs: List[Tuple[str, str]] = []
+        for output in merged_groups:
+            if not isinstance(output, dict):
+                continue
+            for g in (output.get("groups") or []):
+                gd = DescriptorMerger._normalize_descriptor(g.get("group_descriptor") or "")
+                ge = (g.get("group_explainer") or "").strip()
+                # SDrop empty descriptor or explainer
+                if not gd or not ge:
+                    logging.warning(f"Dropping model output with empty field(s): {g}")
+                    continue
+                pairs.append((gd.lower(), ge))  # keep descriptor case-consistent
+        return pairs
+
+    def _find_latest_checkpoint(self) -> Optional[Tuple[Path, int]]:
+        """
+        Find the newest checkpoint named like 'iter_<N>.jsonl' in self.base_dir.
+        Returns (path, iteration_number) or None if no checkpoints exist.
+        """
+        pattern = re.compile(r"^iter_(\d+)\.jsonl$")
+        latest: Optional[Tuple[Path, int]] = None
+
+        if not self.base_dir.exists():
+            return None
+
+        for p in self.base_dir.glob("iter_*.jsonl"):
+            m = pattern.match(p.name)
+            if not m:
+                continue
+            it = int(m.group(1))
+            if latest is None or it > latest[1]:
+                latest = (p, it)
+
+        return latest
+
+    @staticmethod
+    def _load_checkpoint(path: Path) -> List[Tuple[str, str]]:
+        """
+        Load a checkpoint JSONL file with one object per line:
+        {"descriptor": "<str>", "explainer": "<str>"}
+        Returns a list of (descriptor, explainer) tuples.
+        """
+        pairs: List[Tuple[str, str]] = []
+        with path.open("r", encoding="utf-8") as f:
+            for lineno, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
                 try:
-                    with ProcessPoolExecutor(
-                        max_workers=min(32, os.cpu_count() or 4)
-                    ) as ex:
-                        results = list(ex.map(create_mapping, parsed_responses))
-                except Exception as exc:
-                    logging.error("Fallback to sequential mapping: %s", exc)
-                    results = [create_mapping(r) for r in parsed_responses]
+                    obj = json.loads(line)
+                except Exception as e:
+                    logging.warning("Skipping malformed JSON on line %d in %s: %s", lineno, path.name, e)
+                    continue
 
-                # ────────────────────────────
-                #  apply mappings in-place
-                # ────────────────────────────
-                for mapping, resp in results:
-                    # audit log
-                    with (self.base_dir / f"iteration_{iteration}_response.jsonl").open(
-                        "a", encoding="utf-8"
-                    ) as fh:
-                        fh.write(json.dumps(resp, ensure_ascii=False) + "\n")
+                desc = DescriptorMerger._normalize_descriptor(obj.get("descriptor") or "")
+                expl = (obj.get("explainer") or "").strip()
+                if not desc:
+                    logging.warning("Skipping line %d in %s: missing 'descriptor'", lineno, path.name)
+                    continue
 
-                    # for each new merged descriptor…
-                    for g in resp.get("groups", []):
-                        new_desc = g["group_descriptor"].lower().strip()
-                        new_expl = g["group_explainer"].strip()
-                        groups.setdefault(new_desc, []).append(new_expl)
+                # Keep descriptor case consistent with the rest of the pipeline
+                pairs.append((desc.lower(), expl))
+        return pairs
+    
+    def _save_output(self, merged_groups: List[Dict[str, Any]], iteration: int) -> None:
+        path = self.base_dir / f"merge_log_iter_{iteration}.jsonl"
+        with path.open("w") as f:
+            for output in merged_groups:
+                for group in output["groups"]:
+                    d = {
+                        "original_descriptor": output.get("original_descriptor", ""),
+                        "new_descriptor": group.get("group_descriptor", ""),
+                        "original_explainers": group.get("original_explainers_in_this_group", []),
+                        "new_explainer": group.get("group_explainer", "")
+                    }
+                    f.write(json.dumps(d, ensure_ascii=False) + "\n")
 
-                    # global + iteration maps
-                    for old, new in mapping.items():
-                        iter_map[old] = new
-                        root = self.global_map.get(old, old)
-                        self.global_map[root] = new
-                        self.global_map[old] = new
+    def pipeline(self):
+        logging.info("Loading LLM...")
+        self.llm = self.llm_setup()
+        
+        # Either start fresh or continue from checkpoint
+        src_path = self.data_path
+        if not self.resume:
+            pairs = self._load_initial_pairs(src_path)
+            iteration = 1
+        else:
+            latest = self._find_latest_checkpoint()
+            if latest is None:
+                logging.info("Resume requested, but no checkpoints found in %s. Starting fresh.", self.base_dir)
+                pairs = self._load_initial_pairs(src_path)
+                iteration = 1
+            else:
+                ckpt_path, last_iter = latest
+                logging.info("Resuming from %s (iteration %d).", ckpt_path, last_iter)
+                pairs = self._load_checkpoint(ckpt_path)
+                if not pairs:
+                    logging.warning("Latest checkpoint %s is empty or unreadable. Starting fresh.", ckpt_path)
+                    pairs = self._load_initial_pairs(src_path)
+                    iteration = 1
+                else:
+                    # Make the checkpoint the new 'source' for subsequent saves/logs
+                    src_path = ckpt_path
+                    self.save_path = ckpt_path
+                    iteration = last_iter + 1
+        
+        # While-loop ends, when no more multi-explainer groups remain
+        while True:
+            iter_start = time.time()
+            logging.info(
+                f"++++++++++ Starting iteration {iteration} "
+                f"with {len(pairs)} descriptor-explainer pairs ++++++++++"
+                )
+            
+            # Group by descriptors like this {descriptor: [explainer, explainer, explainer,...]}
+            groups = self._group_pairs(pairs)
+            
+            # Process only descriptors that have >1 explainer
+            multi_map: Dict[str, List[str]] = {
+                descriptor: explainers for descriptor, explainers in groups.items() if len(explainers) > 1
+                }
+            singletons = {
+                descriptor: explainers for descriptor, explainers in groups.items() if len(explainers) == 1
+                }
 
-                    # drop old descriptors that were merged in this response
-                    for old in mapping.keys():
-                        old_desc, _ = self._split_pair(old)
-                        groups.pop(old_desc, None)
-
-                    changed = changed or bool(mapping)
-
-                # ────────────────────────────
-                #  checkpoint after every batch
-                # ────────────────────────────
-                self._save_checkpoint(groups, iteration, i + 1)
-
-            # ─────────────────────────
-            #  post-iteration housekeeping
-            # ─────────────────────────
-            self.history.append({"iteration": iteration, "mapping": iter_map})
-            iteration   += 1
-            batch_index  = 0
-            self._save_checkpoint(groups, iteration, batch_index)
-
-            if not changed:
-                logging.info("Nothing changed during iteration %s → stopping", iteration - 1)
+            if not multi_map:
+                logging.info("No multi-explainer groups remaining. Process finished!")
                 break
 
-        # ────────────────────────────────
-        # 3. finalise artefacts
-        # ────────────────────────────────
-        self._save_artifacts(groups)
-        self.checkpoint_file.unlink(missing_ok=True)
+            logging.info("There are %d multi-explainer groups and %d singletons", len(multi_map), len(singletons))
 
+            # Push through LLM in batches
+            merged_groups: List[Dict[str, Any]] = []
+            for idx, batch in enumerate(self._batch_dicts(multi_map, max_dicts=self.batch_size)):
+                logging.info("====>  Processing batch %d with %d group(s)…", idx, len(batch))
+                merged_groups.extend(self._process_batch(batch))
 
+            # Save output to log what gets merged
+            self._save_output(merged_groups, iteration)
+            
+            # Parse LLM output into list of (descriptor,explainer) tuples
+            new_pairs = self._parse_output(merged_groups)
+            
+            # Append singleton pairs to new pairs
+            singleton_pairs = [(d, e) for d, expls in singletons.items() for e in expls]
+            all_pairs = new_pairs + singleton_pairs
+            
+            # Save results as JSONL like this:
+            # {descriptor: "descriptor", explainer: "explainer"}
+            out_path = self.base_dir / f"iter_{iteration}.jsonl"
+            logging.info("Saving results to %s…", out_path)
+            self._save_checkpoint(all_pairs, out_path)
+            logging.info("Results saved.")
+            
+            # Update paths and pairs for next iteration
+            src_path = out_path
+            self.save_path = out_path
+            pairs = all_pairs
+            iteration += 1
+            
+            iter_end = time.time()
+            logging.info(f"Iteration took {time.strftime('%H:%M:%S', time.gmtime(iter_end-iter_start))}.")
+            
+
+# Keep this outside of DescriptorMerger for pickling reasons
 def validate_json(text: str) -> Dict[str, Any]:
     try:
         obj = json_repair.loads(text)
@@ -454,75 +451,20 @@ def validate_json(text: str) -> Dict[str, Any]:
         return {}
 
 
-def create_mapping(resp: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    mapping: Dict[str, str] = {}
-    base = resp.get("original_descriptor", "")
-    for g in resp.get("groups", []):
-        new_pair = f"{g.get('group_descriptor', 'Error in descriptor merging')}; {g.get('group_explainer', 'Error in descriptor merging')}"
-        for old in g.get("original_explainers_in_this_group", []):
-            mapping[f"{base}; {old}"] = new_pair
-    return mapping, resp  # Return both mapping and original response
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("--run-id", required=True)
+    p.add_argument("--data-path", required=True, type=Path)
+    p.add_argument("--model", default="meta-llama/Llama-3.3-70B-Instruct", help="Model name")
+    p.add_argument("--cache-dir", default=os.environ.get("HF_HOME", "~/.cache"))
+    p.add_argument("--batch-size", type=int, default=256)
+    p.add_argument("--temperature", type=float, default=0.1)
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--test", action="store_true")
+    args = p.parse_args()
+    
+    print(f"Starting run {args.run_id}", flush=True)
 
-
-def replace_pairs_in_documents(
-    source_jsonl: Path,
-    target_jsonl: Path,
-    pair_map: Dict[str, str],
-) -> None:
-    with source_jsonl.open(encoding="utf-8") as fin, target_jsonl.open("w", encoding="utf-8") as fout:
-        for line in fin:
-            doc = json.loads(line)
-            best = int(np.argmax(doc["similarity"]))
-            doc["descriptors"] = [pair_map.get(s, s) for s in doc["descriptors"][best]]
-            #doc["descriptors"] = [pair_map.get(s, s) for s in doc["descriptors"]]
-            fout.write(json.dumps(doc, ensure_ascii=False) + "\n")
-    logging.info("Rewrote descriptors → %s", target_jsonl)
-
-# ---------------------------------------------------------------------------
-# CLI entry‑point
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Merge descriptor‑explainer pairs with an LLM")
-
-    parser.add_argument("--run-id", required=True, help="ID for this run, e.g. run1")
-    parser.add_argument("--data-path", required=True, help="Original documents JSONL")
-    parser.add_argument("--cache-dir", help="Hugging Face cache directory")
-    parser.add_argument("--model", default="meta-llama/Llama-3.3-70B-Instruct", help="Model name")
-    parser.add_argument("--temperature", type=float, default=0.1, help="LLM temperature")
-    parser.add_argument("--batch-size", type=int, default=200, help="Batch size for prompts")
-    parser.add_argument("--resume", action="store_true", help="Resume from existing checkpoint if present")
- 
-    args = parser.parse_args()
-
-    # ensure dirs
-    Path("../logs").mkdir(exist_ok=True)
-    Path("../results").mkdir(exist_ok=True)
-    Path("../results/LLM_merges").mkdir(exist_ok=True)
-
-    # log run settings
-    run_dir = Path("../results/LLM_merges") /  args.run_id
-    run_dir.mkdir(exist_ok=True)
-    with (run_dir / f"{args.run_id}_settings.txt").open("a", encoding="utf‑8") as f_settings:
-        f_settings.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
-        for arg, value in vars(args).items():
-            logging.info(f"{arg}: {value}")
-            f_settings.write(f"{arg}: {value}\n")
-        f_settings.write("===========================\n")
-
-    # run pipeline
     dm = DescriptorMerger(args)
     dm.pipeline()
-
-    # rewrite documents with canonical pairs
-    replace_pairs_in_documents(
-        Path(args.data_path),
-        dm.base_dir / f"{args.run_id}_merged.jsonl",
-        dm.final_mapping,
-    )
-
     logging.info("Done.")
-
-
-if __name__ == "__main__":
-    main()

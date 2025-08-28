@@ -28,6 +28,7 @@ Your task is to assess the semantic consistency of the explainers under the shar
 - If the explainers are inconsistent:
     - Split them into as many separate groups as necessary to create consistent groups.
     - For each group, either keep the original descriptor or create a new one that better captures the essence of that group. However, each group must have a unique descriptor, so you can use the original descriptor for only one group.
+    - If you invent new descriptors, remember that descriptors can be single words or multi-word phrases. They should typically not be longer than 3 words.
     - For each group, create a new group explainer that captures the essence of the whole group.
     
 - Output format:
@@ -36,7 +37,7 @@ Your task is to assess the semantic consistency of the explainers under the shar
     - Each dictionary within "groups" should be a consistent group of explainers that share a common descriptor and explainer. 
     - Add as many groups as necessary.
     - Each group must have a unique group_descriptor.
-    - Ensure that all original explainers are included in exactly one group.
+    - Ensure that all original explainers are included in exactly one group in the field original_explainers_in_this_group.
     - If the original list of explainers is empty, the group_explainer should be an empty string and the group_descriptor should be the same as the original descriptor.
     - The output must be a valid JSON object with the following structure:
         {"original_descriptor": "<original descriptor>",
@@ -46,7 +47,6 @@ Your task is to assess the semantic consistency of the explainers under the shar
                     "original_explainers_in_this_group": ["<original explainer>", "<original explainer>", ...]
                     },
                     ...]
-        }
         }<|eot_id|><|start_header_id|>user<|end_header_id|>""" + f"""
 
 Descriptor: {descriptor}
