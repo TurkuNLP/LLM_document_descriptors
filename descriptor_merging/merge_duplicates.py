@@ -60,9 +60,11 @@ class DescriptorMerger:
         self.cache_dir: str = os.path.expanduser(args.cache_dir or os.environ.get("HF_HOME", "~/.cache"))
         self.model_name: str = args.model
         self.batch_size: int = args.batch_size
+        self.chars_per_batch: int = args.chars_per_batch
         self.temperature: float = args.temperature
         self.resume: bool = args.resume
         self.data_path: Path = Path(args.data_path)
+        self.data_format: str = args.data_format
         self.test: bool = args.test
 
         # storage --------------------------------------------------------
@@ -108,10 +110,10 @@ class DescriptorMerger:
             model=self.model_name,
             download_dir=self.cache_dir,
             dtype="bfloat16",
-            max_model_len=128_000,
+            max_model_len=16_384,
             tensor_parallel_size=n_gpus,
             enforce_eager=False,
-            gpu_memory_utilization=0.8,
+            gpu_memory_utilization=0.9,
         )
 
     @log_execution_time
@@ -189,17 +191,17 @@ class DescriptorMerger:
     @staticmethod
     def _batch_dicts(
         groups: Dict[str, List[str]],
+        max_dicts: int,
         max_items: int = 50,
-        max_dicts: int = 200,
     ) -> Iterator[List[Dict[str, List[str]]]]:
         """Split descriptor-explainer groups into max size of max_items.
         Yield batches of size max_dicts.
 
         Args:
             groups (Dict[str, List[str]]): _description_
+            max_dicts (int, optional): _description_.
             max_items (int, optional): _description_. Defaults to 50.
-            max_dicts (int, optional): _description_. Defaults to 200.
-
+            
         Yields:
             Iterator[List[Dict[str, List[str]]]]: _description_
         """
@@ -217,6 +219,45 @@ class DescriptorMerger:
         
         for i in range(0, len(normalised), max_dicts):
             yield normalised[i : i + max_dicts]
+            
+    @staticmethod
+    def _batch_dicts_by_chars(
+        groups: Dict[str, List[str]],
+        max_chars: int,
+        max_items: int = 50,
+    ) -> Iterator[List[Dict[str, List[str]]]]:
+        """Split descriptor-explainer groups into max size of max_items.
+        Yield batches with total prompt length of max_chars.
+        """
+        def split(key: str, lst: List[str]) -> List[Dict[str, List[str]]]:
+            return [{key: lst[i:i+max_items]} for i in range(0, len(lst), max_items)]
+
+        normalized: List[Dict[str, List[str]]] = []
+        for descriptor, explainers in groups.items():
+            normalized.extend(split(descriptor, explainers) if len(explainers) > max_items else [{descriptor: explainers}])
+
+        logging.info(
+            f"Multi-explainer groups split into {len(normalized)} sub-groups (<= {max_items} explainers each)."
+        )
+
+        batch: List[Dict[str, List[str]]] = []
+        cur_chars = 0
+
+        for group in normalized:
+            (desc, expls), = group.items()
+            prompt = merge_prompts.merge_descriptors_prompt(desc, expls)
+            plen = len(prompt)
+
+            if batch and (cur_chars + plen > max_chars):
+                yield batch
+                batch, cur_chars = [], 0
+
+            batch.append(group)
+            cur_chars += plen
+
+        if batch:
+            yield batch
+
 
     @staticmethod
     def _split_pair(text: str) -> Tuple[str, str]:
@@ -231,28 +272,90 @@ class DescriptorMerger:
     def _group_pairs(pairs: List[Tuple[str, str]]) -> Dict[str, List[str]]:
         d: Dict[str, List[str]] = defaultdict(list)
         for desc, expl in pairs:
-            d[desc].append(expl)
+            if desc and expl:
+                d[desc].append(expl)
+            else:
+                logging.warning(f"Dropping empty pair: {desc}, {expl}")
         return d
+
+    def _read_raw_jsonl_file(self, path_to_file: Path, test_size: int) -> List[Tuple[str, str]]:
+        descriptor_explainer_strings: List[str] = []
+        with path_to_file.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                doc = json.loads(line)
+
+                if doc.get("similarity"):
+                    best = int(np.argmax(doc["similarity"]))
+                    # assuming doc["descriptors"][best] is a list of "desc;exp" strings
+                    descriptor_explainer_strings.extend(doc["descriptors"][best])
+                else:
+                    # if no similarity scores, we assume there is only one set of descriptors per document
+                    # assuming doc["descriptors"] is a list of "desc;exp" strings
+                    descriptor_explainer_strings.extend(doc["descriptors"])
+
+                if self.test and len(descriptor_explainer_strings) >= test_size:
+                    break
+        
+        # Split "desc;exp" into (desc, exp) pairs and return 
+        return [self._split_pair(s) for s in descriptor_explainer_strings]
+    
+    def _read_processed_jsonl_file(self, path_to_file: Path, test_size: int) -> List[Tuple[str, str]]:
+        descriptor_explainer_tuples: List[Tuple[str, str]] = []
+        with path_to_file.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                doc = json.loads(line)
+                desc = doc["descriptor"]
+                exp = doc["explainer"]
+                descriptor_explainer_tuples.append((desc, exp))
+
+                if self.test and len(descriptor_explainer_tuples) >= test_size:
+                    break
+
+        return descriptor_explainer_tuples
 
     def _load_initial_pairs(self, path: Path) -> List[Tuple[str, str]]:
         logging.info("Loading descriptor strings from %s", path)
 
-        # Limit to a fixed number of descriptors if in test mode
-        TEST_SIZE=10_000
-        
-        descriptor_explainer_strings: List[str] = []
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                doc = json.loads(line)
-                best = int(np.argmax(doc["similarity"]))
-                descriptor_explainer_strings.extend(doc["descriptors"][best])
-                if self.test and len(descriptor_explainer_strings) >= TEST_SIZE:
-                    logging.info(f"Test mode: limiting to {TEST_SIZE} descriptors")
+        TEST_SIZE = 10_000
+        if self.test:
+            logging.info(f"Test mode: limiting to {TEST_SIZE} descriptors")
+
+        descriptor_explainer_pairs: List[Tuple[str, str]] = []
+
+        if path.is_dir():
+            for p in sorted(path.iterdir()):
+                if p.suffix != ".jsonl" or not p.is_file():
+                    continue
+                if self.data_format == "raw":
+                    descriptor_explainer_pairs.extend(self._read_raw_jsonl_file(p, TEST_SIZE))
+                elif self.data_format == "processed":
+                    descriptor_explainer_pairs.extend(self._read_processed_jsonl_file(p, TEST_SIZE))
+                    
+                if self.test and len(descriptor_explainer_pairs) >= TEST_SIZE:
                     break
-        
-        # Split desc;exp strings into (desc, exp) tuples
-        pairs: List[Tuple[str, str]] = [self._split_pair(s) for s in descriptor_explainer_strings]
-        return pairs
+
+        elif path.is_file() and path.suffix == ".jsonl":
+            if self.data_format == "raw":
+                descriptor_explainer_pairs.extend(self._read_raw_jsonl_file(path, TEST_SIZE))
+            elif self.data_format == "processed":
+                descriptor_explainer_pairs.extend(self._read_processed_jsonl_file(path, TEST_SIZE))
+
+        else:
+            raise ValueError(
+                f"--data-path {path} is not a valid file or directory. "
+                "Should be a .jsonl file or a directory containing .jsonl files."
+            )
+
+        # If we overshot in the last file, trim to TEST_SIZE in test mode
+        if self.test and len(descriptor_explainer_pairs) > TEST_SIZE:
+            descriptor_explainer_pairs = descriptor_explainer_pairs[:TEST_SIZE]
+
+        return descriptor_explainer_pairs
+
 
     def _process_batch(self, batch: List[Dict[str, List[str]]]) -> List[Dict[str, Any]]:
         prompts = [
@@ -410,9 +513,21 @@ class DescriptorMerger:
 
             # Push through LLM in batches
             merged_groups: List[Dict[str, Any]] = []
-            for idx, batch in enumerate(self._batch_dicts(multi_map, max_dicts=self.batch_size)):
-                logging.info("====>  Processing batch %d with %d group(s)…", idx, len(batch))
-                merged_groups.extend(self._process_batch(batch))
+            
+            # Choose batching method based on user input.
+            if not self.batch_size and not self.chars_per_batch:
+                logging.warning("No --batch-size or --chars-per-batch given. Defaulting to --batch-size=512.")
+                self.batch_size = 512
+            if self.batch_size:
+                if self.chars_per_batch:
+                    logging.warning("Both --batch-size and --chars-per-batch given. Defaulting to --batch-size.")
+                for idx, batch in enumerate(self._batch_dicts(multi_map, max_dicts=self.batch_size)):
+                    logging.info("====>  Processing batch %d with %d group(s)…", idx, len(batch))
+                    merged_groups.extend(self._process_batch(batch))
+            else:
+                for idx, batch in enumerate(self._batch_dicts_by_chars(multi_map, max_chars=self.chars_per_batch)):
+                    logging.info("====>  Processing batch %d with %d group(s)…", idx, len(batch))
+                    merged_groups.extend(self._process_batch(batch))
 
             # Save output to log what gets merged
             self._save_output(merged_groups, iteration)
@@ -454,13 +569,17 @@ def validate_json(text: str) -> Dict[str, Any]:
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--run-id", required=True)
-    p.add_argument("--data-path", required=True, type=Path)
+    p.add_argument("--data-path", required=True, type=Path, help="Path to JSONL file or directory of JSONL files.")
+    p.add_argument('--data-format', choices=['raw', "processed"], help="Choose 'raw' or 'processed'. "
+                   "'raw' means data is in same format as it comes from descriptor generation stage. "
+                   "'processed' means data is in format {descriptor: 'descriptor', explainer: 'explainer'}.")
     p.add_argument("--model", default="meta-llama/Llama-3.3-70B-Instruct", help="Model name")
-    p.add_argument("--cache-dir", default=os.environ.get("HF_HOME", "~/.cache"))
-    p.add_argument("--batch-size", type=int, default=256)
-    p.add_argument("--temperature", type=float, default=0.1)
-    p.add_argument("--resume", action="store_true")
-    p.add_argument("--test", action="store_true")
+    p.add_argument("--cache-dir", default=os.environ.get("HF_HOME", "~/.cache"), help="Cache directory for model files")
+    p.add_argument("--batch-size", type=int, default=None, help="Give either this or --chars-per-batch. Typically 100-1000.")
+    p.add_argument("--chars-per-batch", type=int, default=None, help="Give either this or --batch-size. Typically 50_000-200_000.")
+    p.add_argument("--temperature", type=float, default=0.1, help="LLM temperature. Default 0.1. Between 0 and 1.")
+    p.add_argument("--resume", action="store_true", help="Resume from latest checkpoint in run directory.")
+    p.add_argument("--test", action="store_true", help="Test mode: limit to 10,000 descriptors for quick test runs.")
     args = p.parse_args()
     
     print(f"Starting run {args.run_id}", flush=True)

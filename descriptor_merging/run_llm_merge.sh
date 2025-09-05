@@ -27,8 +27,8 @@ gpu-energy --save
 
 run_id="full_run4"
 
-srun python3 merge_duplicates_2.py --run-id=$run_id \
-                                     --batch-size=512 \
-                                     --data-path="../results/new_descriptors/descriptors_new.jsonl" \
-                                     #--resume \
+srun python3 merge_duplicates.py --run-id=$run_id \
+                                 --chars_per_batch=200_000 \
+                                 --data-path="../results/new_descriptors/descriptors_new.jsonl" \
+                                 #--resume \
 gpu-energy --diff

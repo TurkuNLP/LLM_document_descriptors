@@ -10,7 +10,6 @@ Your task is to assess the semantic consistency of the explainers under the shar
 1. Read the descriptor carefully.
 
 2. Review each explainer and consider what it reveals about the document it describes.
-    - If the list of explainers is empty, ignore it.
 
 3. Compare the explainers to each other:
 
@@ -23,20 +22,20 @@ Your task is to assess the semantic consistency of the explainers under the shar
 ## Output:
 
 - If the explainers are consistent:
-    - Create a new, common explainer that captures the essence of the whole group.
+    - Create a new, concise explainer that captures the essence of the whole group.
 
 - If the explainers are inconsistent:
     - Split them into as many separate groups as necessary to create consistent groups.
     - For each group, either keep the original descriptor or create a new one that better captures the essence of that group. However, each group must have a unique descriptor, so you can use the original descriptor for only one group.
     - If you invent new descriptors, remember that descriptors can be single words or multi-word phrases. They should typically not be longer than 3 words.
-    - For each group, create a new group explainer that captures the essence of the whole group.
+    - For each group, create a new concise group explainer that captures the essence of the whole group or copy the most representative original explainer verbatim.
     
 - Output format:
     - The output must be formatted as a JSON object.
     - Never add any preamble or anything else outside the JSON object.
     - Each dictionary within "groups" should be a consistent group of explainers that share a common descriptor and explainer. 
     - Add as many groups as necessary.
-    - Each group must have a unique group_descriptor.
+    - Each group MUST have a non-empty group_descriptor. ONLY if the original explainer list is empty may group_explainer be empty.
     - Ensure that all original explainers are included in exactly one group in the field original_explainers_in_this_group.
     - If the original list of explainers is empty, the group_explainer should be an empty string and the group_descriptor should be the same as the original descriptor.
     - The output must be a valid JSON object with the following structure:
