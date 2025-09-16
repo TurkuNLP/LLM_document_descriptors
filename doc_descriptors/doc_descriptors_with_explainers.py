@@ -103,7 +103,8 @@ class DescriptorGenerator:
 
         return [out.outputs[0].text.strip(" `\n").removeprefix("json") for out in outputs]
 
-    def validate_output(self, output):
+    @staticmethod
+    def validate_output(output):
         validated = json_repair.loads(output)
         return validated if isinstance(validated, dict) else {}
 
@@ -236,20 +237,18 @@ class DescriptorGenerator:
             return prompts_with_explainers.revise_keyphrases_prompt_one_descriptor_type(
                 original, rewritten, descriptors, specifics)
 
-    def get_response_format(self, stage):
+    @staticmethod
+    def get_response_format(stage):
         if stage == "initial":
-
             class ResponseFormat(BaseModel):
                 descriptors: list[str]
                 specifics: list[str]
 
         elif stage == "rewrite":
-
             class ResponseFormat(BaseModel):
                 document: str
 
         elif stage == "revise":
-
             class ResponseFormat(BaseModel):
                 differences: str
                 descriptors: list[str]
@@ -269,8 +268,8 @@ class DescriptorGenerator:
 
         return tokenizer.decode(prompt_token_ids)
 
-
-    def update_results(self, results, general=None, specific=None, rewrites=None):
+    @staticmethod
+    def update_results(results, general=None, specific=None, rewrites=None):
         """Updates results dictionary with new descriptors or rewrites."""
         for index in results:
             if general:
@@ -350,8 +349,9 @@ class DescriptorGenerator:
                 destination_path = checkpoint_dir / item_path.name
                 # Copy the file
                 shutil.copy2(item_path, destination_path)
-                
-    def remove_explanations(self, list_of_descriptors):
+               
+    @staticmethod 
+    def remove_explanations(list_of_descriptors):
         return [
             descriptor.split(";")[0] if ";" in descriptor else descriptor 
             for descriptor in list_of_descriptors
@@ -455,6 +455,11 @@ class DescriptorGenerator:
             execution_time = end - start
             logging.info(f"Processing batch took {time.strftime('%H:%M:%S', time.gmtime(execution_time))}.")
             
+            if self.checkpoint_interval > 0:
+                if batch_num > 0 and (batch_num + 1) % self.checkpoint_interval == 0:
+                    self.make_checkpoint()
+                    logging.info(f"Checkpoint created after {batch_num + 1} batches.")
+            
             # Stop iterating through new data after num_batches batches have been processed.
             if self.num_batches == -1:
                 continue
@@ -516,8 +521,12 @@ if __name__ == "__main__":
         "--data-source", type=str, default="fineweb", help="Which data set to process."
     )
     parser.add_argument(
-        "--checkpoint-interval", type=int, default=50,
-        help="Number of batches after which all results so far will be saved into a checkpoint."
+        "--text-column", type=str, default="text", help="Name of the text column in the dataset."
+    )
+    parser.add_argument(
+        "--checkpoint-interval", type=int, default=0,
+        help="Number of batches after which all results so far will be saved into a checkpoint. "
+        "If 0, no checkpoints are created. Default: 0 (no checkpoints)."
     )
 
     args = parser.parse_args()
