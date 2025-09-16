@@ -2,7 +2,7 @@
 #SBATCH --job-name=llm_merge
 #SBATCH --account=project_462000353
 #SBATCH --partition=standard-g
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8

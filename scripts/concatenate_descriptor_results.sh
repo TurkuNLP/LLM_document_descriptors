@@ -1,30 +1,34 @@
 #!/usr/bin/env bash
-# Usage: ./gather_descriptors.sh /path/to/main-directory [name_pattern] [output_filename]
-# Defaults: name_pattern="descriptors_new*"  output_filename="descriptors_new.jsonl"
+# concat_descriptors.sh
+# Usage:
+#   ./concat_descriptors.sh [MAIN_DIR]
+# - MAIN_DIR defaults to current directory.
+# - Looks only one level deep (immediate subdirectories).
+# - Appends (>>) matching files to MAIN_DIR/all_descriptors_new.jsonl.
+# - Ensures each source file ends with a newline (good for JSONL).
 
 set -euo pipefail
+shopt -s nullglob
 
 main_dir="${1:-.}"
-pattern="${2:-descriptors_new*}"
-output="${3:-descriptors_new.jsonl}"
+pattern="descriptors_new*"
+out="${main_dir%/}/all_descriptors_new.jsonl"
 
-# Resolve absolute path
-main_dir="$(cd "$main_dir" && pwd)"
-outpath="$main_dir/$output"
+# Create output file if it doesn't exist (do not truncate)
+touch "$out"
 
-# Start fresh
-: > "$outpath"
+# Iterate immediate subdirectories of main_dir
+for dir in "$main_dir"/*/ ; do
+  [[ -d "$dir" ]] || continue
 
-# Find matching files exactly one level below main_dir, concatenate in sorted order
-while IFS= read -r -d '' file; do
-  cat "$file" >> "$outpath"
-    # Add a newline only if the file's last byte isn't a newline
-    if [ -s "$file" ] && [ "$(tail -c 1 "$file" 2>/dev/null)" != $'\n' ]; then
-    printf '\n' >> "$outpath"
-    fi
-done < <(
-  find "$main_dir" -mindepth 2 -maxdepth 2 -type f -name "$pattern" -print0 \
-  | sort -z
-)
+  # For each file starting with "descriptors_new" in this subdirectory
+  for f in "$dir"/$pattern ; do
+    [[ -f "$f" ]] || continue
+    echo "Appending: $f"
+    # Print each line and ensure a final newline (important for JSONL merges)
+    awk '1' "$f" >> "$out"
+  done
+done
 
-echo "Wrote: $outpath"
+echo "Done. Appended matches into: $out"
+echo "Total lines in $out: $(wc -l < "$out")"
