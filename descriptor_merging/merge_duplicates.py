@@ -29,8 +29,7 @@ import merge_prompts  # type: ignore
 #2. Identify duplicate descriptors
 #3. If there are more than 50 duplicates in group, split into even slices of max 50
 #4. For each slice, run LLM to generate merged descriptor(s) and canonical explainer(s)
-#5. Write merged descriptors to file
-#6. Repeat until no more duplicates are found
+#5. Repeat until no more duplicates are found
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -70,7 +69,6 @@ class DescriptorMerger:
         # storage --------------------------------------------------------
         self.base_dir: Path = Path("..") / "results" / "LLM_merges" / self.run_id
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.save_path = self.base_dir / "merged_descriptors.jsonl"
 
         # Set up logging
         self._configure_logging()
@@ -258,7 +256,6 @@ class DescriptorMerger:
         if batch:
             yield batch
 
-
     @staticmethod
     def _split_pair(text: str) -> Tuple[str, str]:
         try:
@@ -270,6 +267,14 @@ class DescriptorMerger:
 
     @staticmethod
     def _group_pairs(pairs: List[Tuple[str, str]]) -> Dict[str, List[str]]:
+        """Group descriptor-explainer pairs by descriptor. Drop empty pairs.
+
+        Args:
+            pairs (List[Tuple[str, str]]): List of descriptor, explainer tuples.
+
+        Returns:
+            Dict[str, List[str]]: Dictionary of descriptor: explainer groups.
+        """
         d: Dict[str, List[str]] = defaultdict(list)
         for desc, expl in pairs:
             if desc and expl:
@@ -279,6 +284,17 @@ class DescriptorMerger:
         return d
 
     def _read_raw_jsonl_file(self, path_to_file: Path, test_size: int) -> List[Tuple[str, str]]:
+        """Read data from file in 'raw' format. This means data is in the same format as it is 
+        after the initial descriptor generation stage. It should contain the field "descriptors",
+        which is either a list of lists of descriptors, or a list of descriptors.
+
+        Args:
+            path_to_file (Path): Path to JSONL file
+            test_size (int): Maximum number of descriptors to read in test mode.
+
+        Returns:
+            List[Tuple[str, str]]: List of descriptor, explainer tuples
+        """
         descriptor_explainer_strings: List[str] = []
         with path_to_file.open(encoding="utf-8") as f:
             for line in f:
@@ -331,18 +347,47 @@ class DescriptorMerger:
                 if p.suffix != ".jsonl" or not p.is_file():
                     continue
                 if self.data_format == "raw":
-                    descriptor_explainer_pairs.extend(self._read_raw_jsonl_file(p, TEST_SIZE))
+                    try:
+                        descriptor_explainer_pairs.extend(self._read_raw_jsonl_file(p, TEST_SIZE))
+                    except KeyError:
+                        logging.warning(f"File {p} does not contain expected fields for 'raw' format. Trying 'processed' format instead.")
+                        try:
+                            descriptor_explainer_pairs.extend(self._read_processed_jsonl_file(p, TEST_SIZE))
+                        except KeyError as e:
+                            logging.warning(f"File {p} does not contain expected fields for 'processed' format, either.")
+                            raise e
                 elif self.data_format == "processed":
-                    descriptor_explainer_pairs.extend(self._read_processed_jsonl_file(p, TEST_SIZE))
-                    
-                if self.test and len(descriptor_explainer_pairs) >= TEST_SIZE:
-                    break
+                    try:
+                        descriptor_explainer_pairs.extend(self._read_processed_jsonl_file(p, TEST_SIZE))
+                    except KeyError:
+                        logging.warning(f"File {p} does not contain expected fields for 'processed' format. Trying 'raw' format instead.")
+                        try:
+                            descriptor_explainer_pairs.extend(self._read_raw_jsonl_file(p, TEST_SIZE))
+                        except KeyError as e:
+                            logging.warning(f"File {p} does not contain expected fields for 'raw' format, either.")
+                            raise e
 
         elif path.is_file() and path.suffix == ".jsonl":
             if self.data_format == "raw":
-                descriptor_explainer_pairs.extend(self._read_raw_jsonl_file(path, TEST_SIZE))
+                try:
+                    descriptor_explainer_pairs.extend(self._read_raw_jsonl_file(path, TEST_SIZE))
+                except KeyError:
+                    logging.warning(f"File {path} does not contain expected fields for 'raw' format. Trying 'processed' format instead.")
+                    try:
+                        descriptor_explainer_pairs.extend(self._read_processed_jsonl_file(path, TEST_SIZE))
+                    except KeyError as e:
+                        logging.warning(f"File {path} does not contain expected fields for 'processed' format, either.")
+                        raise e
             elif self.data_format == "processed":
-                descriptor_explainer_pairs.extend(self._read_processed_jsonl_file(path, TEST_SIZE))
+                try:
+                    descriptor_explainer_pairs.extend(self._read_processed_jsonl_file(path, TEST_SIZE))
+                except KeyError:
+                    logging.warning(f"File {path} does not contain expected fields for 'processed' format. Trying 'raw' format instead.")
+                    try:
+                        descriptor_explainer_pairs.extend(self._read_raw_jsonl_file(path, TEST_SIZE))
+                    except KeyError as e:
+                        logging.warning(f"File {path} does not contain expected fields for 'raw' format, either.")
+                        raise e
 
         else:
             raise ValueError(
@@ -371,9 +416,18 @@ class DescriptorMerger:
         # replace runs of underscores/spaces with a single space, trim, lowercase
         return re.sub(r'[_\s]+', ' ', (s or '')).strip().lower()
         
-    @staticmethod
-    def _save_checkpoint(pairs: List[Tuple[str, str]], path: Path) -> None:
-        with path.open("w", encoding="utf-8") as f:
+    def _save_checkpoint(self, pairs: List[Tuple[str, str]], iter: int) -> None:
+        chkp_path = self.base_dir / f"iter_{iter}.jsonl"
+        logging.info("Saving results to %s…", chkp_path)
+        with chkp_path.open("w", encoding="utf-8") as f:
+            for desc, expl in pairs:
+                d = {"descriptor": desc, "explainer": expl}
+                f.write(json.dumps(d, ensure_ascii=False) + "\n")
+                
+    def _save_results(self, pairs: List[Tuple[str, str]]) -> None:
+        save_path = self.base_dir / f"{self.run_id}_merged.jsonl"
+        logging.info("Saving final results to %s...", save_path)
+        with save_path.open("w", encoding="utf-8") as f:
             for desc, expl in pairs:
                 d = {"descriptor": desc, "explainer": expl}
                 f.write(json.dumps(d, ensure_ascii=False) + "\n")
@@ -481,9 +535,6 @@ class DescriptorMerger:
                     pairs = self._load_initial_pairs(src_path)
                     iteration = 1
                 else:
-                    # Make the checkpoint the new 'source' for subsequent saves/logs
-                    src_path = ckpt_path
-                    self.save_path = ckpt_path
                     iteration = last_iter + 1
         
         # While-loop ends, when no more multi-explainer groups remain
@@ -506,7 +557,9 @@ class DescriptorMerger:
                 }
 
             if not multi_map:
-                logging.info("No multi-explainer groups remaining. Process finished!")
+                logging.info("No multi-explainer groups remaining.")
+                self._save_results(pairs)
+                logging.info("Results saved.")
                 break
 
             logging.info("There are %d multi-explainer groups and %d singletons", len(multi_map), len(singletons))
@@ -541,14 +594,10 @@ class DescriptorMerger:
             
             # Save results as JSONL like this:
             # {descriptor: "descriptor", explainer: "explainer"}
-            out_path = self.base_dir / f"iter_{iteration}.jsonl"
-            logging.info("Saving results to %s…", out_path)
-            self._save_checkpoint(all_pairs, out_path)
+            self._save_checkpoint(all_pairs, iteration)
             logging.info("Results saved.")
             
-            # Update paths and pairs for next iteration
-            src_path = out_path
-            self.save_path = out_path
+            # Update pairs for next iteration
             pairs = all_pairs
             iteration += 1
             
@@ -570,7 +619,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--run-id", required=True)
     p.add_argument("--data-path", required=True, type=Path, help="Path to JSONL file or directory of JSONL files.")
-    p.add_argument('--data-format', choices=['raw', "processed"], help="Choose 'raw' or 'processed'. "
+    p.add_argument("--data-format", choices=["raw", "processed"], default="raw",
+                   help="Choose 'raw' or 'processed'. "
                    "'raw' means data is in same format as it comes from descriptor generation stage. "
                    "'processed' means data is in format {descriptor: 'descriptor', explainer: 'explainer'}.")
     p.add_argument("--model", default="meta-llama/Llama-3.3-70B-Instruct", help="Model name")
