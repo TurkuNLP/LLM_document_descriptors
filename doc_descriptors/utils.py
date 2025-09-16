@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import numpy as np
+from pathlib import Path
 
 # Get the root logger (inherits settings from main function)
 logger = logging.getLogger(__name__)
@@ -99,14 +100,20 @@ def save_descriptors(desc_counts, path):
 
 def load_documents(source, cache):
     """
-    Load documents from a specified data source.
-    This function provides two options for loading documents:
-    1. From the HuggingFace FineWeb dataset (commented out by default).
-    2. From a local JSONL file containing a 40k sample.
+    Load documents from a specified data source. Could be a local file or a dataset from Hugging Face.
 
     Returns:
         list: A list of documents loaded from the selected data source.
     """
+    
+    try:
+        path = Path(source)
+        if path.is_file() and path.suffix == ".jsonl":
+            with open(path, "r") as f:
+                lines = f.readlines()
+                return [json.loads(line) for line in lines]
+    except Exception:
+        pass
 
     # Original fineweb sample
     if source.lower() == "fineweb":
@@ -115,12 +122,6 @@ def load_documents(source, cache):
                             split="train",
                             streaming=True,
                             cache_dir=cache)
-
-    # Our 40k sample
-    elif source.lower() == "40k":
-        with open("../data/fineweb_40k.jsonl", "r") as f:
-            lines = f.readlines()
-            return [json.loads(line) for line in lines]
         
     elif source.lower() =="core":
         data = []
@@ -156,8 +157,14 @@ def load_documents(source, cache):
                             cache_dir=cache)
         
     else:
-        raise ValueError(f"Invalid data source '{source}'.")
-    
+        try:
+            return load_dataset(source,
+                            split="train",
+                            streaming=True,
+                            cache_dir=cache)
+        
+        except:
+            raise ValueError(f"Invalid data source '{source}'.")
     
 def init_results(batch):
     return {
