@@ -599,15 +599,15 @@ def iterate_until_converged(
 
         logging.info("Finding neighbors...")
         # 3) Neighbors
-        dists, neigh = faiss_index.neighbors(index, emb, k=k)
+        sims, neigh = faiss_index.neighbors(index, emb, k=k)
 
         # 4) Build candidate pairs
         if args.candidate_strategy == "mutual":
             # Pairs have to be mutual nearest neighbors
-            triples = mutual_top1([p.id for p in pairs], neigh, sims, min_similarity=min_sim)
+            triples = mutual_top1([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
         else:
             # Find unique candidate pairs
-            triples = _unique_pairs_from_neighbors([p.id for p in pairs], neigh, sims, min_similarity=min_sim)
+            triples = _unique_pairs_from_neighbors([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
         if not triples:
             logging.info("No neighbor proposals. Stopping.")
             break
