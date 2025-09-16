@@ -6,11 +6,17 @@ import logging
 import numpy as np #type: ignore
 import os
 from pathlib import Path
+
 import time
 
 # Third-party imports
+from dataclasses import dataclass
 import faiss
 from sqlitedict import SqliteDict #type: ignore
+import torch
+from transformers import AutoModel, AutoTokenizer
+
+from typing import List, Dict
 
 
 def log_execution_time(func):
@@ -25,6 +31,84 @@ def log_execution_time(func):
         return result
     return wrapper
 
+@dataclass
+class Pair:
+    descriptor: str
+    explainer: str
+    
+    @property
+    def text(self) -> str:
+        # Allows to call .text to get combined descriptor and explainer
+        return f"{self.descriptor.strip()}; {self.explainer.strip()}".strip()  
+@dataclass
+class Neighbor:
+    id: str
+    score: float
+@dataclass
+class Group:
+    member_ids: List[str]
+    canonical: Dict[str, str]
+
+def read_jsonl(path: Path) -> List[Pair]:
+    pairs: List[Pair] = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            d = obj.get("descriptor", "").strip()
+            e = obj.get("explainer", "").strip()
+            if not d and not e:
+                # Skip empty rows
+                continue
+            item_id = f"row_{i:06d}"
+            pairs.append(Pair(id=item_id, descriptor=d, explainer=e))
+
+    return pairs
+
+class StellaEmbedder:
+    def __init__(self, cache_dir, batch_size=32):
+        model_name = "Marqo/dunzhang-stella_en_400M_v5"
+        self.model = (
+            AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                cache_dir = cache_dir
+            )
+            .cuda()
+            .eval()
+            .half()
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            cache_dir = cache_dir
+        )
+        self.batch_size = batch_size
+
+    def embed_descriptors(self, texts):
+        all_embeddings = []
+        for i in range(0, len(texts), self.batch_size):
+            batch_texts = texts[i : i + self.batch_size]
+            with torch.no_grad():
+                inputs = self.tokenizer(
+                    batch_texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt",
+                ).to("cuda")
+                last_hidden_state = self.model(**inputs)[0]
+                attention_mask = inputs["attention_mask"]
+                last_hidden = last_hidden_state.masked_fill(
+                    ~attention_mask[..., None].bool(), 0.0
+                )
+                embeddings = (
+                    last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+                )
+                all_embeddings.append(embeddings.cpu().numpy())
+        return np.vstack(all_embeddings)
 class NNSearcher:
     def __init__(self, args):
         self.run_id = args.run_id
