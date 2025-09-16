@@ -6,7 +6,7 @@ Pipeline:
 2) Embed each pair (descriptor+explainer text)
 3) Build a FAISS index
 4) For each item, pull its nearest neighbor candidate(s)
-5) **Distance threshold**: if a candidate neighbor's distance > t, skip LLM for that pair
+5) Min similarity: if a candidate neighbor's similarity < t, skip LLM for that pair
 6) Ask an LLM to decide if a remaining candidate pair are synonyms; if yes, keep the more representative one
 7) Do not re-merge items within the same iteration
 8) Iterate until convergence or a max-iteration cap
@@ -16,7 +16,6 @@ Notes
 * Uses vLLM Guided Decoding with a Pydantic JSON schema to keep responses tidy.
 * Caches LLM decisions in a SqliteDict so repeated runs are faster.
 * You can raise --k to consider multiple neighbors per item.
-* The distance threshold `t` applies to FAISS L2 distance over pooled embeddings.
 * Falls back to a flat L2 index when IVF training is not appropriate (e.g., small `n`).
 """
 from __future__ import annotations
@@ -139,8 +138,8 @@ class DecisionSchema(BaseModel):
 # I/O
 # -----------------------------------------------------------------------------
 
-def read_jsonl(path: Path, test: bool = False) -> List[Pair]:
-    TEST_SIZE = 10_000
+def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
+    limit = sample_size
 
     pairs: List[Pair] = []
     with path.open("r", encoding="utf-8") as f:
@@ -160,8 +159,8 @@ def read_jsonl(path: Path, test: bool = False) -> List[Pair]:
                 continue
             item_id = obj.get("id") or f"row_{i:06d}"
             pairs.append(Pair(id=item_id, descriptor=d, explainer=e))
-            if test and len(pairs) >= TEST_SIZE:
-                logging.info("Test mode: limiting to %d items", TEST_SIZE)
+            if limit is not None and len(pairs) >= limit:
+                logging.info("Test mode: limiting to %d items", limit)
                 break
     logging.info("Loaded %d pairs", len(pairs))
     return pairs
@@ -224,6 +223,9 @@ class StellaEmbedder:
                 attn = inputs["attention_mask"]  # [B, T]
                 masked = outputs.masked_fill(~attn[..., None].bool(), 0.0)
                 pooled = masked.sum(dim=1) / attn.sum(dim=1)[..., None]
+                
+                # Normalize to unit length for distance measuring
+                pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
                 all_embeddings.append(pooled.detach().cpu().numpy().astype("float32"))
         return np.vstack(all_embeddings) if all_embeddings else np.zeros((0, 1024), dtype="float32")
 
@@ -239,29 +241,31 @@ class FaissIndex:
 
     @log_execution_time
     def build(self, embeddings: np.ndarray) -> faiss.Index:
-        if embeddings.dtype != np.float32:
-            embeddings = embeddings.astype("float32")
-        d = embeddings.shape[1]
-        n = embeddings.shape[0]
+        embeddings = np.ascontiguousarray(embeddings.astype("float32"))
+        d, n = embeddings.shape[1], embeddings.shape[0]
 
         # Fallback to a flat index for small n or if IVF training fails
         if n < max(2 * self.nlist, 100):
-            index = faiss.IndexFlatL2(d)
+            index = faiss.IndexFlatIP(d)
             index.add(embeddings)
             return index
 
         try:
-            quantizer = faiss.IndexFlatL2(d)
-            index = faiss.IndexIVFFlat(quantizer, d, self.nlist, faiss.METRIC_L2)
-            index.train(embeddings)
+            # Build index with Inner-Produce quantizer
+            quantizer = faiss.IndexFlatIP(d)
+            index = faiss.IndexIVFFlat(quantizer, d, self.nlist, faiss.METRIC_INNER_PRODUCT)
+            
+            # Train on sample of embeddings
+            train_sample = embeddings[np.random.choice(n, size=min(100_000, n), replace=False)]
+            index.train(train_sample)
             ids = np.arange(n, dtype=np.int64)
             index.add_with_ids(embeddings, ids)
             index.nprobe = self.nprobe
             index.make_direct_map()
             return index
         except Exception as exc:
-            logging.warning("FAISS IVF build failed (%s); falling back to IndexFlatL2", exc)
-            index = faiss.IndexFlatL2(d)
+            logging.warning("FAISS IVF build failed (%s); falling back to IndexFlatIP", exc)
+            index = faiss.IndexFlatIP(d)
             index.add(embeddings)
             return index
 
@@ -269,9 +273,9 @@ class FaissIndex:
     def neighbors(self, index: faiss.Index, embeddings: np.ndarray, k: int = 1) -> Tuple[np.ndarray, np.ndarray]:
         if k < 1:
             raise ValueError("k must be >= 1")
-        distances, indices = index.search(embeddings, k + 1)  # +1 to (ideally) skip self
-        # Drop self (first column is usually the query itself at distance 0)
-        return distances[:, 1:], indices[:, 1:]
+        # Find similar embeddings (0-1), higher is more similar
+        sims, idxs = index.search(embeddings, k + 1)
+        return sims[:, 1:], idxs[:, 1:]  # Drop self
 
 
 # -----------------------------------------------------------------------------
@@ -285,6 +289,7 @@ class SynonymCombiner:
         cache_dir: Optional[Path],
         temperature: float = 0.1,
         cache_db_path: Optional[Path] = None,
+        batch_size: int = 512,
     ) -> None:
         self.model_name = model_name
         self.cache_dir = os.environ.get("HF_HOME") or (str(cache_dir) if cache_dir else None)
@@ -292,12 +297,16 @@ class SynonymCombiner:
         self._llm = None
         self.cache_db_path = cache_db_path
         self._cache = SqliteDict(str(cache_db_path), autocommit=True) if cache_db_path else None
+        self.batch_size = batch_size
 
     @property
     def llm(self) -> LLM:
         if self._llm is None:
-            n_gpus = len(os.environ["HIP_VISIBLE_DEVICES"].split(","))
-            logging.info("Using %d GPU(s) for vLLM", n_gpus)
+            n_gpus = torch.cuda.device_count()
+            if n_gpus == 0:
+                raise RuntimeError("No GPU available.")
+            else:
+                logging.info(f"Using {n_gpus} GPU(s).")
             self._llm = LLM(
                 model=self.model_name,
                 download_dir=self.cache_dir,
@@ -320,7 +329,7 @@ class SynonymCombiner:
             choose which ID to keep, which to drop, and set representative_descriptor to the best descriptor.
             If they are not synonyms or describe different concepts, return is_synonym=false and leave other fields coherent.
             Prefer concise, general, and commonly used phrasing when picking the representative descriptor.
-            Respond ONLY with JSON."<|eot_id|><|start_header_id|>user<|end_header_id|>""" + f"""
+            Respond ONLY with JSON.<|eot_id|><|start_header_id|>user<|end_header_id|>""" + f"""
 
             A.id: {a.id} A.descriptor: {a.descriptor} A.explainer: {a.explainer}
             B.id: {b.id} B.descriptor: {b.descriptor} B.explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
@@ -330,88 +339,118 @@ class SynonymCombiner:
         # Order-invariant key
         key = tuple(sorted([(a.id, a.descriptor, a.explainer), (b.id, b.descriptor, b.explainer)], key=lambda x: x[0]))
         return json.dumps(key, ensure_ascii=False)
+    
+    @staticmethod
+    def _tokens_in_outputs(outputs):
+        in_tok = 0
+        gen_tok = 0
+        for o in outputs:
+            if getattr(o, "prompt_token_ids", None):
+                in_tok += len(o.prompt_token_ids)
+            outs = getattr(o, "outputs", None) or []
+            if outs:
+                cand = outs[0]
+                if getattr(cand, "token_ids", None):
+                    gen_tok += len(cand.token_ids)
+                    
+        return in_tok, gen_tok
+    
+    @staticmethod
+    def _log_throughput(in_tok, gen_tok, elapsed):
+        tot_tok = gen_tok + in_tok
+        if elapsed > 0 and tot_tok > 0:
+            logging.info(
+                "LLM throughput: %.1f tok/s (%.1f gen tok/s) — %s tokens in %.2fs",
+                tot_tok / elapsed,
+                gen_tok / elapsed if gen_tok else 0,
+                tot_tok,
+                elapsed,
+            )
 
     @log_execution_time
     def decide_batch(self, pairs: List[Tuple[Pair, Pair]]) -> List[Decision]:
-        prompts: List[str] = []
-        decisions: List[Decision] = []
-        to_query: List[int] = []
-
-        # Check cache first
-        for idx, (a, b) in enumerate(pairs):
-            if self._cache is not None:
-                ck = self._cache_key(a, b)
-                if ck in self._cache:
-                    try:
-                        obj = json.loads(self._cache[ck])
-                        decisions.append(Decision(**obj))
-                        continue
-                    except Exception:
-                        pass
-            # Not cached
-            prompts.append(self._prompt(a, b))
-            to_query.append(idx)
-            decisions.append(Decision(is_synonym=False, keep_id=a.id, drop_id=b.id, representative_descriptor=a.descriptor, reason="uncached"))
-
-        if prompts:
-            params = SamplingParams(
-                temperature=self.temperature,
-                top_p=0.5,
-                repetition_penalty=1.0,
-                max_tokens=512,
-                stop=["<|eot_id|>"],
-                guided_decoding=self._response_format(),
-                seed=42,
-            )
-            outputs = self.llm.generate(prompts, sampling_params=params, use_tqdm=False)
-
-            parsed: List[Decision] = []
-            for out_idx, out in enumerate(outputs):
-                text = ""
-                outs = getattr(out, "outputs", None) or []
-                if outs:
-                    text = (outs[0].text or "").strip(" `\n").removeprefix("json").strip()
-                try:
-                    obj = json_repair.loads(text)
-                    parsed.append(Decision(
-                        is_synonym=bool(obj.get("is_synonym", False)),
-                        keep_id=str(obj.get("keep_id", "")),
-                        drop_id=str(obj.get("drop_id", "")),
-                        representative_descriptor=str(obj.get("representative_descriptor", "")),
-                        reason=str(obj.get("reason", "")),
-                    ))
-                except Exception as exc:
-                    logging.warning("Falling back to non-merge due to parse error: %s", exc)
-                    # Map back to the corresponding pair index
-                    pair_idx = to_query[out_idx]
-                    a, b = pairs[pair_idx]
-                    parsed.append(Decision(
-                        is_synonym=False,
-                        keep_id=a.id,
-                        drop_id=b.id,
-                        representative_descriptor=a.descriptor,
-                        reason="parse_error",
-                    ))
-
-            # Stitch parsed decisions into the full list in order
-            p_iter = iter(parsed)
-            for pos in to_query:
-                d = next(p_iter)
-                decisions[pos] = d
-
-            # Write only uncached results back to cache
-            if self._cache is not None:
-                for pos in to_query:
-                    a, b = pairs[pos]
-                    d = decisions[pos]
+        decisions: List[Decision] = [None] * len(pairs)
+        # Process in batches
+        for batch_start in range(0, len(pairs), self.batch_size):
+            batch_pairs = pairs[batch_start:batch_start + self.batch_size]
+            batch_prompts: List[str] = []
+            batch_to_query: List[int] = []
+            batch_decisions: List[Decision] = []
+            # Check cache first
+            for idx_in_batch, (a, b) in enumerate(batch_pairs):
+                global_idx = batch_start + idx_in_batch
+                if self._cache is not None:
                     ck = self._cache_key(a, b)
+                    if ck in self._cache:
+                        try:
+                            obj = json.loads(self._cache[ck])
+                            decisions[global_idx] = Decision(**obj)
+                            continue
+                        except Exception:
+                            pass
+                # Not cached
+                batch_prompts.append(self._prompt(a, b))
+                batch_to_query.append(idx_in_batch)
+                batch_decisions.append(Decision(is_synonym=False, keep_id=a.id, drop_id=b.id, representative_descriptor=a.descriptor, reason="uncached"))
+            if batch_prompts:
+                params = SamplingParams(
+                    temperature=self.temperature,
+                    top_p=0.5,
+                    repetition_penalty=1.0,
+                    max_tokens=1_024,
+                    stop=["<|eot_id|>"],
+                    guided_decoding=self._response_format(),
+                    seed=42,
+                )
+                start = time.time()
+                outputs = self.llm.generate(batch_prompts, sampling_params=params, use_tqdm=False)
+                end = time.time()
+                in_tok, gen_tok = self._tokens_in_outputs(outputs)
+                self._log_throughput(in_tok, gen_tok, end-start)
+                parsed: List[Decision] = []
+                for out_idx, out in enumerate(outputs):
+                    text = ""
+                    outs = getattr(out, "outputs", None) or []
+                    if outs:
+                        text = (outs[0].text or "").strip(" `\n").removeprefix("json").strip()
                     try:
-                        self._cache[ck] = json.dumps(d.__dict__, ensure_ascii=False)
-                    except Exception:
-                        pass
-
+                        obj = json_repair.loads(text)
+                        parsed.append(Decision(
+                            is_synonym=bool(obj.get("is_synonym", False)),
+                            keep_id=str(obj.get("keep_id", "")),
+                            drop_id=str(obj.get("drop_id", "")),
+                            representative_descriptor=str(obj.get("representative_descriptor", "")),
+                            reason=str(obj.get("reason", "")),
+                        ))
+                    except Exception as exc:
+                        logging.warning("Falling back to non-merge due to parse error: %s", exc)
+                        # Map back to the corresponding pair index
+                        pair_idx = batch_to_query[out_idx]
+                        a, b = batch_pairs[pair_idx]
+                        parsed.append(Decision(
+                            is_synonym=False,
+                            keep_id=a.id,
+                            drop_id=b.id,
+                            representative_descriptor=a.descriptor,
+                            reason="parse_error",
+                        ))
+                # Stitch parsed decisions into the full list in order
+                p_iter = iter(parsed)
+                for pos in batch_to_query:
+                    d = next(p_iter)
+                    global_pos = batch_start + pos
+                    decisions[global_pos] = d
+                # Write only uncached results back to cache
+                if self._cache is not None:
+                    for pos in batch_to_query:
+                        a, b = batch_pairs[pos]
+                        d = batch_decisions[pos]
+                        ck = self._cache_key(a, b)
+                        try:
+                            self._cache[ck] = json.dumps(d.__dict__, ensure_ascii=False)
+                        except Exception:
+                            pass
         return decisions
-
 
 # -----------------------------------------------------------------------------
 # Merging & iteration
@@ -427,34 +466,68 @@ class MergeResult:
 def _unique_pairs_from_neighbors(
     ids: Sequence[str],
     neighbor_idx: np.ndarray,
-    distances: np.ndarray,
-    distance_threshold: Optional[float] = None,
+    scores: np.ndarray,
+    min_similarity: Optional[float] = None,
 ) -> List[Tuple[int, int, float]]:
     """Return a deduplicated list of (i, j, dist) where i < j.
 
     Consider **all k neighbors** for each i, deduplicate by unordered pair, and
-    keep the smallest distance when a pair appears multiple times.
+    keep the highest similarity when a pair appears multiple times.
 
-    If `distance_threshold` is set, discard candidates whose distance exceeds it.
+    If `min_similarity` is set, discard candidates whose similarity is lower.
     """
-    assert neighbor_idx.shape == distances.shape
+    assert neighbor_idx.shape == scores.shape
     proposals: Dict[Tuple[int, int], float] = {}
+    
+    # n = items, k = neighbors per item
     n, k = neighbor_idx.shape
     for i in range(n):
         for col in range(k):
             j = int(neighbor_idx[i, col])
             if j < 0 or j == i:
                 continue
-            dist = float(distances[i, col]) if distances.size else float("inf")
-            if distance_threshold is not None and not np.isnan(dist) and dist > distance_threshold:
+            sim = float(scores[i, col]) if scores.size else float("-inf")
+            
+            # Drop neighbors with low similarity
+            if min_similarity is not None and not np.isnan(sim) and sim > min_similarity:
                 continue
             a, b = (i, j) if i < j else (j, i)
             if a == b:
                 continue
-            if (a, b) not in proposals or dist < proposals[(a, b)]:
-                proposals[(a, b)] = dist
+            if (a, b) not in proposals or sim > proposals[(a, b)]:
+                proposals[(a, b)] = sim
     triples = [(a, b, d) for (a, b), d in proposals.items()]
-    triples.sort(key=lambda t: t[2])  # ascending distance
+    triples.sort(key=lambda t: t[2], reverse=True)  # descending similairty
+    return triples
+
+
+def mutual_top1(
+    ids: Sequence[str],
+    neighbor_idx: np.ndarray,
+    scores: np.ndarray,
+    min_similarity: Optional[float] = None,
+) -> List[Tuple[int, int, float]]:
+    n, k = neighbor_idx.shape
+    if k < 1 or n == 0:
+        return []
+    pairs: Dict[Tuple[int, int], float] = {}
+    for i in range(n):
+        j = int(neighbor_idx[i, 0])  # i’s best neighbor
+        if j < 0 or j == i or j >= n:
+            continue
+        if int(neighbor_idx[j, 0]) != i:  # require mutual top-1
+            continue
+        # pick a single score to rank by (use the better of the two directions)
+        sim_ij = float(scores[i, 0]) if scores.size else float("-inf")
+        sim_ji = float(scores[j, 0]) if scores.size else float("-inf")
+        sim = max(sim_ij, sim_ji)
+        if min_similarity is not None and (np.isnan(sim) or sim < min_similarity):
+            continue
+        a, b = (i, j) if i < j else (j, i)
+        if (a, b) not in pairs or sim > pairs[(a, b)]:
+            pairs[(a, b)] = sim
+    triples = [(a, b, s) for (a, b), s in pairs.items()]
+    triples.sort(key=lambda t: t[2], reverse=True)  # descending similarity
     return triples
 
 
@@ -504,7 +577,7 @@ def iterate_until_converged(
     combiner: SynonymCombiner,
     k: int = 1,
     max_iters: int = 5,
-    distance_threshold: Optional[float] = None,
+    min_similarity: Optional[float] = None,
 ) -> Tuple[List[Pair], List[List[MergeResult]]]:
     all_merges: List[List[MergeResult]] = []
     iteration = 0
@@ -515,22 +588,31 @@ def iterate_until_converged(
         if len(pairs) <= 1:
             break
 
+        logging.info("Embedding descriptor-explainer pairs...")
         # 1) Embed
         texts = [p.text for p in pairs]
         emb = embedder.embed_texts(texts)
 
+        logging.info("Building Faiss index...")
         # 2) Index
         index = faiss_index.build(emb)
 
+        logging.info("Finding neighbors...")
         # 3) Neighbors
         dists, neigh = faiss_index.neighbors(index, emb, k=k)
 
-        # 4) Build unique candidate pairs, greedy by distance
-        triples = _unique_pairs_from_neighbors([p.id for p in pairs], neigh, dists, distance_threshold=distance_threshold)
+        # 4) Build candidate pairs
+        if args.candidate_strategy == "mutual":
+            # Pairs have to be mutual nearest neighbors
+            triples = mutual_top1([p.id for p in pairs], neigh, sims, min_similarity=min_sim)
+        else:
+            # Find unique candidate pairs
+            triples = _unique_pairs_from_neighbors([p.id for p in pairs], neigh, sims, min_similarity=min_sim)
         if not triples:
             logging.info("No neighbor proposals. Stopping.")
             break
 
+        logging.info("Prompting LLM...")
         # 5) Query LLM on candidates in order
         ordered_pairs: List[Tuple[Pair, Pair]] = []
         for i, j, _ in triples:
@@ -585,11 +667,7 @@ class DSU:
 # -----------------------------------------------------------------------------
 
 def main(args: argparse.Namespace) -> None:
-    # Check gpus are available
-    print(torch.version.hip, flush=True)
-    print(torch.cuda.is_available(), flush=True)
-    print(torch.cuda.device_count(), flush=True)
-    
+
     # Setup paths and logging
     input_path = Path(args.input)
     output_dir = Path("../results/synonym_merges") / args.run_id
@@ -605,31 +683,28 @@ def main(args: argparse.Namespace) -> None:
 
     setup_logging(output_dir, args.verbose)
     
+    # Read input
+    pairs = read_jsonl(input_path, sample_size=args.test)
+    all_ids = {p.id for p in pairs}
+    
+    # Initialise combiner
     combiner = SynonymCombiner(
         model_name=args.model,
         cache_dir=cache_dir,
         temperature=args.temperature,
         cache_db_path=Path(decision_cache_path),
+        batch_size = args.llm_batch_size
     )
-    
-    # Read input
-    pairs = read_jsonl(input_path, test=args.test)
-    all_ids = {p.id for p in pairs}
-    
-    combiner.decide_batch([(pairs[0], pairs[1])])
+
+    logging.info("Loading model...")
+    # Access the LLM to trigger loading
+    _ = combiner.llm
     
     # Embed and build index helpers
     embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=args.batch_size)
     faiss_index = FaissIndex(nlist=args.faiss_nlist, nprobe=args.faiss_nprobe)
     
-    # Initialise LLM
-    combiner = SynonymCombiner(
-        model_name=args.model,
-        cache_dir=cache_dir,
-        temperature=args.temperature,
-        cache_db_path=Path(decision_cache_path),
-    )
-
+    logging.info("Starting iterations over data...")
     # Iterate until convergence / threshold
     final_pairs, all_merges = iterate_until_converged(
         pairs,
@@ -638,7 +713,7 @@ def main(args: argparse.Namespace) -> None:
         combiner,
         k=args.k,
         max_iters=args.max_iters,
-        distance_threshold=args.distance_threshold,
+        min_similarity=args.min_similarity,
     )
 
     # Persist results
@@ -684,11 +759,11 @@ if __name__ == "__main__":
     parser.add_argument("--faiss_nprobe", type=int, default=10)
     parser.add_argument("--k", type=int, default=1, help="#neighbors to fetch per item (excluding self)")
     parser.add_argument(
-        "--distance_threshold",
+        "--min-similarity",
         type=float,
         default=None,
         help=(
-            "L2 distance threshold on pooled embeddings; if a candidate neighbor is farther than this, "
+            "Minimum similarity on pooled embeddings; if a candidate neighbor is less similar than this, "
             "skip sending that pair to the LLM"
         ),
     )
@@ -697,11 +772,14 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="meta-llama/Llama-3.3-70B-Instruct", help="vLLM model name or local path")
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--decision_cache", type=str, default="decision_cache.sqlite", help="Sqlite file to cache LLM decisions")
+    parser.add_argument("--llm_batch_size", type=int, default=512, help="Batch size for LLM queries")
 
     # Loop
     parser.add_argument("--max_iters", type=int, default=5)
-    parser.add_argument("--test", action="store_true", help="Test mode: limit to 10k input items")
+    parser.add_argument("--test", nargs="?", const="10000", default=None, type=int, #nargs="?" means 0 or 1 argument 
+                        help="Run with small batch of data. Defaults to 10k sample. Give value if you want to change sample size.")
     parser.add_argument("--verbose", type=int, default=1, help="0=warn, 1=info, 2=debug")
+    parser.add_argument("--candidate_strategy", choices=["unique", "mutual"], default="mutual")
 
     args = parser.parse_args()
     main(args)

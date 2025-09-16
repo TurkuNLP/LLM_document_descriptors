@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=syn_find
 #SBATCH --account=project_462000353
-#SBATCH --partition=dev-g
-#SBATCH --time=00:20:00
+#SBATCH --partition=standard-g
+#SBATCH --time=2-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
@@ -15,18 +15,19 @@ module purge
 module use /appl/local/csc/modulefiles
 module load pytorch/2.5
 
-source ../.venv_pt2.5/bin/activate
+source .venv_pt2.5_merge/bin/activate
 
-export HIP_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 rocm-smi
 
 gpu-energy --save
 
-run_id="synonym_merge_test1"
+run_id="synonym_big_test2"
 
 srun python3 find_synonyms.py --run-id=$run_id \
                               --input="../results/LLM_merges/all_merge_arrays/merge_array_0_merged.jsonl" \
-                              --test
+                              --test 100_000 \
+                              --llm-batch-size 1024
 
 gpu-energy --diff
