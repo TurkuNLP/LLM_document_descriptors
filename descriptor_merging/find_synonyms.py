@@ -254,6 +254,7 @@ class FaissIndex:
             # Build index with Inner-Produce quantizer
             quantizer = faiss.IndexFlatIP(d)
             index = faiss.IndexIVFFlat(quantizer, d, self.nlist, faiss.METRIC_INNER_PRODUCT)
+            index.cp.seed = 42  # for reproducibility
             
             # Train on sample of embeddings
             train_sample = embeddings[np.random.choice(n, size=min(100_000, n), replace=False)]
@@ -311,7 +312,7 @@ class SynonymCombiner:
                 model=self.model_name,
                 download_dir=self.cache_dir,
                 dtype="bfloat16",
-                max_model_len=16384,
+                max_model_len=2048,
                 tensor_parallel_size=n_gpus,
                 enforce_eager=False,
                 gpu_memory_utilization=0.9,
@@ -397,7 +398,7 @@ class SynonymCombiner:
                     temperature=self.temperature,
                     top_p=0.5,
                     repetition_penalty=1.0,
-                    max_tokens=1_024,
+                    max_tokens=512,
                     stop=["<|eot_id|>"],
                     guided_decoding=self._response_format(),
                     seed=42,
@@ -442,16 +443,12 @@ class SynonymCombiner:
                     decisions[global_pos] = d
                 # Write only uncached results back to cache
                 if self._cache is not None:
-                    for pos in batch_to_query:
+                    for out_idx, pos in enumerate(batch_to_query):
                         a, b = batch_pairs[pos]
-                        d = batch_decisions[pos]
+                        d = parsed[out_idx]
                         ck = self._cache_key(a, b)
-                        try:
-                            self._cache[ck] = json.dumps(d.__dict__, ensure_ascii=False)
-                        except Exception:
-                            pass
+                        self._cache[ck] = json.dumps(d.__dict__, ensure_ascii=False)
         return decisions
-
 # -----------------------------------------------------------------------------
 # Merging & iteration
 # -----------------------------------------------------------------------------
@@ -478,6 +475,7 @@ def _unique_pairs_from_neighbors(
     """
     assert neighbor_idx.shape == scores.shape
     proposals: Dict[Tuple[int, int], float] = {}
+    dropped: Dict[Tuple[int, int], float] = {}
     
     # n = items, k = neighbors per item
     n, k = neighbor_idx.shape
@@ -489,16 +487,35 @@ def _unique_pairs_from_neighbors(
             sim = float(scores[i, col]) if scores.size else float("-inf")
             
             # Drop neighbors with low similarity
-            if min_similarity is not None and not np.isnan(sim) and sim > min_similarity:
+            if min_similarity is not None and (np.isnan(sim) or sim < min_similarity):
+                dropped[(i,j)] = sim
                 continue
             a, b = (i, j) if i < j else (j, i)
             if a == b:
                 continue
             if (a, b) not in proposals or sim > proposals[(a, b)]:
                 proposals[(a, b)] = sim
-    triples = [(a, b, d) for (a, b), d in proposals.items()]
-    triples.sort(key=lambda t: t[2], reverse=True)  # descending similairty
-    return triples
+    
+    # Reformat and sort the results
+    if proposals:
+        triples = [(a, b, s) for (a, b), s in proposals.items()]
+        triples.sort(key=lambda t: t[2], reverse=True)  # descending similarity
+
+    if dropped:
+        dropped = [(a,b , s) for (a,b), s in dropped.items()]
+        dropped.sort(key=lambda t: t[2])  # ascending similarity
+    
+    if triples:
+        sim_scores = [trip[2] for trip in triples]
+        avg_sim = sum(sim_scores)/len(triples)
+        max_sim = max(sim_scores)
+        min_sim = min(sim_scores)
+        logging.info(f"Pair avg. similarity: {avg_sim}")
+        logging.info(f"Pair max similarity: {max_sim}")
+        logging.info(f"Pair min similarity: {min_sim}")
+    logging.info(f"Dropped {len(dropped)} pairs due to similarity threshold.")
+    
+    return triples, dropped
 
 
 def mutual_top1(
@@ -511,6 +528,8 @@ def mutual_top1(
     if k < 1 or n == 0:
         return []
     pairs: Dict[Tuple[int, int], float] = {}
+    dropped: Dict[Tuple[int, int], float] = {}
+    
     for i in range(n):
         j = int(neighbor_idx[i, 0])  # i’s best neighbor
         if j < 0 or j == i or j >= n:
@@ -521,14 +540,41 @@ def mutual_top1(
         sim_ij = float(scores[i, 0]) if scores.size else float("-inf")
         sim_ji = float(scores[j, 0]) if scores.size else float("-inf")
         sim = max(sim_ij, sim_ji)
-        if min_similarity is not None and (np.isnan(sim) or sim < min_similarity):
-            continue
+        
+        # Canonical ordering
         a, b = (i, j) if i < j else (j, i)
+        
+        if min_similarity is not None and (np.isnan(sim) or sim < min_similarity):
+            # Check if we already have a dropped entry and keep the highest similarity
+            prev = dropped.get((a, b))
+            if prev is None or sim > prev:
+                dropped[(a, b)] = sim
+            continue
+        
+        # Keep only the highest similarity for each pair
         if (a, b) not in pairs or sim > pairs[(a, b)]:
             pairs[(a, b)] = sim
-    triples = [(a, b, s) for (a, b), s in pairs.items()]
-    triples.sort(key=lambda t: t[2], reverse=True)  # descending similarity
-    return triples
+            
+    # Reformat and sort the results
+    if pairs:
+        triples = [(a, b, s) for (a, b), s in pairs.items()]
+        triples.sort(key=lambda t: t[2], reverse=True)  # descending similarity
+
+    if dropped:
+        dropped = [(a,b , s) for (a,b), s in dropped.items()]
+        dropped.sort(key=lambda t: t[2])  # ascending similarity
+    
+    if triples:
+        sim_scores = [trip[2] for trip in triples]
+        avg_sim = sum(sim_scores)/len(triples)
+        max_sim = max(sim_scores)
+        min_sim = min(sim_scores)
+        logging.info(f"Pair avg. similarity: {avg_sim}")
+        logging.info(f"Pair max similarity: {max_sim}")
+        logging.info(f"Pair min similarity: {min_sim}")
+    logging.info(f"Dropped {len(dropped)} pairs due to similarity threshold.")
+    
+    return triples, dropped
 
 
 def _apply_merges_greedy(
@@ -568,6 +614,16 @@ def _apply_merges_greedy(
     new_pairs = [id_to_pair[p.id] for p in pairs if p.id not in dropped_ids]
     return new_pairs, merges
 
+def _log_dropped(pairs: Sequence[Pair], dropped: List[Tuple[int, int, float]], path: Path) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        for i, j, s in dropped:
+            a, b = pairs[i], pairs[j]
+            reason = "nan_similarity" if np.isnan(s) else "below_min_similarity"
+            rec = {
+                "i": i, "j": j, "text_i": a.text, "text_j": b.text, "similarity": round(s, 4), "reason": reason,
+            }
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
 
 @log_execution_time
 def iterate_until_converged(
@@ -578,6 +634,7 @@ def iterate_until_converged(
     k: int = 1,
     max_iters: int = 5,
     min_similarity: Optional[float] = None,
+    output_dir: Optional[Path] = None,
 ) -> Tuple[List[Pair], List[List[MergeResult]]]:
     all_merges: List[List[MergeResult]] = []
     iteration = 0
@@ -604,13 +661,21 @@ def iterate_until_converged(
         # 4) Build candidate pairs
         if args.candidate_strategy == "mutual":
             # Pairs have to be mutual nearest neighbors
-            triples = mutual_top1([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
+            triples, dropped = mutual_top1([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
         else:
             # Find unique candidate pairs
-            triples = _unique_pairs_from_neighbors([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
+            triples, dropped = _unique_pairs_from_neighbors([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
+        
+        if dropped:
+            if output_dir:
+                _log_dropped(pairs, dropped, output_dir / f"iteration_{iteration}_dropped.jsonl")
+            else:
+                _log_dropped(pairs, dropped, Path(f"iteration_{iteration}_dropped.jsonl"))
         if not triples:
             logging.info("No neighbor proposals. Stopping.")
             break
+        
+        logging.info("Found %d candidate pairs", len(triples))
 
         logging.info("Prompting LLM...")
         # 5) Query LLM on candidates in order
@@ -668,9 +733,10 @@ class DSU:
 
 def main(args: argparse.Namespace) -> None:
 
-    # Setup paths and logging
+    # Setup paths
     input_path = Path(args.input)
     output_dir = Path("../results/synonym_merges") / args.run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{args.run_id}.jsonl"
     decision_cache_path = output_dir / (args.decision_cache or "decision_cache.sqlite")
 
@@ -681,7 +747,16 @@ def main(args: argparse.Namespace) -> None:
         hf_home = os.environ.get("HF_HOME")
         cache_dir = Path(hf_home) if hf_home else None
 
+    # Setup logging
     setup_logging(output_dir, args.verbose)
+    
+    # Log run settings
+    with open(output_dir / f"{args.run_id}_settings.txt", "a") as f:
+        f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
+        for arg, value in vars(args).items():
+            logging.info(f"{arg}: {value}")
+            f.write(f"{arg}: {value}\n")
+        f.write("===========================\n")
     
     # Read input
     pairs = read_jsonl(input_path, sample_size=args.test)
@@ -698,7 +773,7 @@ def main(args: argparse.Namespace) -> None:
 
     logging.info("Loading model...")
     # Access the LLM to trigger loading
-    _ = combiner.llm
+    # _ = combiner.llm
     
     # Embed and build index helpers
     embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=args.batch_size)
@@ -714,6 +789,7 @@ def main(args: argparse.Namespace) -> None:
         k=args.k,
         max_iters=args.max_iters,
         min_similarity=args.min_similarity,
+        output_dir=output_dir,
     )
 
     # Persist results
@@ -751,17 +827,17 @@ if __name__ == "__main__":
     parser.add_argument("--input", type=str, required=True, help="Path to input JSONL with fields: id? (optional), descriptor, explainer")
 
     # Embeddings
-    parser.add_argument("--cache_dir", type=str, default=None, help="HF cache dir (optional)")
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--cache-dir", type=str, default=None, help="HF cache dir (optional)")
+    parser.add_argument("--batch-size", type=int, default=32)
 
     # FAISS
-    parser.add_argument("--faiss_nlist", type=int, default=100)
-    parser.add_argument("--faiss_nprobe", type=int, default=10)
+    parser.add_argument("--faiss-nlist", type=int, default=100, help="#Voronoi cells the embedding space is divided into in Faiss")
+    parser.add_argument("--faiss-nprobe", type=int, default=10, help="#Voronoi cells to visit when searching")
     parser.add_argument("--k", type=int, default=1, help="#neighbors to fetch per item (excluding self)")
     parser.add_argument(
         "--min-similarity",
         type=float,
-        default=None,
+        default=0.7,
         help=(
             "Minimum similarity on pooled embeddings; if a candidate neighbor is less similar than this, "
             "skip sending that pair to the LLM"
@@ -771,15 +847,15 @@ if __name__ == "__main__":
     # LLM
     parser.add_argument("--model", type=str, default="meta-llama/Llama-3.3-70B-Instruct", help="vLLM model name or local path")
     parser.add_argument("--temperature", type=float, default=0.1)
-    parser.add_argument("--decision_cache", type=str, default="decision_cache.sqlite", help="Sqlite file to cache LLM decisions")
-    parser.add_argument("--llm_batch_size", type=int, default=512, help="Batch size for LLM queries")
+    parser.add_argument("--decision-cache", type=str, default="decision_cache.sqlite", help="Sqlite file to cache LLM decisions")
+    parser.add_argument("--llm-batch-size", type=int, default=512, help="Batch size for LLM queries")
 
     # Loop
-    parser.add_argument("--max_iters", type=int, default=5)
+    parser.add_argument("--max-iters", type=int, default=5)
     parser.add_argument("--test", nargs="?", const="10000", default=None, type=int, #nargs="?" means 0 or 1 argument 
                         help="Run with small batch of data. Defaults to 10k sample. Give value if you want to change sample size.")
     parser.add_argument("--verbose", type=int, default=1, help="0=warn, 1=info, 2=debug")
-    parser.add_argument("--candidate_strategy", choices=["unique", "mutual"], default="mutual")
+    parser.add_argument("--candidate-strategy", choices=["unique", "mutual"], default="mutual")
 
     args = parser.parse_args()
     main(args)

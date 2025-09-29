@@ -10,6 +10,7 @@
 #SBATCH --mem=80G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
+#SBATCH --array=0-4
 
 module purge
 module use /appl/local/csc/modulefiles
@@ -23,11 +24,13 @@ rocm-smi
 
 gpu-energy --save
 
-run_id="synonym_big_test2"
+arr_idx=$SLURM_ARRAY_TASK_ID
+
+run_id="synonyms_split_run1_${arr_idx}"
 
 srun python3 find_synonyms.py --run-id=$run_id \
-                              --input="../results/LLM_merges/all_merge_arrays/merge_array_0_merged.jsonl" \
-                              --test 100_000 \
-                              --llm-batch-size 1024
+                              --input="../results/synonym_merges/to_be_merged/splits/merge_array_concat_merged_00${arr_idx}.jsonl" \
+                              --llm-batch-size 1024 \
+                              --min-similarity 0.65
 
 gpu-energy --diff
