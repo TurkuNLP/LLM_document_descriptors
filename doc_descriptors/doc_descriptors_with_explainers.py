@@ -69,6 +69,7 @@ class DescriptorGenerator:
         self.checkpoint_interval = args.checkpoint_interval
         self.base_dir = Path("..") / "results" / self.run_id
         self.embedder = StellaEmbedder(self.cache_dir)
+        self.text_column = args.text_column
 
     @log_execution_time
     def LLM_setup(self):
@@ -363,6 +364,11 @@ class DescriptorGenerator:
         logging.info("Model loaded.")
         data = load_documents(self.data_source, self.cache_dir)
         logging.info("Data loaded.")
+        
+        # The text needs to be in a column called "text".
+        # If not, give the column name in --text-column arg and it will be renamed to "text"
+        if self.text_column != "text":
+            data = data.rename_column(self.text_column, "text")
 
         descriptor_path = self.base_dir / f"descriptor_vocab_{self.run_id}.tsv"
 
