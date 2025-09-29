@@ -26,11 +26,11 @@ run_id="yelp"
 
 srun python3 ../doc_descriptors/doc_descriptors_with_explainers.py --run-id=$run_id \
                                                                    --temperature=0.1 \
-                                                                   --batch-size=1024 \
+                                                                   --batch-size=512 \
                                                                    --num-batches=-1 \
                                                                    --num-rewrites=3 \
-                                                                   --start-index=0 \
-                                                                   --data-source="/data/yelp/yelp_reviews_100k_min100chars.jsonl" \
+                                                                   --start-index=44032 \
+                                                                   --data-source="../data/yelp/yelp_reviews_100k_min100chars.jsonl" \
                                                                    --checkpoint-interval=20 \
                                                                    #--text-column="comment_text"
 
