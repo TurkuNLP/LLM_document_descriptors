@@ -2,18 +2,30 @@ import argparse
 from pathlib import Path
 from typing import Iterator, List, Tuple
 from multiprocessing import Pool, cpu_count
+import zstandard as zstd #type:ignore
+import io
 
 
 def iter_lines(path: Path) -> Iterator[str]:
-    """Yield non-empty lines from .jsonl as UTF-8 text."""
-    if path.suffix == ".jsonl.zst":
+    """Yield non-empty lines from .jsonl or .jsonl.zst as UTF-8 text."""
+    suffixes = path.suffixes
+    if suffixes[-2:] == ['.jsonl', '.zst']:
+        with path.open('rb') as f:
+            dctx = zstd.ZstdDecompressor()
+            with dctx.stream_reader(f) as reader:
+                text_stream = io.TextIOWrapper(reader, encoding='utf-8')
+                for line in text_stream:
+                    line = line.rstrip('\n')
+                    if line.strip():
+                        yield line
+    elif path.suffix == '.jsonl':
         with path.open('r', encoding='utf-8') as f:
             for line in f:
                 line = line.rstrip('\n')
                 if line.strip():
                     yield line
     else:
-        raise ValueError(f"Unsupported file type: {path.name}")
+        raise ValueError(f"Unsupported file type: {path.name}. Must be .jsonl or .jsonl.zst")
 
 
 def count_lines(path: Path) -> int:
@@ -79,7 +91,7 @@ def process_jsonl_file(filepath: Path, output_dir: Path, split_count: int):
         if not f.closed:
             f.close()
 
-    print(f"Finished splitting {filepath.name} into {part_idx + 1} part(s).", flush=True)
+    print(f"Finished splitting {filepath.name} into {part_idx} part(s).", flush=True)
 
 
 def process_jsonl_file_mp(args: Tuple[Path, Path, int]):
@@ -87,15 +99,19 @@ def process_jsonl_file_mp(args: Tuple[Path, Path, int]):
     process_jsonl_file(filepath, output_dir, split_count)
 
 
-def split_jsonl_files(input_dir: str, output_dir: str, split_count: int):
-    input_path = Path(input_dir)
+def split_jsonl_files(input: str, output_dir: str, split_count: int):
+    input_path = Path(input)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     jobs = []
-    for file in input_path.iterdir():
-        if file.suffix == '.jsonl':
-            jobs.append((file, output_path, split_count))
+    if input_path.is_dir():
+        for file in input_path.iterdir():
+            if file.suffix == '.jsonl' or file.suffixes[-2:] == ['.jsonl', '.zst']:
+                jobs.append((file, output_path, split_count))
+    elif input_path.is_file():
+        if input_path.suffix == '.jsonl' or input_path.suffixes[-2:] == ['.jsonl', '.zst']:
+            jobs.append((input_path, output_path, split_count))
 
     if not jobs:
         print("No .jsonl files found.")
@@ -110,9 +126,9 @@ def split_jsonl_files(input_dir: str, output_dir: str, split_count: int):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Split JSONL files into N parts.")
-    parser.add_argument('--input-dir', required=True, help='Directory containing input files.')
+    parser.add_argument('--input', required=True, help='Directory containing input files.')
     parser.add_argument('--output-dir', required=True, help='Directory to save split files.')
     parser.add_argument('--split-count', type=int, default=10, help='How many smaller files input files will be split into.')
     args = parser.parse_args()
 
-    split_jsonl_files(args.input_dir, args.output_dir, args.split_count)
+    split_jsonl_files(args.input, args.output_dir, args.split_count)
