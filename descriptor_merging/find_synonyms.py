@@ -17,6 +17,7 @@ Notes
 * Caches LLM decisions in a SqliteDict so repeated runs are faster.
 * You can raise --k to consider multiple neighbors per item.
 * Falls back to a flat L2 index when IVF training is not appropriate (e.g., small `n`).
+* Make sure each item has a unique ID or else you will experience data loss.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import random
 import time
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
@@ -157,12 +159,12 @@ def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
             if not d and not e:
                 # Skip empty rows
                 continue
-            item_id = obj.get("id") or f"row_{i:06d}"
+            item_id = obj.get("id") or f"{i:08d}"
             pairs.append(Pair(id=item_id, descriptor=d, explainer=e))
             if limit is not None and len(pairs) >= limit:
                 logging.info("Test mode: limiting to %d items", limit)
                 break
-    logging.info("Loaded %d pairs", len(pairs))
+    logging.info("Loaded %d descriptor-explainer pairs", len(pairs))
     return pairs
 
 def write_jsonl(path: Path, pairs: Sequence[Pair]) -> None:
@@ -177,6 +179,122 @@ def write_jsonl(path: Path, pairs: Sequence[Pair]) -> None:
                 + "\n",
             )
     logging.info("Wrote %d pairs -> %s", len(pairs), path)
+    
+    
+def _log_dropped(pairs: Sequence[Pair], dropped: List[Tuple[int, int, float]], path: Path) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        for i, j, s in dropped:
+            a, b = pairs[i], pairs[j]
+            reason = "nan_similarity" if np.isnan(s) else "below_min_similarity"
+            rec = {
+                "i": i, "j": j, "text_i": a.text, "text_j": b.text, "similarity": round(s, 4), "reason": reason,
+            }
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            
+            
+def _write_all_decisions_jsonl(
+        path: Path,
+        ordered_pairs: List[Tuple[Pair, Pair]],
+        decisions: List[Decision],
+    ) -> None:
+    """Write one JSON line per LLM decision (potentially large)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for (a, b), d in zip(ordered_pairs, decisions):
+            rec = {
+                "a_id": a.id,
+                "b_id": b.id,
+                "a_descriptor": a.descriptor,
+                "b_descriptor": b.descriptor,
+                "is_synonym": d.is_synonym,
+                "keep_id": d.keep_id,
+                "drop_id": d.drop_id,
+                "representative_descriptor": d.representative_descriptor,
+                "reason": d.reason,
+            }
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def _log_iteration_decisions(
+        iteration: int,
+        ordered_pairs: List[Tuple[Pair, Pair]],
+        decisions: List[Decision],
+        output_dir: Path,
+        sample_n: int = 5,
+        write_full_jsonl: bool = True,
+    ) -> None:
+    """Summarize counts to the main log and write a small, human-friendly sample file.
+
+    To avoid bloating logs, all decisions are optionally written to a JSONL file,
+    while the TXT contains only a few examples of merges and non-merges.
+    """
+    syn_examples: List[Dict[str, str]] = []
+    non_examples: List[Dict[str, str]] = []
+
+    for (a, b), d in zip(ordered_pairs, decisions):
+        rec = {
+            "a_id": a.id,
+            "b_id": b.id,
+            "a_descriptor": a.descriptor,
+            "b_descriptor": b.descriptor,
+            "is_synonym": d.is_synonym,
+            "keep_id": d.keep_id,
+            "drop_id": d.drop_id,
+            "representative_descriptor": d.representative_descriptor,
+            "reason": d.reason,
+        }
+        (syn_examples if d.is_synonym else non_examples).append(rec)
+
+    n_syn = len(syn_examples)
+    n_non = len(non_examples)
+    total = n_syn + n_non
+    logging.info(
+        "Iteration %d — LLM decisions: %d merges, %d non-merges (total %d).",
+        iteration, n_syn, n_non, total
+    )
+
+    # Sample a few for the TXT file
+    def _sample(xs: List[Dict[str, str]], k: int) -> List[Dict[str, str]]:
+        if not xs:
+            return []
+        if len(xs) <= k:
+            return xs
+        return random.sample(xs, k)
+
+    syn_sample = _sample(syn_examples, sample_n)
+    non_sample = _sample(non_examples, sample_n)
+
+    txt_path = output_dir / f"iteration_{iteration}_llm_decisions.txt"
+    with txt_path.open("w", encoding="utf-8") as f:
+        f.write(f"Iteration {iteration} — LLM decision summary\n")
+        f.write(f"Merges: {n_syn} | Non-merges: {n_non} | Total: {total}\n")
+        f.write("\n--- Examples: MERGES ---\n")
+        for rec in syn_sample:
+            f.write(
+                (
+                    f"[MERGE] A({rec['a_id']}): '{rec['a_descriptor']}'  ↔  "
+                    f"B({rec['b_id']}): '{rec['b_descriptor']}'\n"
+                    f"        keep={rec['keep_id']} drop={rec['drop_id']} "
+                    f"rep='{rec['representative_descriptor']}'\n"
+                    f"        reason={rec['reason']}\n\n"
+                )
+            )
+        f.write("\n--- Examples: NON-MERGES ---\n")
+        for rec in non_sample:
+            f.write(
+                (
+                    f"[NO]    A({rec['a_id']}): '{rec['a_descriptor']}'  ≠  "
+                    f"B({rec['b_id']}): '{rec['b_descriptor']}'\n"
+                    f"        reason={rec['reason']}\n\n"
+                )
+            )
+    logging.info("Wrote iteration decision samples -> %s", txt_path)
+
+    if write_full_jsonl:
+        jsonl_path = output_dir / f"iteration_{iteration}_llm_decisions.jsonl"
+        _write_all_decisions_jsonl(jsonl_path, ordered_pairs, decisions)
+        logging.info("Wrote all iteration decisions -> %s", jsonl_path)
+
 
 
 # -----------------------------------------------------------------------------
@@ -596,6 +714,7 @@ def _apply_merges_greedy(
             continue
         if keep in used or drop in used:
             continue  # already merged in this round
+                      # This can happend if k > 1 and using "unique" candidate strategy
 
         keep_pair = id_to_pair[keep]
 
@@ -613,17 +732,6 @@ def _apply_merges_greedy(
     dropped_ids = {m.dropped for m in merges}
     new_pairs = [id_to_pair[p.id] for p in pairs if p.id not in dropped_ids]
     return new_pairs, merges
-
-def _log_dropped(pairs: Sequence[Pair], dropped: List[Tuple[int, int, float]], path: Path) -> None:
-    with path.open("w", encoding="utf-8") as f:
-        for i, j, s in dropped:
-            a, b = pairs[i], pairs[j]
-            reason = "nan_similarity" if np.isnan(s) else "below_min_similarity"
-            rec = {
-                "i": i, "j": j, "text_i": a.text, "text_j": b.text, "similarity": round(s, 4), "reason": reason,
-            }
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
 
 @log_execution_time
 def iterate_until_converged(
@@ -658,12 +766,12 @@ def iterate_until_converged(
         # 3) Neighbors
         sims, neigh = faiss_index.neighbors(index, emb, k=k)
 
-        # 4) Build candidate pairs
+        # 4) Find candidate synonym pairs
         if args.candidate_strategy == "mutual":
             # Pairs have to be mutual nearest neighbors
             triples, dropped = mutual_top1([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
         else:
-            # Find unique candidate pairs
+            # Find unique synonym pairs among all neighbors
             triples, dropped = _unique_pairs_from_neighbors([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
         
         if dropped:
@@ -675,7 +783,7 @@ def iterate_until_converged(
             logging.info("No neighbor proposals. Stopping.")
             break
         
-        logging.info("Found %d candidate pairs", len(triples))
+        logging.info("Found %d candidate synonym pairs", len(triples))
 
         logging.info("Prompting LLM...")
         # 5) Query LLM on candidates in order
@@ -684,11 +792,24 @@ def iterate_until_converged(
             ordered_pairs.append((pairs[i], pairs[j]))
 
         decisions = combiner.decide_batch(ordered_pairs)
+        
+        # Summarize decisions to log + write samples and optional full JSONL
+        if output_dir is not None:
+            _log_iteration_decisions(
+                iteration=iteration,
+                ordered_pairs=ordered_pairs,
+                decisions=decisions,
+                output_dir=output_dir,
+                sample_n=10,             # number of examples to show
+                write_full_jsonl=True,  # set False to skip the big JSONL
+            )
 
         # 6) Greedy apply merges (skip items already merged this round)
         pairs, merges = _apply_merges_greedy(pairs, decisions)
         all_merges.append(merges)
         logging.info("Iteration %d merged %d pairs; %d remain", iteration, len(merges), len(pairs))
+        if output_dir is not None:
+            write_jsonl(output_dir / f"checkpoint_iter_{iteration}.jsonl", pairs)
 
         # 7) Convergence check
         if len(merges) == 0:
@@ -770,10 +891,6 @@ def main(args: argparse.Namespace) -> None:
         cache_db_path=Path(decision_cache_path),
         batch_size = args.llm_batch_size
     )
-
-    logging.info("Loading model...")
-    # Access the LLM to trigger loading
-    # _ = combiner.llm
     
     # Embed and build index helpers
     embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=args.batch_size)
@@ -837,7 +954,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--min-similarity",
         type=float,
-        default=0.7,
+        default=0.0,
         help=(
             "Minimum similarity on pooled embeddings; if a candidate neighbor is less similar than this, "
             "skip sending that pair to the LLM"

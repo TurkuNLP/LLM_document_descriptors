@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=syn_find
-#SBATCH --account=project_462000353
+#SBATCH --account=project_462000963
 #SBATCH --partition=standard-g
-#SBATCH --time=2-00:00:00
+#SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
@@ -10,7 +10,7 @@
 #SBATCH --mem=80G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
-#SBATCH --array=0-4
+########SBATCH --array=0-4
 
 module purge
 module use /appl/local/csc/modulefiles
@@ -26,11 +26,12 @@ gpu-energy --save
 
 arr_idx=$SLURM_ARRAY_TASK_ID
 
-run_id="synonyms_split_run1_${arr_idx}"
+run_id="cont_combined_test"
 
 srun python3 find_synonyms.py --run-id=$run_id \
-                              --input="../results/synonym_merges/to_be_merged/splits/merge_array_concat_merged_00${arr_idx}.jsonl" \
-                              --llm-batch-size 1024 \
-                              --min-similarity 0.65
+                              --input="../results/synonym_merges/cont_combined/cont_combined.jsonl" \
+                              --llm-batch-size 2048 \
+                              --min-similarity 0.65 \
+                              --max-iters 20 \
 
 gpu-energy --diff
