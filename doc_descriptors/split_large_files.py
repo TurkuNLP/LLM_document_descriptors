@@ -1,9 +1,10 @@
 import argparse
 from pathlib import Path
-from typing import Iterator, List, Tuple
+from typing import Iterator, List, Tuple, Optional
 from multiprocessing import Pool, cpu_count
-import zstandard as zstd #type:ignore
+import zstandard as zstd  # type: ignore
 import io
+import random
 
 
 def iter_lines(path: Path) -> Iterator[str]:
@@ -42,7 +43,12 @@ def base_name_for(path: Path) -> str:
         return path.stem  # fallback
 
 
-def process_jsonl_file(filepath: Path, output_dir: Path, split_count: int):
+def process_jsonl_file(filepath: Path,
+                       output_dir: Path,
+                       split_count: int,
+                       shuffle: bool = False,
+                       seed: Optional[int] = None
+                       ):
     print(f"Processing {filepath.name}...", flush=True)
 
     total = count_lines(filepath)
@@ -56,7 +62,15 @@ def process_jsonl_file(filepath: Path, output_dir: Path, split_count: int):
     targets = [t for t in targets if t > 0]  # produce up to N non-empty parts
 
     base = base_name_for(filepath)
-    it = iter_lines(filepath)
+
+    # Prepare iterator over lines (optionally shuffled)
+    if shuffle:
+        rng = random.Random(seed)
+        all_lines: List[str] = list(iter_lines(filepath))
+        rng.shuffle(all_lines)
+        it: Iterator[str] = iter(all_lines)
+    else:
+        it = iter_lines(filepath)
 
     part_idx = 0
     written_in_part = 0
@@ -94,24 +108,24 @@ def process_jsonl_file(filepath: Path, output_dir: Path, split_count: int):
     print(f"Finished splitting {filepath.name} into {part_idx} part(s).", flush=True)
 
 
-def process_jsonl_file_mp(args: Tuple[Path, Path, int]):
-    filepath, output_dir, split_count = args
-    process_jsonl_file(filepath, output_dir, split_count)
+def process_jsonl_file_mp(args: Tuple[Path, Path, int, bool, Optional[int]]):
+    filepath, output_dir, split_count, shuffle, seed = args
+    process_jsonl_file(filepath, output_dir, split_count, shuffle=shuffle, seed=seed)
 
 
-def split_jsonl_files(input: str, output_dir: str, split_count: int):
+def split_jsonl_files(input: str, output_dir: str, split_count: int, shuffle: bool = False, seed: Optional[int] = None):
     input_path = Path(input)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    jobs = []
+    jobs: List[Tuple[Path, Path, int, bool, Optional[int]]] = []
     if input_path.is_dir():
         for file in input_path.iterdir():
             if file.suffix == '.jsonl' or file.suffixes[-2:] == ['.jsonl', '.zst']:
-                jobs.append((file, output_path, split_count))
+                jobs.append((file, output_path, split_count, shuffle, seed))
     elif input_path.is_file():
         if input_path.suffix == '.jsonl' or input_path.suffixes[-2:] == ['.jsonl', '.zst']:
-            jobs.append((input_path, output_path, split_count))
+            jobs.append((input_path, output_path, split_count, shuffle, seed))
 
     if not jobs:
         print("No .jsonl files found.")
@@ -126,9 +140,11 @@ def split_jsonl_files(input: str, output_dir: str, split_count: int):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Split JSONL files into N parts.")
-    parser.add_argument('--input', required=True, help='Directory containing input files.')
+    parser.add_argument('--input', required=True, help='Directory containing input files or a single file path.')
     parser.add_argument('--output-dir', required=True, help='Directory to save split files.')
     parser.add_argument('--split-count', type=int, default=10, help='How many smaller files input files will be split into.')
+    parser.add_argument('--shuffle', action='store_true', help='Shuffle the lines before splitting.')
+    parser.add_argument('--seed', type=int, default=None, help='Optional random seed for --shuffle.')
     args = parser.parse_args()
 
-    split_jsonl_files(args.input, args.output_dir, args.split_count)
+    split_jsonl_files(args.input, args.output_dir, args.split_count, shuffle=args.shuffle, seed=args.seed)
