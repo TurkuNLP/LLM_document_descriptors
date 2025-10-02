@@ -32,7 +32,7 @@ import os
 from pathlib import Path
 import random
 import time
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple, Literal
 
 # Third-party imports
 import faiss  # type: ignore
@@ -159,12 +159,21 @@ def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
             if not d and not e:
                 # Skip empty rows
                 continue
+            # Get id or create one based on index
             item_id = obj.get("id") or f"{i:08d}"
             pairs.append(Pair(id=item_id, descriptor=d, explainer=e))
             if limit is not None and len(pairs) >= limit:
                 logging.info("Test mode: limiting to %d items", limit)
                 break
+            
     logging.info("Loaded %d descriptor-explainer pairs", len(pairs))
+    
+    # Check that there are duplicate IDs in data, as this will cause pairs to be silently dropped
+    ids = [p.id for p in pairs]
+    dups = {x for x in ids if ids.count(x) > 1}
+    if dups:
+        raise ValueError(f"Duplicate IDs found: {sorted(list(dups))[:10]} (and more)")
+
     return pairs
 
 def write_jsonl(path: Path, pairs: Sequence[Pair]) -> None:
@@ -178,7 +187,7 @@ def write_jsonl(path: Path, pairs: Sequence[Pair]) -> None:
                 )
                 + "\n",
             )
-    logging.info("Wrote %d pairs -> %s", len(pairs), path)
+    logging.info("Wrote %d descriptor-explainer pairs -> %s", len(pairs), path)
     
     
 def _log_dropped(pairs: Sequence[Pair], dropped: List[Tuple[int, int, float]], path: Path) -> None:
@@ -375,7 +384,8 @@ class FaissIndex:
             index.cp.seed = 42  # for reproducibility
             
             # Train on sample of embeddings
-            train_sample = embeddings[np.random.choice(n, size=min(100_000, n), replace=False)]
+            rng = np.random.default_rng(42) # Set seed for reproducibility
+            train_sample = embeddings[rng.choice(n, size=min(100_000, n), replace=False)]
             index.train(train_sample)
             ids = np.arange(n, dtype=np.int64)
             index.add_with_ids(embeddings, ids)
@@ -392,9 +402,25 @@ class FaissIndex:
     def neighbors(self, index: faiss.Index, embeddings: np.ndarray, k: int = 1) -> Tuple[np.ndarray, np.ndarray]:
         if k < 1:
             raise ValueError("k must be >= 1")
-        # Find similar embeddings (0-1), higher is more similar
-        sims, idxs = index.search(embeddings, k + 1)
-        return sims[:, 1:], idxs[:, 1:]  # Drop self
+        
+        # Search for k+1 neighbors, so we can afford to drop self
+        sims, idxs = index.search(embeddings, k + 1)  # candidate pool
+        n = idxs.shape[0]
+        out_idx = np.empty((n, 0), dtype=idxs.dtype)
+        out_sim = np.empty((n, 0), dtype=sims.dtype)
+        for i in range(n):
+            row_idx = idxs[i]
+            row_sim = sims[i]
+            # drop self if present
+            # Self might not be among neighbors in IVF
+            mask = row_idx != i  
+            row_idx = row_idx[mask]
+            row_sim = row_sim[mask]
+            # pad in case self wasn't present and we still need only top-k
+            out_idx = np.vstack([out_idx, row_idx[:k][None, :]]) if out_idx.size else row_idx[:k][None, :]
+            out_sim = np.vstack([out_sim, row_sim[:k][None, :]]) if out_sim.size else row_sim[:k][None, :]
+        return out_sim, out_idx
+
 
 
 # -----------------------------------------------------------------------------
@@ -494,7 +520,6 @@ class SynonymCombiner:
             batch_pairs = pairs[batch_start:batch_start + self.batch_size]
             batch_prompts: List[str] = []
             batch_to_query: List[int] = []
-            batch_decisions: List[Decision] = []
             # Check cache first
             for idx_in_batch, (a, b) in enumerate(batch_pairs):
                 global_idx = batch_start + idx_in_batch
@@ -510,7 +535,6 @@ class SynonymCombiner:
                 # Not cached
                 batch_prompts.append(self._prompt(a, b))
                 batch_to_query.append(idx_in_batch)
-                batch_decisions.append(Decision(is_synonym=False, keep_id=a.id, drop_id=b.id, representative_descriptor=a.descriptor, reason="uncached"))
             if batch_prompts:
                 params = SamplingParams(
                     temperature=self.temperature,
@@ -578,121 +602,87 @@ class MergeResult:
     updated_descriptor: Optional[str]
 
 
-def _unique_pairs_from_neighbors(
+def candidate_synonyms(
     ids: Sequence[str],
     neighbor_idx: np.ndarray,
     scores: np.ndarray,
+    *,
+    strategy: Literal["mutual", "unique"] = "mutual",
     min_similarity: Optional[float] = None,
-) -> List[Tuple[int, int, float]]:
-    """Return a deduplicated list of (i, j, dist) where i < j.
-
-    Consider **all k neighbors** for each i, deduplicate by unordered pair, and
-    keep the highest similarity when a pair appears multiple times.
-
-    If `min_similarity` is set, discard candidates whose similarity is lower.
+) -> Tuple[List[Tuple[int, int, float]], List[Tuple[int, int, float]]]:
     """
-    assert neighbor_idx.shape == scores.shape
-    proposals: Dict[Tuple[int, int], float] = {}
-    dropped: Dict[Tuple[int, int], float] = {}
-    
-    # n = items, k = neighbors per item
+    Build deduplicated candidate (i, j, sim) pairs from FAISS neighbors.
+
+    strategy="mutual": keep only mutual top-1 neighbors (i's best is j AND j's best is i).
+    strategy="unique": consider all k neighbors for each i; deduplicate by unordered pair, keep the max sim.
+
+    Returns:
+        triples: [(i, j, sim)] sorted by descending sim, with i < j
+        dropped: [(i, j, sim)] that were filtered out by min_similarity/NaN (ascending sim)
+    """
+    assert neighbor_idx.shape == scores.shape, "neighbor_idx and scores must have the same shape"
     n, k = neighbor_idx.shape
-    for i in range(n):
-        for col in range(k):
-            j = int(neighbor_idx[i, col])
-            if j < 0 or j == i:
-                continue
-            sim = float(scores[i, col]) if scores.size else float("-inf")
-            
-            # Drop neighbors with low similarity
-            if min_similarity is not None and (np.isnan(sim) or sim < min_similarity):
-                dropped[(i,j)] = sim
-                continue
-            a, b = (i, j) if i < j else (j, i)
-            if a == b:
-                continue
-            if (a, b) not in proposals or sim > proposals[(a, b)]:
-                proposals[(a, b)] = sim
-    
-    # Reformat and sort the results
-    if proposals:
-        triples = [(a, b, s) for (a, b), s in proposals.items()]
-        triples.sort(key=lambda t: t[2], reverse=True)  # descending similarity
 
-    if dropped:
-        dropped = [(a,b , s) for (a,b), s in dropped.items()]
-        dropped.sort(key=lambda t: t[2])  # ascending similarity
-    
-    if triples:
-        sim_scores = [trip[2] for trip in triples]
-        avg_sim = sum(sim_scores)/len(triples)
-        max_sim = max(sim_scores)
-        min_sim = min(sim_scores)
-        logging.info(f"Pair avg. similarity: {avg_sim}")
-        logging.info(f"Pair max similarity: {max_sim}")
-        logging.info(f"Pair min similarity: {min_sim}")
-    logging.info(f"Dropped {len(dropped)} pairs due to similarity threshold.")
-    
-    return triples, dropped
+    # canonical containers
+    kept: Dict[Tuple[int, int], float] = {}
+    dropped_map: Dict[Tuple[int, int], float] = {}
 
+    def _maybe_keep(a: int, b: int, sim: float) -> None:
+        # order and screen
+        if a == b or a < 0 or b < 0 or a >= n or b >= n:
+            return
+        i, j = (a, b) if a < b else (b, a)
 
-def mutual_top1(
-    ids: Sequence[str],
-    neighbor_idx: np.ndarray,
-    scores: np.ndarray,
-    min_similarity: Optional[float] = None,
-) -> List[Tuple[int, int, float]]:
-    n, k = neighbor_idx.shape
-    if k < 1 or n == 0:
-        return []
-    pairs: Dict[Tuple[int, int], float] = {}
-    dropped: Dict[Tuple[int, int], float] = {}
-    
-    for i in range(n):
-        j = int(neighbor_idx[i, 0])  # i’s best neighbor
-        if j < 0 or j == i or j >= n:
-            continue
-        if int(neighbor_idx[j, 0]) != i:  # require mutual top-1
-            continue
-        # pick a single score to rank by (use the better of the two directions)
-        sim_ij = float(scores[i, 0]) if scores.size else float("-inf")
-        sim_ji = float(scores[j, 0]) if scores.size else float("-inf")
-        sim = max(sim_ij, sim_ji)
-        
-        # Canonical ordering
-        a, b = (i, j) if i < j else (j, i)
-        
+        # thresholding / NaN handling
         if min_similarity is not None and (np.isnan(sim) or sim < min_similarity):
-            # Check if we already have a dropped entry and keep the highest similarity
-            prev = dropped.get((a, b))
+            prev = dropped_map.get((i, j))
             if prev is None or sim > prev:
-                dropped[(a, b)] = sim
-            continue
-        
-        # Keep only the highest similarity for each pair
-        if (a, b) not in pairs or sim > pairs[(a, b)]:
-            pairs[(a, b)] = sim
-            
-    # Reformat and sort the results
-    if pairs:
-        triples = [(a, b, s) for (a, b), s in pairs.items()]
-        triples.sort(key=lambda t: t[2], reverse=True)  # descending similarity
+                dropped_map[(i, j)] = sim
+            return
 
-    if dropped:
-        dropped = [(a,b , s) for (a,b), s in dropped.items()]
-        dropped.sort(key=lambda t: t[2])  # ascending similarity
-    
+        # keep highest similarity per unordered pair
+        prev = kept.get((i, j))
+        if (prev is None) or (sim > prev):
+            kept[(i, j)] = sim
+
+    if n == 0 or k == 0:
+        return [], []
+
+    if strategy == "mutual":
+        # require mutual top-1; prefer the better of (i->j, j->i) sims
+        for i in range(n):
+            j = int(neighbor_idx[i, 0])
+            if j < 0 or j == i or j >= n:
+                continue
+            jj0 = int(neighbor_idx[j, 0]) if j < n and k > 0 else -1
+            if jj0 != i:
+                continue
+            sim_ij = float(scores[i, 0]) if scores.size else float("-inf")
+            sim_ji = float(scores[j, 0]) if scores.size else float("-inf")
+            _maybe_keep(i, j, max(sim_ij, sim_ji))
+    else:
+        # consider all-k neighbors for each i
+        for i in range(n):
+            for col in range(k):
+                j = int(neighbor_idx[i, col])
+                if j < 0 or j == i:
+                    continue
+                sim = float(scores[i, col]) if scores.size else float("-inf")
+                _maybe_keep(i, j, sim)
+
+    # Format outputs
+    triples: List[Tuple[int, int, float]] = [(i, j, s) for (i, j), s in kept.items()]
+    triples.sort(key=lambda t: t[2], reverse=True)
+
+    dropped_list: List[Tuple[int, int, float]] = [(i, j, s) for (i, j), s in dropped_map.items()]
+    dropped_list.sort(key=lambda t: (np.isnan(t[2]), t[2]))  # NaNs last
+
     if triples:
-        sim_scores = [trip[2] for trip in triples]
-        avg_sim = sum(sim_scores)/len(triples)
-        max_sim = max(sim_scores)
-        min_sim = min(sim_scores)
-        logging.info(f"Pair avg. similarity: {avg_sim}")
-        logging.info(f"Pair max similarity: {max_sim}")
-        logging.info(f"Pair min similarity: {min_sim}")
-    logging.info(f"Dropped {len(dropped)} pairs due to similarity threshold.")
-    
-    return triples, dropped
+        sims = [t[2] for t in triples]
+        logging.info("Pair similarity — avg: %.4f | max: %.4f | min: %.4f", sum(sims)/len(sims), max(sims), min(sims))
+    logging.info("Dropped %d candidate pairs due to threshold %f.", len(dropped_list), min_similarity)
+    return triples, dropped_list
+
 
 
 def _apply_merges_greedy(
@@ -743,13 +733,14 @@ def iterate_until_converged(
     max_iters: int = 5,
     min_similarity: Optional[float] = None,
     output_dir: Optional[Path] = None,
+    candidate_strategy: Literal["mutual", "unique"] = "mutual",
 ) -> Tuple[List[Pair], List[List[MergeResult]]]:
     all_merges: List[List[MergeResult]] = []
     iteration = 0
 
     while iteration < max_iters:
         iteration += 1
-        logging.info("=== Iteration %d | %d pairs ===", iteration, len(pairs))
+        logging.info("=== Iteration %d | %d descriptor-explainer pairs ===", iteration, len(pairs))
         if len(pairs) <= 1:
             break
 
@@ -767,12 +758,11 @@ def iterate_until_converged(
         sims, neigh = faiss_index.neighbors(index, emb, k=k)
 
         # 4) Find candidate synonym pairs
-        if args.candidate_strategy == "mutual":
-            # Pairs have to be mutual nearest neighbors
-            triples, dropped = mutual_top1([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
-        else:
-            # Find unique synonym pairs among all neighbors
-            triples, dropped = _unique_pairs_from_neighbors([p.id for p in pairs], neigh, sims, min_similarity=min_similarity)
+        triples, dropped = candidate_synonyms(
+            [p.id for p in pairs], neigh, sims,
+            strategy=candidate_strategy,  # "mutual" or "unique"
+            min_similarity=min_similarity,
+        )
         
         if dropped:
             if output_dir:
@@ -783,7 +773,7 @@ def iterate_until_converged(
             logging.info("No neighbor proposals. Stopping.")
             break
         
-        logging.info("Found %d candidate synonym pairs", len(triples))
+        logging.info("Found %d candidate synonyms", len(triples))
 
         logging.info("Prompting LLM...")
         # 5) Query LLM on candidates in order
@@ -807,7 +797,7 @@ def iterate_until_converged(
         # 6) Greedy apply merges (skip items already merged this round)
         pairs, merges = _apply_merges_greedy(pairs, decisions)
         all_merges.append(merges)
-        logging.info("Iteration %d merged %d pairs; %d remain", iteration, len(merges), len(pairs))
+        logging.info("Iteration %d merged %d descriptor-explainer pairs; %d remain", iteration, len(merges), len(pairs))
         if output_dir is not None:
             write_jsonl(output_dir / f"checkpoint_iter_{iteration}.jsonl", pairs)
 
@@ -907,6 +897,7 @@ def main(args: argparse.Namespace) -> None:
         max_iters=args.max_iters,
         min_similarity=args.min_similarity,
         output_dir=output_dir,
+        candidate_strategy=args.candidate_strategy,
     )
 
     # Persist results
