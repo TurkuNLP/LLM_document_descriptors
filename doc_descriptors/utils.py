@@ -106,12 +106,24 @@ def load_documents(source, cache):
         list: A list of documents loaded from the selected data source.
     """
     
+    # Try, is source is a JSONL if
     try:
         path = Path(source)
         if path.is_file() and path.suffix == ".jsonl":
             with open(path, "r") as f:
                 lines = f.readlines()
                 return [json.loads(line) for line in lines]
+    except Exception:
+        pass
+    
+    # Try, if source if parquet file
+    try:
+        path = Path(source)
+        if path.is_file() and path.suffix == ".parquet":
+            import pandas as pd #type:ignore
+            df = pd.read_parquet(source)
+            data = df.to_dict(orient="records")
+            return data
     except Exception:
         pass
 
