@@ -26,6 +26,7 @@ import argparse
 from collections import defaultdict
 from dataclasses import dataclass
 import functools
+import gc
 import json
 import logging
 import os
@@ -123,18 +124,12 @@ class Decision:
     is_synonym: bool
     keep_id: str
     drop_id: str
-    representative_descriptor: str
     reason: str
 
-
-# Pydantic schema for guided JSON decoding
 class DecisionSchema(BaseModel):
     is_synonym: bool
     keep_id: str
     drop_id: str
-    representative_descriptor: str
-    reason: str
-
 
 # -----------------------------------------------------------------------------
 # I/O
@@ -215,13 +210,20 @@ def _write_all_decisions_jsonl(
                 "b_id": b.id,
                 "a_descriptor": a.descriptor,
                 "b_descriptor": b.descriptor,
+                "a_explainer": a.explainer,
+                "b_explainer": b.explainer,
                 "is_synonym": d.is_synonym,
                 "keep_id": d.keep_id,
                 "drop_id": d.drop_id,
-                "representative_descriptor": d.representative_descriptor,
                 "reason": d.reason,
             }
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def _shorten(s: str, max_len: int = 200) -> str:
+    """One-line, trimmed preview for logs."""
+    s = (s or "").replace("\n", " ").replace("\r", " ").strip()
+    return (s[: max_len - 1] + "…") if len(s) > max_len else s
 
 
 def _log_iteration_decisions(
@@ -232,13 +234,9 @@ def _log_iteration_decisions(
         sample_n: int = 5,
         write_full_jsonl: bool = True,
     ) -> None:
-    """Summarize counts to the main log and write a small, human-friendly sample file.
-
-    To avoid bloating logs, all decisions are optionally written to a JSONL file,
-    while the TXT contains only a few examples of merges and non-merges.
-    """
-    syn_examples: List[Dict[str, str]] = []
-    non_examples: List[Dict[str, str]] = []
+    """Summarize counts to the main log and write a small, human-friendly sample file."""
+    syn_examples = []
+    non_examples = []
 
     for (a, b), d in zip(ordered_pairs, decisions):
         rec = {
@@ -246,10 +244,11 @@ def _log_iteration_decisions(
             "b_id": b.id,
             "a_descriptor": a.descriptor,
             "b_descriptor": b.descriptor,
+            "a_explainer": a.explainer,
+            "b_explainer": b.explainer,
             "is_synonym": d.is_synonym,
             "keep_id": d.keep_id,
             "drop_id": d.drop_id,
-            "representative_descriptor": d.representative_descriptor,
             "reason": d.reason,
         }
         (syn_examples if d.is_synonym else non_examples).append(rec)
@@ -262,8 +261,7 @@ def _log_iteration_decisions(
         iteration, n_syn, n_non, total
     )
 
-    # Sample a few for the TXT file
-    def _sample(xs: List[Dict[str, str]], k: int) -> List[Dict[str, str]]:
+    def _sample(xs, k: int):
         if not xs:
             return []
         if len(xs) <= k:
@@ -277,33 +275,34 @@ def _log_iteration_decisions(
     with txt_path.open("w", encoding="utf-8") as f:
         f.write(f"Iteration {iteration} — LLM decision summary\n")
         f.write(f"Merges: {n_syn} | Non-merges: {n_non} | Total: {total}\n")
+
         f.write("\n--- Examples: MERGES ---\n")
         for rec in syn_sample:
             f.write(
                 (
-                    f"[MERGE] A({rec['a_id']}): '{rec['a_descriptor']}'  ↔  "
-                    f"B({rec['b_id']}): '{rec['b_descriptor']}'\n"
-                    f"        keep={rec['keep_id']} drop={rec['drop_id']} "
-                    f"rep='{rec['representative_descriptor']}'\n"
+                    f"[MERGE] A({rec['a_id']}): '{rec['a_descriptor']}' — expl: '{_shorten(rec['a_explainer'])}'\n"
+                    f"        B({rec['b_id']}): '{rec['b_descriptor']}' — expl: '{_shorten(rec['b_explainer'])}'\n"
+                    f"        keep={rec['keep_id']} drop={rec['drop_id']}\n"
                     f"        reason={rec['reason']}\n\n"
                 )
             )
+
         f.write("\n--- Examples: NON-MERGES ---\n")
         for rec in non_sample:
             f.write(
                 (
-                    f"[NO]    A({rec['a_id']}): '{rec['a_descriptor']}'  ≠  "
-                    f"B({rec['b_id']}): '{rec['b_descriptor']}'\n"
+                    f"[NO]    A({rec['a_id']}): '{rec['a_descriptor']}' — expl: '{_shorten(rec['a_explainer'])}'\n"
+                    f"        B({rec['b_id']}): '{rec['b_descriptor']}' — expl: '{_shorten(rec['b_explainer'])}'\n"
                     f"        reason={rec['reason']}\n\n"
                 )
             )
+
     logging.info("Wrote iteration decision samples -> %s", txt_path)
 
     if write_full_jsonl:
         jsonl_path = output_dir / f"iteration_{iteration}_llm_decisions.jsonl"
         _write_all_decisions_jsonl(jsonl_path, ordered_pairs, decisions)
         logging.info("Wrote all iteration decisions -> %s", jsonl_path)
-
 
 
 # -----------------------------------------------------------------------------
@@ -378,7 +377,7 @@ class FaissIndex:
             return index
 
         try:
-            # Build index with Inner-Produce quantizer
+            # Build index with Inner-Product quantizer
             quantizer = faiss.IndexFlatIP(d)
             index = faiss.IndexIVFFlat(quantizer, d, self.nlist, faiss.METRIC_INNER_PRODUCT)
             index.cp.seed = 42  # for reproducibility
@@ -420,7 +419,6 @@ class FaissIndex:
             out_idx = np.vstack([out_idx, row_idx[:k][None, :]]) if out_idx.size else row_idx[:k][None, :]
             out_sim = np.vstack([out_sim, row_sim[:k][None, :]]) if out_sim.size else row_sim[:k][None, :]
         return out_sim, out_idx
-
 
 
 # -----------------------------------------------------------------------------
@@ -469,11 +467,22 @@ class SynonymCombiner:
     def _prompt(self, a: Pair, b: Pair) -> str:
         return ("""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-            You are deciding whether two descriptor–explainer pairs refer to the same concept.
-            If they are synonyms (or one is a more representative phrasing of the other), return is_synonym=true,
-            choose which ID to keep, which to drop, and set representative_descriptor to the best descriptor.
-            If they are not synonyms or describe different concepts, return is_synonym=false and leave other fields coherent.
-            Prefer concise, general, and commonly used phrasing when picking the representative descriptor.
+            You are deciding whether two descriptor–explainer pairs, A and B, refer to the same concept.
+            The descriptors describe a document, while the explainer provide additional context.
+            
+            *If the descriptor-explainer pairs are synonymous or near-synonymous in most contexts*
+            1. Mark them as synonyms by setting is_synonym=true.
+            2. Choose which of the two descriptor-explainer pairs to keep as the representative pair.
+             - The representative pair should be the one with more concise, general, and commonly used phrasing that encompasses the meaning
+            of both pairs.
+            - The id of the representative pair should be given in the keep_id field and the other in the drop_id field.
+            
+            *If the descriptor-explainer pairs are not synonyms*
+            1. Set is_synonym=false.
+            2. Pick arbitrary keep/drop consistent with the input.
+            
+            Return JSON with these fields only: is_synonym (bool), keep_id (string), drop_id (string).
+            IMPORTANT: Do not rewrite or invent any descriptors.
             Respond ONLY with JSON.<|eot_id|><|start_header_id|>user<|end_header_id|>""" + f"""
 
             A.id: {a.id} A.descriptor: {a.descriptor} A.explainer: {a.explainer}
@@ -514,83 +523,100 @@ class SynonymCombiner:
 
     @log_execution_time
     def decide_batch(self, pairs: List[Tuple[Pair, Pair]]) -> List[Decision]:
+        """Return one Decision per (a,b). Uses cache first, then queries LLM in full batches."""
         decisions: List[Decision] = [None] * len(pairs)
-        # Process in batches
-        for batch_start in range(0, len(pairs), self.batch_size):
-            batch_pairs = pairs[batch_start:batch_start + self.batch_size]
-            batch_prompts: List[str] = []
-            batch_to_query: List[int] = []
-            # Check cache first
-            for idx_in_batch, (a, b) in enumerate(batch_pairs):
-                global_idx = batch_start + idx_in_batch
-                if self._cache is not None:
-                    ck = self._cache_key(a, b)
-                    if ck in self._cache:
-                        try:
-                            obj = json.loads(self._cache[ck])
-                            decisions[global_idx] = Decision(**obj)
-                            continue
-                        except Exception:
-                            pass
-                # Not cached
-                batch_prompts.append(self._prompt(a, b))
-                batch_to_query.append(idx_in_batch)
-            if batch_prompts:
-                params = SamplingParams(
-                    temperature=self.temperature,
-                    top_p=0.5,
-                    repetition_penalty=1.0,
-                    max_tokens=512,
-                    stop=["<|eot_id|>"],
-                    guided_decoding=self._response_format(),
-                    seed=42,
-                )
-                start = time.time()
-                outputs = self.llm.generate(batch_prompts, sampling_params=params, use_tqdm=False)
-                end = time.time()
-                in_tok, gen_tok = self._tokens_in_outputs(outputs)
-                self._log_throughput(in_tok, gen_tok, end-start)
-                parsed: List[Decision] = []
-                for out_idx, out in enumerate(outputs):
-                    text = ""
-                    outs = getattr(out, "outputs", None) or []
-                    if outs:
-                        text = (outs[0].text or "").strip(" `\n").removeprefix("json").strip()
+
+        # Cache sweep: fill any cached decisions; collect the indices we still need to query
+        uncached_idxs: List[int] = []
+        if self._cache is not None:
+            for i, (a, b) in enumerate(pairs):
+                ck = self._cache_key(a, b)
+                if ck in self._cache:
                     try:
-                        obj = json_repair.loads(text)
-                        parsed.append(Decision(
+                        obj = json.loads(self._cache[ck])
+                        decisions[i] = Decision(
                             is_synonym=bool(obj.get("is_synonym", False)),
                             keep_id=str(obj.get("keep_id", "")),
                             drop_id=str(obj.get("drop_id", "")),
-                            representative_descriptor=str(obj.get("representative_descriptor", "")),
-                            reason=str(obj.get("reason", "")),
-                        ))
-                    except Exception as exc:
-                        logging.warning("Falling back to non-merge due to parse error: %s", exc)
-                        # Map back to the corresponding pair index
-                        pair_idx = batch_to_query[out_idx]
-                        a, b = batch_pairs[pair_idx]
-                        parsed.append(Decision(
-                            is_synonym=False,
-                            keep_id=a.id,
-                            drop_id=b.id,
-                            representative_descriptor=a.descriptor,
-                            reason="parse_error",
-                        ))
-                # Stitch parsed decisions into the full list in order
-                p_iter = iter(parsed)
-                for pos in batch_to_query:
-                    d = next(p_iter)
-                    global_pos = batch_start + pos
-                    decisions[global_pos] = d
-                # Write only uncached results back to cache
+                            reason=str(obj.get("reason", "cache_hit")),
+                        )
+                        continue
+                    except Exception:
+                        pass
+                uncached_idxs.append(i)
+        else:
+            uncached_idxs = list(range(len(pairs)))
+
+        if not uncached_idxs:
+            logging.info("All candidates already cached. Skipping LLM.")
+            return decisions  # all cached
+        
+        num_cached = len(pairs) - len(uncached_idxs)
+        logging.info("%d candidates already cached. Sending %s to LLM", num_cached, len(uncached_idxs))
+
+        # Sort uncached indices by approximate prompt length (short → long) to reduce padding waste
+        def _plen(i: int) -> int:
+            a, b = pairs[i]
+            # cheap proxy for token count
+            return len(a.descriptor) + len(a.explainer) + len(b.descriptor) + len(b.explainer)
+        uncached_idxs.sort(key=_plen)
+
+        # Generate in full batches built from uncached items
+        for start in range(0, len(uncached_idxs), self.batch_size):
+            chunk = uncached_idxs[start:start + self.batch_size]
+            batch_pairs = [pairs[i] for i in chunk]
+            batch_prompts = [self._prompt(a, b) for (a, b) in batch_pairs]
+
+            params = SamplingParams(
+                temperature=self.temperature,
+                top_p=0.5,
+                repetition_penalty=1.0,
+                max_tokens=512,
+                stop=["<|eot_id|>"],
+                guided_decoding=self._response_format(),
+                seed=42,
+            )
+            t0 = time.time()
+            outputs = self.llm.generate(batch_prompts, sampling_params=params, use_tqdm=False)
+            t1 = time.time()
+            in_tok, gen_tok = self._tokens_in_outputs(outputs)
+            self._log_throughput(in_tok, gen_tok, t1 - t0)
+
+            parsed: List[Decision] = []
+            for out_idx, out in enumerate(outputs):
+                text = ""
+                outs = getattr(out, "outputs", None) or []
+                if outs:
+                    text = (outs[0].text or "").strip(" `\n").removeprefix("json").strip()
+                try:
+                    obj = json_repair.loads(text)
+                    parsed.append(Decision(
+                        is_synonym=bool(obj.get("is_synonym", False)),
+                        keep_id=str(obj.get("keep_id", "")),
+                        drop_id=str(obj.get("drop_id", "")),
+                        reason="LLM_decision",
+                    ))
+                except Exception as exc:
+                    logging.warning("Falling back to non-merge due to parse error: %s", exc)
+                    a, b = batch_pairs[out_idx]
+                    parsed.append(Decision(
+                        is_synonym=False,
+                        keep_id=a.id,
+                        drop_id=b.id,
+                        reason="parse_error",
+                    ))
+
+            # Write results back to correct global positions + cache them
+            for local_idx, global_idx in enumerate(chunk):
+                d = parsed[local_idx]
+                decisions[global_idx] = d
                 if self._cache is not None:
-                    for out_idx, pos in enumerate(batch_to_query):
-                        a, b = batch_pairs[pos]
-                        d = parsed[out_idx]
-                        ck = self._cache_key(a, b)
-                        self._cache[ck] = json.dumps(d.__dict__, ensure_ascii=False)
+                    a, b = pairs[global_idx]
+                    ck = self._cache_key(a, b)
+                    self._cache[ck] = json.dumps(d.__dict__, ensure_ascii=False)
+
         return decisions
+
 # -----------------------------------------------------------------------------
 # Merging & iteration
 # -----------------------------------------------------------------------------
@@ -599,11 +625,9 @@ class SynonymCombiner:
 class MergeResult:
     kept: str
     dropped: str
-    updated_descriptor: Optional[str]
 
 
 def candidate_synonyms(
-    ids: Sequence[str],
     neighbor_idx: np.ndarray,
     scores: np.ndarray,
     *,
@@ -680,48 +704,35 @@ def candidate_synonyms(
     if triples:
         sims = [t[2] for t in triples]
         logging.info("Pair similarity — avg: %.4f | max: %.4f | min: %.4f", sum(sims)/len(sims), max(sims), min(sims))
-    logging.info("Dropped %d candidate pairs due to threshold %f.", len(dropped_list), min_similarity)
+    logging.info(
+        "Dropped %d candidate pairs due to threshold %s.",
+        len(dropped_list),
+        "None" if min_similarity is None else f"{min_similarity:.4f}",
+    )
     return triples, dropped_list
 
 
-
-def _apply_merges_greedy(
-    pairs: List[Pair],
-    decisions: List[Decision],
-) -> Tuple[List[Pair], List[MergeResult]]:
+def _apply_merges_greedy(pairs: List[Pair], decisions: List[Decision]) -> Tuple[List[Pair], List[MergeResult]]:
     id_to_pair: Dict[str, Pair] = {p.id: p for p in pairs}
     used: Set[str] = set()
     merges: List[MergeResult] = []
-
+    
     for d in decisions:
         if not d.is_synonym:
             continue
-        keep = d.keep_id
-        drop = d.drop_id
-        if keep == drop:
-            continue
-        if keep not in id_to_pair or drop not in id_to_pair:
+        keep, drop = d.keep_id, d.drop_id
+        if keep == drop or keep not in id_to_pair or drop not in id_to_pair:
             continue
         if keep in used or drop in used:
-            continue  # already merged in this round
-                      # This can happend if k > 1 and using "unique" candidate strategy
+            continue # one merge per item per round
 
-        keep_pair = id_to_pair[keep]
+        used.add(keep); used.add(drop)
+        merges.append(MergeResult(kept=keep, dropped=drop))
 
-        # Update the descriptor of the kept pair to the representative descriptor (if provided)
-        updated_descriptor = d.representative_descriptor.strip() or keep_pair.descriptor
-        keep_pair = Pair(id=keep_pair.id, descriptor=updated_descriptor, explainer=keep_pair.explainer)
-        id_to_pair[keep] = keep_pair
-
-        # Mark drop as consumed
-        used.add(keep)
-        used.add(drop)
-        merges.append(MergeResult(kept=keep, dropped=drop, updated_descriptor=updated_descriptor))
-
-    # Build new list: keep everything not dropped; replaced kept items are already in id_to_pair
     dropped_ids = {m.dropped for m in merges}
     new_pairs = [id_to_pair[p.id] for p in pairs if p.id not in dropped_ids]
     return new_pairs, merges
+
 
 @log_execution_time
 def iterate_until_converged(
@@ -737,6 +748,13 @@ def iterate_until_converged(
 ) -> Tuple[List[Pair], List[List[MergeResult]]]:
     all_merges: List[List[MergeResult]] = []
     iteration = 0
+    
+    # Embed texts
+    logging.info("Embedding descriptor-explainer pairs...")
+    texts = [p.text for p in pairs]
+    emb_all = embedder.embed_texts(texts)
+    # Keep a mapping from current order to original row indices
+    current = list(range(len(pairs)))
 
     while iteration < max_iters:
         iteration += 1
@@ -744,10 +762,8 @@ def iterate_until_converged(
         if len(pairs) <= 1:
             break
 
-        logging.info("Embedding descriptor-explainer pairs...")
-        # 1) Embed
         texts = [p.text for p in pairs]
-        emb = embedder.embed_texts(texts)
+        emb = emb_all[current] #slice current 
 
         logging.info("Building Faiss index...")
         # 2) Index
@@ -759,7 +775,8 @@ def iterate_until_converged(
 
         # 4) Find candidate synonym pairs
         triples, dropped = candidate_synonyms(
-            [p.id for p in pairs], neigh, sims,
+            neigh,
+            sims,
             strategy=candidate_strategy,  # "mutual" or "unique"
             min_similarity=min_similarity,
         )
@@ -794,9 +811,24 @@ def iterate_until_converged(
                 write_full_jsonl=True,  # set False to skip the big JSONL
             )
 
-        # 6) Greedy apply merges (skip items already merged this round)
-        pairs, merges = _apply_merges_greedy(pairs, decisions)
+        # 6) Apply merges — compute mask against the old pairs
+        # Take copy of pairs from previous round
+        prev_pairs = pairs
+        # Drop the pairs that were merged in this round
+        pairs, merges = _apply_merges_greedy(prev_pairs, decisions)
+        # IDs of merged items
         all_merges.append(merges)
+
+        # Build keep mask over prev_pairs, then filter pairs & current together
+        if merges:
+            dropped_ids = {m.dropped for m in merges}
+            kept_mask = [p.id not in dropped_ids for p in prev_pairs]
+            # Update mapping and pairs in lockstep
+            current = [idx for idx, keep in zip(current, kept_mask) if keep]
+            # (pairs is already the filtered list from _apply_merges_greedy)
+        else:
+            kept_mask = [True] * len(prev_pairs)
+    
         logging.info("Iteration %d merged %d descriptor-explainer pairs; %d remain", iteration, len(merges), len(pairs))
         if output_dir is not None:
             write_jsonl(output_dir / f"checkpoint_iter_{iteration}.jsonl", pairs)
@@ -805,6 +837,13 @@ def iterate_until_converged(
         if len(merges) == 0:
             logging.info("No merges in this iteration. Converged.")
             break
+        
+        # Cleanup before next iteration to save memory
+        try:
+            del index, texts, emb, sims, neigh, triples, dropped, ordered_pairs, decisions
+            gc.collect()
+        except NameError:
+            pass
 
     return pairs, all_merges
 
@@ -873,6 +912,10 @@ def main(args: argparse.Namespace) -> None:
     pairs = read_jsonl(input_path, sample_size=args.test)
     all_ids = {p.id for p in pairs}
     
+    # Build embedder and index helpers
+    embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=args.batch_size)
+    faiss_index = FaissIndex(nlist=args.faiss_nlist, nprobe=args.faiss_nprobe)
+    
     # Initialise combiner
     combiner = SynonymCombiner(
         model_name=args.model,
@@ -881,10 +924,6 @@ def main(args: argparse.Namespace) -> None:
         cache_db_path=Path(decision_cache_path),
         batch_size = args.llm_batch_size
     )
-    
-    # Embed and build index helpers
-    embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=args.batch_size)
-    faiss_index = FaissIndex(nlist=args.faiss_nlist, nprobe=args.faiss_nprobe)
     
     logging.info("Starting iterations over data...")
     # Iterate until convergence / threshold
@@ -966,4 +1005,11 @@ if __name__ == "__main__":
     parser.add_argument("--candidate-strategy", choices=["unique", "mutual"], default="mutual")
 
     args = parser.parse_args()
+    
+    start_time = time.time()
+    # Main process
     main(args)
+    end_time = time.time()
+    logging.info("========================================")
+    logging.info(f"Finished. Process took {time.strftime('%H:%M:%S', time.gmtime(end_time-start_time))}.")
+    logging.info("========================================")
