@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=split_files
-#SBATCH --account=project_462000353
+#SBATCH --account=project_462000963
 #SBATCH --partition=small
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
@@ -22,6 +22,8 @@ source ../.venv_pt2.5/bin/activate
 # Resulting files will be named <original_file_name>_<split_number>.jsonl
 
 srun python3 ../doc_descriptors/split_large_files.py \
-    --input "${SLURM_SUBMIT_DIR}/../results/LLM_merges/merge_array_concat/merge_array_concat_merged.jsonl" \
+    --input "${SLURM_SUBMIT_DIR}/../results/LLM_merges/merge_array_concat/merge_array_concat_merged_ids.jsonl" \
     --output-dir "${SLURM_SUBMIT_DIR}/../results/synonym_merges/to_be_merged/splits" \
-    --split-count 5
+    --split-count 5 \
+    --shuffle \
+    --seed 42
