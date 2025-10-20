@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=syn_find
+#SBATCH --job-name=count_freqs
 #SBATCH --account=project_462000963
-#SBATCH --partition=small
-#SBATCH --time=2-00:00:00
+#SBATCH --partition=debug
+#SBATCH --time=00:29:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=15
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=128G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 
@@ -21,6 +21,5 @@ srun python3 count_final_desc_frequencies.py \
   --lineage ../results/LLM_merges/id_to_original_texts.jsonl \
   --groups ../results/synonym_merges/merged_groups.jsonl \
   --out-final final_id_counts.jsonl \
-  --out-members member_id_counts.jsonl \
   --fuzzy
 
