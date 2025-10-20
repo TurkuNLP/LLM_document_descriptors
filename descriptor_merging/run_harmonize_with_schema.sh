@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=syn_find
+#SBATCH --job-name=harmonize
 #SBATCH --account=project_462000963
-#SBATCH --partition=dev-g
-#SBATCH --time=00:59:00
+#SBATCH --partition=standard-g
+#SBATCH --time=23:55:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
@@ -21,10 +21,10 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 gpu-energy --save
 
-run_id="harmonize_bbc_test"
+run_id="harmonize_ag_news"
 
 srun python3 harmonize_with_schema.py --run-id=$run_id \
-                                      --input="../results/benchmarks/bbc_news/descriptors_bbc_news.jsonl" \
+                                      --input="../results/benchmarks/ag_news/descriptors_ag_news.jsonl" \
                                       --schema="../results/schema.jsonl"
 
 gpu-energy --diff
