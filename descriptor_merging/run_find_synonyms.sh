@@ -2,7 +2,7 @@
 #SBATCH --job-name=syn_find
 #SBATCH --account=project_462000963
 #SBATCH --partition=standard-g
-#SBATCH --time=12:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
@@ -24,11 +24,11 @@ gpu-energy --save
 
 arr_idx=$SLURM_ARRAY_TASK_ID
 
-run_id="synonym_concat_cont"
+run_id="synonym_merge_3"
 
 srun python3 find_synonyms.py --run-id=$run_id \
-                              --input="../results/synonym_merges/synonym_concat/checkpoint_iter_19.jsonl" \
+                              --input="/scratch/project_462000963/users/tarkkaot/LLM_document_descriptors/results/disambiguate_merges/merges_with_ids/all_merges_disambig.jsonl" \
                               --llm-batch-size 1024 \
-                              --max-iters 1 \
+                              --max-iters 30 \
 
 gpu-energy --diff
