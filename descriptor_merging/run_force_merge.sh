@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=harmonize
+#SBATCH --job-name=syn_find
 #SBATCH --account=project_462000963
 #SBATCH --partition=standard-g
-#SBATCH --time=23:55:00
+#SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
@@ -10,6 +10,7 @@
 #SBATCH --mem=128G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
+######SBATCH --array=0-4
 
 module purge
 module use /appl/local/csc/modulefiles
@@ -21,10 +22,12 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 gpu-energy --save
 
-run_id="harmonize_ag_news"
+arr_idx=$SLURM_ARRAY_TASK_ID
 
-srun python3 harmonize_with_schema.py --run-id=$run_id \
-                                      --input="../results/benchmarks/ag_news/descriptors_ag_news.jsonl" \
-                                      --schema="../results/schema.jsonl"
+run_id="force_merge_2"
+input_file="${SLURM_SUBMIT_DIR}/../results/synonym_merges/synonym_merge_1/synonym_merge_1.jsonl"
+
+srun python3 force_merge.py --run-id=$run_id \
+                              --input=$input_file \
 
 gpu-energy --diff

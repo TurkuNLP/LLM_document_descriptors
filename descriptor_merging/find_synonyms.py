@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Synonym Deduper (with robust lineage)
-
-Adds deterministic, ID-based lineage like your descriptor-merger pipeline.
-
+"""
 What this script writes per run_id:
 - <run_id>.jsonl                      : final kept pairs (id, descriptor, explainer)
 - iteration_XX_llm_decisions.jsonl    : LLM-evaluated pairs (synonym? keep/drop + reason)
@@ -16,7 +13,7 @@ What this script writes per run_id:
                                         min_similarity / NaN (for debugging)
 - <run_id>.groups.json                : mapping final kept_id -> list of member ids merged into it
 
-Lineage event format (mirrors earlier pipeline):
+Lineage event format:
 {
   "event_type": "synonym_merge",          # only merges are edges
   "iteration": 2,                         # which iteration produced this merge

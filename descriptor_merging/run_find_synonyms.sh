@@ -24,10 +24,11 @@ gpu-energy --save
 
 arr_idx=$SLURM_ARRAY_TASK_ID
 
-run_id="synonym_merge_3"
+run_id="synonym_merge_1"
+input_file="${SLURM_SUBMIT_DIR}/../results/disambiguate_merges/merges_with_ids/round_5/results/all_merges_disambig.jsonl"
 
 srun python3 find_synonyms.py --run-id=$run_id \
-                              --input="/scratch/project_462000963/users/tarkkaot/LLM_document_descriptors/results/disambiguate_merges/merges_with_ids/all_merges_disambig.jsonl" \
+                              --input=$input_file \
                               --llm-batch-size 1024 \
                               --max-iters 30 \
 
