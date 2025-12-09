@@ -39,10 +39,7 @@ from utils import (
 
 
 # Configure logging
-slurm_job_id = os.environ.get("SLURM_JOB_ID", "default_id")
 logging.basicConfig(
-    filename=f"../logs/{slurm_job_id}.log",
-    filemode="a",
     format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
@@ -53,6 +50,28 @@ logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 logging.getLogger("transformers").setLevel(logging.WARNING)
 # Suppress FutureWarnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
+
+
+def configure_logging(log_file: Path) -> None:
+    # reset handlers
+    for h in logging.root.handlers[:]:
+        logging.root.removeHandler(h)
+
+    file_h = logging.FileHandler(log_file)
+    file_h.setFormatter(logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s"))
+
+    stream_h = logging.StreamHandler()
+    stream_h.setFormatter(logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s"))
+
+    logging.root.setLevel(logging.INFO)
+    logging.root.addHandler(file_h)
+    logging.root.addHandler(stream_h)
+
+    logging.info("=" * 40)
+    logging.info("Logging configured to: %s", log_file)
+    logging.info("SLURM Job ID: %s", os.environ.get("SLURM_JOB_ID", "N/A"))
 
 
 class DescriptorGenerator:
@@ -484,9 +503,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="A script for getting document descriptors with LLMs."
     )
-
+    
+    # Basic arguments
     parser.add_argument(
         "--run-id", type=str, required=True, help="ID for this run, e.g. run1"
+    )
+    
+    # Model arguments
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="meta-llama/Llama-3.3-70B-Instruct",
+        help="Name of model to use.",
     )
     parser.add_argument(
         "--cache-dir",
@@ -494,11 +522,16 @@ if __name__ == "__main__":
         help="Path to cache directory, where model is or will be saved.",
     )
     parser.add_argument(
-        "--model",
-        type=str,
-        default="meta-llama/Llama-3.3-70B-Instruct",
-        help="Name of model to use.",
+        "--temperature", type=float, default=0.1, help="Model temperature."
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=200,
+        help="Number of documents given to the model at one time.",
+    )
+    
+    # Data processing arguments
     parser.add_argument(
         "--start-index", type=int, default=0, help="Index of first document to analyse."
     )
@@ -515,32 +548,29 @@ if __name__ == "__main__":
         help="How many rewriting cycles the script should go through.",
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.1, help="Model temperature."
+        "--checkpoint-interval", type=int, default=0,
+        help="Number of batches after which all results so far will be saved into a checkpoint. "
+        "If 0, no checkpoints are created. Default: 0 (no checkpoints)."
     )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=200,
-        help="Number of documents given to the model at one time.",
-    )
+    
+    # Data arguments
     parser.add_argument(
         "--data-source", type=str, default="fineweb", help="Which data set to process."
     )
     parser.add_argument(
         "--text-column", type=str, default="text", help="Name of the text column in the dataset."
     )
-    parser.add_argument(
-        "--checkpoint-interval", type=int, default=0,
-        help="Number of batches after which all results so far will be saved into a checkpoint. "
-        "If 0, no checkpoints are created. Default: 0 (no checkpoints)."
-    )
+
 
     args = parser.parse_args()
 
     # Create required directories
-    os.makedirs("../logs", exist_ok=True)
     os.makedirs("../results", exist_ok=True)
     os.makedirs(f"../results/{args.run_id}", exist_ok=True)
+
+    # Configure logging
+    log_file = Path(f"../results/{args.run_id}/{args.run_id}_log.txt")
+    configure_logging(log_file)
 
     # Log the run settings
     with open(f"../results/{args.run_id}/{args.run_id}_settings.txt", "a") as f:

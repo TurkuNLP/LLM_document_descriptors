@@ -106,7 +106,7 @@ def load_documents(source, cache):
         list: A list of documents loaded from the selected data source.
     """
     
-    # Try, is source is a JSONL if
+    # Try, if source is a JSONL
     try:
         path = Path(source)
         if path.is_file() and path.suffix == ".jsonl":
