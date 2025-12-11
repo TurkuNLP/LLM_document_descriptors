@@ -102,6 +102,7 @@ class DescriptorGenerator:
             gpu_memory_utilization=0.8,
         )
 
+
     def generate(self, input, stage):
         response_schema = self.get_response_format(stage)
         max_tokens = {
@@ -117,11 +118,40 @@ class DescriptorGenerator:
             guided_decoding=response_schema,
         )
 
+        start = time.perf_counter()
         outputs = self.llm.generate(
             input, sampling_params=sampling_params, use_tqdm=False
         )
+        elapsed = time.perf_counter() - start if start else 0.0
+        
+        response_texts = []
+        in_tok = 0
+        gen_tok = 0
+        for o in outputs:
+            if getattr(o, "prompt_token_ids", None):
+                in_tok += len(o.prompt_token_ids)
 
-        return [out.outputs[0].text.strip(" `\n").removeprefix("json") for out in outputs]
+            outs = getattr(o, "outputs", None) or []
+            if outs:
+                cand = outs[0]
+                if getattr(cand, "token_ids", None):
+                    gen_tok += len(cand.token_ids)
+                txt = getattr(cand, "text", "") or ""
+                response_texts.append(txt.strip(" `\n").removeprefix("json"))
+            else:
+                response_texts.append("{}")
+
+        tot_tok = gen_tok + in_tok
+        if elapsed > 0 and tot_tok > 0:
+            logging.info(
+                "LLM throughput: %.1f tok/s (%.1f gen tok/s) — %s tokens in %.2fs",
+                tot_tok / elapsed,
+                gen_tok / elapsed if gen_tok else 0,
+                tot_tok,
+                elapsed,
+            )
+
+        return response_texts
 
     @staticmethod
     def validate_output(output):
@@ -462,11 +492,12 @@ class DescriptorGenerator:
 
             # Calculate similarity between rewrites and original.
             # Append to results.
-            for index in results:
-                similarities = self.embedder.calculate_similarity(
-                    results[index]["document"], results[index]["rewrite"]
-                )
-                results[index]["similarity"].extend(similarities)
+            if self.num_rewrites > 0:
+                for index in results:
+                    similarities = self.embedder.calculate_similarity(
+                        results[index]["document"], results[index]["rewrite"]
+                    )
+                    results[index]["similarity"].extend(similarities)
 
             # Save all results so far
             save_results(results, self.base_dir, self.run_id, only_best=False)

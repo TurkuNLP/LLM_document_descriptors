@@ -179,10 +179,18 @@ def load_documents(source, cache):
             raise ValueError(f"Invalid data source '{source}'.")
     
 def init_results(batch):
+    sample = batch[0]
+
+    # Determine the document ID key, defaulting to "id"
+    # Different datasets may use different keys for document IDs
+    # Customize as needed
+    candidates = ["doc_id", "ID", "document_id", "warc_record_id"]
+    id_key = next((key for key in candidates if key in sample), "id")
+    
     return {
         index: {
             "document": doc["text"],
-            "doc_id": doc.get("id", 0),
+            "doc_id": doc.get(id_key, 0),
             "descriptors": [],
             "specifics": [],
             "rewrite": [],
