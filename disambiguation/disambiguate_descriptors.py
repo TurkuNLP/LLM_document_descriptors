@@ -877,8 +877,6 @@ def debug_duplicate_ids(cohort, results_by_group):
         for i, (pid, locs) in enumerate(list(dup_outputs.items())[:10]):
             logging.error("Output-duplicate ID %d: %s", i+1, pid)
             logging.error("  Appears in outputs: %s", locs)
-    else:
-        logging.info("No real duplicates in this cohort.")
 
     return {"input": dup_inputs, "output": dup_outputs}
 
