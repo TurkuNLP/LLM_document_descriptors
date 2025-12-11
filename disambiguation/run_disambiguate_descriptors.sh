@@ -28,7 +28,7 @@ echo "SLURM_ARRAY_TASK_ID: " $SLURM_ARRAY_TASK_ID
 
 BASEDIR="${SLURM_SUBMIT_DIR}"
 DATA_DIR="${BASEDIR}/../results/new_descriptors/grouped/splits"
-RUN_ID_BASE="disambig_1"
+RUN_ID_BASE="disambig"
 
 echo "================================"
 echo "Reading data from $DATA_DIR"

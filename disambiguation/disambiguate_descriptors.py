@@ -10,9 +10,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Any, Dict, List, Iterator, Tuple, Optional
-import itertools
-import hashlib
+from typing import Any, Dict, List, Tuple, Optional, Set
 import uuid
 
 # -- third-party --
@@ -81,7 +79,7 @@ def generate_uuid_id() -> str:
 
 
 def read_grouped_descriptors_file(path_to_file: Path, test_size: int = 0) -> List[Tuple[str, List[Dict[str, str]]]]:
-    """Read groups from JSONL. Each line: {descriptor: str, pairs: [{id, explainer}, ...]}.
+    """Read groups from JSONL. Each line: {descriptor: str, explainers: [{id, explainer}, ...]}.
     Returns list of (descriptor, explainers[ {id, explainer}, ... ]).
     """
     groups: List[Tuple[str, List[Dict[str, str]]]] = []
@@ -110,8 +108,36 @@ def read_grouped_descriptors_file(path_to_file: Path, test_size: int = 0) -> Lis
 
             if test_size > 0 and len(groups) >= test_size:
                 break
+            
+    # Validate that each input ID is unique across the entire input set
+    all_ids: Set[str] = set()
+    for desc, expls in groups:
+        for e in expls:
+            pid = e["id"]
+            if pid in all_ids:
+                raise ValueError(f"Duplicate input ID found across groups: {pid!r}")
+            all_ids.add(pid)
 
     return groups
+
+
+def load_original_input_ids(path: Path, test: bool) -> Set[str]:
+    ids: Set[str] = set()
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            for e in obj.get("explainers", []):
+                pid = e.get("id")
+                if pid:
+                    if pid in ids:
+                        raise RuntimeError(f"Duplicate input ID in raw data: {pid}")
+                    ids.add(pid)
+            if test and i + 1 >= 10_000:
+                break
+    return ids
+
 
 
 def save_results(save_path: Path, pairs: List[Dict[str, Any]]) -> None:
@@ -129,6 +155,7 @@ def save_checkpoint_full(checkpoint_dir: Path,
                          final_groups: List[Dict[str, Any]],
                          pending_groups: List[Dict[str, Any]],
                          lineage_events: List[Dict[str, Any]],
+                         processed_ids: Set[str] | None = None,
                          final: bool = False) -> None:
     """Save a checkpoint with:
     - final singletons (descriptor/explainer *objects* with IDs)
@@ -151,7 +178,6 @@ def save_checkpoint_full(checkpoint_dir: Path,
                 # singletons guaranteed to have one explainer object
                 expl_obj = g["explainers"][0] if g.get("explainers") else {"id": None, "explainer": ""}
                 out = {
-                    "gid": g.get("gid"),
                     "id": expl_obj.get("id"),
                     "descriptor": g.get("descriptor"),
                     "explainer": expl_obj.get("explainer", ""),
@@ -164,11 +190,15 @@ def save_checkpoint_full(checkpoint_dir: Path,
         with pending_path.open("w", encoding="utf-8") as f:
             for g in pending_groups:
                 out = {
-                    "gid": g.get("gid"),
                     "descriptor": g.get("descriptor"),
                     "explainers": g.get("explainers", []),  # list of {id, explainer}
                 }
                 f.write(json.dumps(out, ensure_ascii=False) + "\n")
+    
+        if processed_ids:
+            processed_ids_path = checkpoint_dir / f"iter_{step_idx:08d}_processed_ids.json"
+            with processed_ids_path.open("w") as f:
+                json.dump(list(processed_ids), f)
 
     logging.info("[CHKPT %08d] Saving %d lineage events -> %s",
                  step_idx, len(lineage_events), lineage_path.name)
@@ -210,7 +240,6 @@ def load_final_groups(path: Path) -> List[Dict[str, Any]]:
             if not pid:
                 raise ValueError(f"Missing ID for descriptor={desc!r} in final groups.")
             groups.append({
-                "gid": obj.get("gid"),
                 "descriptor": desc,
                 "explainers": [{"id": pid, "explainer": expl, "source_pair_ids": obj.get("source_pair_ids", [])}],
             })
@@ -237,7 +266,7 @@ def load_pending_groups(path: Path) -> List[Dict[str, Any]]:
                 if not pid:
                     raise ValueError(f"Missing ID for descriptor={desc!r}, explainer={exp!r} in pending groups.")
                 fixed.append({"id": pid, "explainer": exp, "source_pair_ids": spi})
-            groups.append({"gid": obj.get("gid"), "descriptor": desc, "explainers": fixed})
+            groups.append({"descriptor": desc, "explainers": fixed})
     return groups
 
 
@@ -588,128 +617,98 @@ def make_prompts(batch: List[Dict[str, Any]]) -> List[str]:
 def batch_and_process(pending_groups: List[Dict[str, Any]],
                       llm_processor: callable,
                       output_validator: callable,
+                      processed_ids: Set[str],
                       max_explainers_per_prompt=20,
                       max_prompts_per_call=512,
-                      max_chars_per_call=2_000_000
-                      ):
+                      max_chars_per_call=2_000_000):
     """
-    Process all pending groups through the LLM with efficient batching that handles both
-    very small groups (2-3 explainers) and very large groups (1000+ explainers).
+    Process all pending groups through the LLM with efficient batching.
+    Results are aligned by index to pending_groups.
     """
-    # Track results for each group
-    results_by_group = {g["gid"]: [] for g in pending_groups}
-    
-    # Track which explainer IDs we've processed
-    processed_ids = set()
-    
+    # One bucket per group, aligned by index
+    results_by_group: List[List[Dict[str, Any]]] = [[] for _ in pending_groups]
+
     # STEP 1: Prepare all prompts with their metadata
     all_prompts = []
-    
-    for group in pending_groups:
-        gid = group["gid"]
+    for cohort_idx, group in enumerate(pending_groups):
         descriptor = group["descriptor"]
-        
-        # Skip any explainers we've already processed (should never happen with clean data)
-        remaining_explainers = [e for e in group["explainers"] 
-                               if e["id"] not in processed_ids]
-        
-        # Split large groups into chunks of max_explainers_per_prompt
+
+        # Filter out already-processed originals
+        filtered_ids = [e["id"] for e in group["explainers"] if e["id"] in processed_ids]
+        if filtered_ids:
+            logging.info(f"Filtered out {len(filtered_ids)} already processed IDs from cohort index {cohort_idx}")
+
+        remaining_explainers = [e for e in group["explainers"] if e["id"] not in processed_ids]
+
+
+        # Split large groups into chunks
         for i in range(0, len(remaining_explainers), max_explainers_per_prompt):
-            chunk = remaining_explainers[i:i+max_explainers_per_prompt]
-            
-            # Record these explainers as processed
-            for e in chunk:
-                processed_ids.add(e["id"])
-                
-            prompt_text = disambiguation_prompt.merge_descriptors_prompt(
-                descriptor, chunk
-            )
-            
+            chunk = remaining_explainers[i:i + max_explainers_per_prompt]
+            prompt_text = disambiguation_prompt.merge_descriptors_prompt(descriptor, chunk)
             all_prompts.append({
                 "prompt": prompt_text,
                 "chars": len(prompt_text),
-                "group_gid": gid,
+                "cohort_idx": cohort_idx,
                 "explainers": chunk,
                 "descriptor": descriptor
             })
-    
-    # STEP 2: Organize prompts into efficient LLM calls
+
+    # STEP 2: Pack prompts into batches
     prompt_batches = []
-    current_batch = []
-    current_chars = 0
-    
-    # Sort prompts by length (smallest first) for more efficient packing
+    current_batch, current_chars = [], 0
     all_prompts.sort(key=lambda p: p["chars"])
-    
-    for prompt_item in all_prompts:
-        # Check if adding this prompt would exceed limits
-        would_exceed_prompts = len(current_batch) + 1 > max_prompts_per_call
-        would_exceed_chars = current_chars + prompt_item["chars"] > max_chars_per_call
-        
-        if current_batch and (would_exceed_prompts or would_exceed_chars):
+    for item in all_prompts:
+        if current_batch and (
+            len(current_batch) + 1 > max_prompts_per_call or
+            current_chars + item["chars"] > max_chars_per_call
+        ):
             prompt_batches.append(current_batch)
-            current_batch = []
-            current_chars = 0
-            
-        current_batch.append(prompt_item)
-        current_chars += prompt_item["chars"]
-    
+            current_batch, current_chars = [], 0
+        current_batch.append(item)
+        current_chars += item["chars"]
     if current_batch:
         prompt_batches.append(current_batch)
-    
-    # STEP 3: Process each batch of prompts
+
+    # STEP 3: Process each batch
     for batch_idx, batch in enumerate(prompt_batches):
-        logging.info(f"Processing batch {batch_idx+1}/{len(prompt_batches)} with {len(batch)} prompts")
-        
-        # Extract just the prompt texts
-        prompt_texts = [item["prompt"] for item in batch]
-        
-        # Process through LLM
+        logging.info(f"Processing batch {batch_idx + 1}/{len(prompt_batches)} with {len(batch)} prompts")
+        prompt_texts = [it["prompt"] for it in batch]
         outputs = llm_processor(prompt_texts)
-        
-        # Match outputs back to their metadata and validate
+
         for item, output in zip(batch, outputs):
-            gid = item["group_gid"]
-            
-            # Map indices to IDs and validate completeness
+            cohort_idx = item["cohort_idx"]
+
             processed_output = map_indices_to_ids(output, item)
             validated_output = output_validator([processed_output], [item])[0]
-            
-            # Store result by group
-            results_by_group[gid].append(validated_output)
-            
-            # Verify all explainer IDs in this batch are accounted for
+
+            results_by_group[cohort_idx].append(validated_output)
+
+            # Verify completeness: inputs in chunk == IDs in validated output
             input_ids = {e["id"] for e in item["explainers"]}
             output_ids = set()
-            for group in validated_output.get("groups", []):
-                output_ids.update(group.get("original_explainer_ids_in_this_group", []))
-                
+            for g in validated_output.get("groups", []):
+                output_ids.update(g.get("original_explainer_ids_in_this_group", []))
+
             if input_ids != output_ids:
                 missing = input_ids - output_ids
                 extra = output_ids - input_ids
                 logging.error(
-                    f"Validation failed for group {gid}: "
-                    f"missing IDs: {missing}, extra IDs: {extra}"
+                    f"Validation failed for cohort index {cohort_idx}: missing IDs: {missing}, extra IDs: {extra}"
                 )
-                # Instead of raising, we could try to repair, but error is better for debugging
                 raise ValueError("Batch validation failed")
-    
+
     return results_by_group
 
 
-def make_descriptor_explainer_groups(pairs: List[Tuple[str, List[Dict[str, str]]]], start_id: int = 0) -> List[Dict[str, Any]]:
-    groups = []
-    for idx, (desc, expls) in enumerate(pairs):
-        groups.append({"gid": start_id + idx,
-                      "descriptor": desc, "explainers": expls})
-    return groups
+
+def make_descriptor_explainer_groups(pairs: List[Tuple[str, List[Dict[str, str]]]]) -> List[Dict[str, Any]]:
+    return [{"descriptor": desc, "explainers": expls} for desc, expls in pairs]
 
 
 # ------------------- Trace helpers -------------------------
 
 def build_merge_events(
     merged_groups: List[Dict[str, Any]],
-    parent_gid: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Produce structured merge events mapping source_pair_ids -> new_pair_id."""    
     events: List[Dict[str, Any]] = []
@@ -721,7 +720,6 @@ def build_merge_events(
         if not id or not desc or not expl or not isinstance(source_ids, list) or not source_ids:
             raise ValueError("Invalid group in merge events.")
         events.append({
-            "original_gid": parent_gid,
             "new_descriptor": desc,
             "new_explainer": expl,
             "new_pair_id": id,
@@ -733,7 +731,7 @@ def audit_results_completeness(
     path_to_input: Path,
     path_to_output: Path,
     path_to_lineage: Path,
-) -> None:
+) -> bool:
     """Graph-aware audit:
 
     - Pass-through inputs (singletons) are allowed to appear 0 times in lineage and must be in final outputs.
@@ -849,6 +847,42 @@ def audit_results_completeness(
     else:
         logging.info("Audit passed: pass-through + merged inputs fully accounted, sinks match outputs, no unknowns.")
         return True
+    
+    
+def debug_duplicate_ids(cohort, results_by_group):
+    """Real duplicates only; results_by_group is a list aligned to cohort."""
+    in_locs = defaultdict(set)
+    out_locs = defaultdict(set)
+
+    for idx, group in enumerate(cohort):
+        desc = group["descriptor"]
+
+        for explainer in group["explainers"]:
+            in_locs[explainer["id"]].add(f"Input cohort#{idx} ({desc})")
+
+        for o_idx, output in enumerate(results_by_group[idx]):
+            for g_idx, g in enumerate(output.get("groups", [])):
+                for pid in g.get("original_explainer_ids_in_this_group", []):
+                    out_locs[pid].add(f"Output cohort#{idx}-{o_idx}-{g_idx}")
+
+    dup_inputs  = {pid: sorted(locs) for pid, locs in in_locs.items()  if len(locs) > 1}
+    dup_outputs = {pid: sorted(locs) for pid, locs in out_locs.items() if len(locs) > 1}
+
+    if dup_inputs or dup_outputs:
+        logging.error("Found real duplicates: %d in inputs, %d in outputs",
+                      len(dup_inputs), len(dup_outputs))
+        for i, (pid, locs) in enumerate(list(dup_inputs.items())[:10]):
+            logging.error("Input-duplicate ID %d: %s", i+1, pid)
+            logging.error("  Appears in inputs: %s", locs)
+        for i, (pid, locs) in enumerate(list(dup_outputs.items())[:10]):
+            logging.error("Output-duplicate ID %d: %s", i+1, pid)
+            logging.error("  Appears in outputs: %s", locs)
+    else:
+        logging.info("No real duplicates in this cohort.")
+
+    return {"input": dup_inputs, "output": dup_outputs}
+
+
 # ------------------- Main -------------------------
 
 
@@ -880,6 +914,11 @@ def main(args):
     final_groups: List[Dict[str, Any]] = []
     pending: List[Dict[str, Any]] = []
     lineage_events: List[Dict[str, Any]] = []
+    
+    # Get a set of all input IDs
+    input_ids = load_original_input_ids(Path(args.data_path), args.test)
+    # Keep track of all processed IDs globally to avoid duplicates
+    global_processed_ids = set()
 
     # Resume logic ------------------------------------------------------
     latest = find_latest_checkpoint(results_dir) if args.resume else None
@@ -891,13 +930,31 @@ def main(args):
         final_groups = load_final_groups(final_path)
         pending = load_pending_groups(pending_path)
         lineage_events = load_lineage_events(lineage_path)
-        logging.info("Resumed from checkpoint #%d: %d final, %d pending.",
+
+        processed_from_lineage = set()
+        for ev in lineage_events:
+            for sid in ev.get("source_pair_ids", []):
+                if sid in input_ids:             # keep originals only
+                    processed_from_lineage.add(sid)
+
+        # Prefer lineage; if a processed_ids JSON exists, intersect it
+        if (checkpoint_dir / f"iter_{step_idx:08d}_processed_ids.json").exists():
+            with (checkpoint_dir / f"iter_{step_idx:08d}_processed_ids.json").open("r") as f:
+                previously_saved = set(json.load(f))
+            previously_saved &= input_ids
+            global_processed_ids = processed_from_lineage | previously_saved
+        else:
+            global_processed_ids = processed_from_lineage
+
+        logging.info("Resuming from checkpoint #%d: %d final, %d pending.",
                      step_idx, len(final_groups), len(pending))
+        logging.info("Resume: %d original input IDs already processed.", len(global_processed_ids))
+
     else:
         descriptor_explainers = read_grouped_descriptors_file(
             Path(args.data_path), test_size=10_000 if args.test else 0)
         groups = make_descriptor_explainer_groups(
-            descriptor_explainers, start_id=0)
+            descriptor_explainers)
         final_groups = [g for g in groups if len(g["explainers"]) == 1]
         pending = [g for g in groups if len(g["explainers"]) > 1]
         logging.info("Fresh start: %d singles, %d multis.",
@@ -914,25 +971,8 @@ def main(args):
         save_results(results_dir / f"{args.run_id}_disambig.jsonl", pairs)
         logging.info("Results saved.")
         return
-
-    MAX_ITERS_PER_GROUP = args.max_passes_per_group
+    
     CHECKPOINT_EVERY = args.checkpoint_every
-
-    # next_gid counter seeded from existing gids
-    all_gids = [g.get("gid") for g in (final_groups + pending)
-                if g.get("gid") is not None]
-    start_next_gid = (max(all_gids) + 1) if all_gids else 0
-    next_gid = itertools.count(start=start_next_gid)
-    used_gids = set(all_gids)
-
-    def next_safe_gid() -> int:
-        """Generate a guaranteed unique group ID by tracking used IDs."""
-        while True:
-            gid = next(next_gid)
-            if gid not in used_gids:
-                used_gids.add(gid)
-                return gid
-
 
     pass_num = 0
     while pending:
@@ -950,53 +990,72 @@ def main(args):
         logging.info("Starting pass %d on cohort of %d groups.",
                      pass_num, len(cohort))
 
-        gid_to_outputs = {g["gid"]: [] for g in cohort}
-
         # Process all groups in the cohort
         results_by_group = batch_and_process(
             pending_groups=cohort,
             llm_processor=dm.generate,
             output_validator=dm.validate_completeness,
+            processed_ids=global_processed_ids,
             max_explainers_per_prompt=20,
             max_prompts_per_call=args.max_prompts_per_call,
             max_chars_per_call=args.max_chars_per_call
         )
+        
+        # Debugging: check for duplicate IDs in this cohort
+        debug_duplicate_ids(cohort, results_by_group)
                 
         # Validate no duplicate processing of IDs across the cohort
-        all_processed_ids = set()
-        for group in cohort:
+        cohort_processed_ids = set()
+        for i, group in enumerate(cohort):
             # Extract IDs we've processed for this group
-            processed_ids = set()
-            for output in gid_to_outputs.get(group["gid"], []):
+            group_processed_ids = set()
+            for output in results_by_group[i]:
                 for g in output.get("groups", []):
-                    processed_ids.update(g.get("original_explainer_ids_in_this_group", []))
+                    group_processed_ids.update(g.get("original_explainer_ids_in_this_group", []))
             
+            orig_ids_this_group = {pid for pid in group_processed_ids if pid in input_ids}
             # Ensure no ID duplication across groups
-            if processed_ids & all_processed_ids:
-                duplicate_ids = processed_ids & all_processed_ids
+            if orig_ids_this_group & cohort_processed_ids:
+                duplicate_ids = orig_ids_this_group & cohort_processed_ids
                 raise ValueError(f"Found duplicate IDs across groups: {duplicate_ids}")
-            all_processed_ids.update(processed_ids)
+            cohort_processed_ids.update(orig_ids_this_group)
+            # Also update global processed IDs
+            global_processed_ids.update(orig_ids_this_group)
 
         next_round_multis = []
-        for group in cohort:
+        for i, group in enumerate(cohort):
             # Groups that went through LLM
-            merged_groups = results_by_group[group["gid"]]
+            merged_groups = results_by_group[i]
+            if not merged_groups:
+               logging.info(
+                   "Skipping cohort index %d: no outputs (all explainers for this group were already processed).", i
+                   )
+               continue
 
             # Flatten -> canonical pairs with lineage
             # flat_pairs: [{id, descriptor, explainer, source_pair_ids}, ...]
             flat_pairs = flatten_and_id_output(merged_groups)
+            
+            # Sanity check and dedup within this parent group
+            seen = set()
+            dedup = []
+            for p in flat_pairs:
+                key = tuple(sorted(p["source_pair_ids"]))
+                if key in seen:
+                    logging.warning("Dedup: duplicate source set within one parent; dropping")
+                    continue
+                seen.add(key)
+                dedup.append(p)
+            flat_pairs = dedup
+            
             assert flat_pairs, "No pairs produced from merge."
             # Log lineage events
-            lineage_events.extend(build_merge_events(flat_pairs, parent_gid=group.get("gid")))
+            lineage_events.extend(build_merge_events(flat_pairs))
 
             # Re-group by descriptor for the next pass
             aggregated = group_pairs_with_ids(flat_pairs) # {descriptor: [{id, expl, sources},...], ...}
             aggregated_pairs = list(aggregated.items())  # [(desc, [{id, expl, sources},...]), ...]
-            # new gids for sub-groups
-            # [{gid, descriptor, explainers: [{id, explainer, sources}, ...]}, ...]
-            sub_groups = make_descriptor_explainer_groups(
-                aggregated_pairs, start_id=next_safe_gid()
-            )
+            sub_groups = [{"descriptor": desc, "explainers": expls} for (desc, expls) in aggregated_pairs]
 
             # Partition and collect
             new_multis = [g for g in sub_groups if len(g["explainers"]) > 1]
@@ -1008,7 +1067,7 @@ def main(args):
 
         if CHECKPOINT_EVERY and (pass_num % CHECKPOINT_EVERY == 0) and pass_num > 0:
             step_idx = pass_num
-            save_checkpoint_full(checkpoint_dir, step_idx, final_groups, pending, lineage_events)
+            save_checkpoint_full(checkpoint_dir, step_idx, final_groups, pending, lineage_events, global_processed_ids)
 
         end_time = time.time()
         pass_time = end_time - start_time
@@ -1061,8 +1120,6 @@ if __name__ == "__main__":
                    help="Path to JSONL file with objects {descriptor, pairs:[{id, explainer}]} or legacy {descriptor, explainers}.")
 
     # Batching parameters
-    p.add_argument("--chars-per-batch", type=int, default=500_000,
-                   help="Max prompt characters per batch.")
     p.add_argument("--groups-per-llm-call", dest="groups_per_llm_call", type=int, default=100,
                help="How many groups to process together per vLLM call (cohort size).")
     p.add_argument("--max-prompts-per-call", dest="max_prompts_per_call", type=int, default=512,
@@ -1085,8 +1142,6 @@ if __name__ == "__main__":
                    help="Resume from latest checkpoint in run directory.")
     p.add_argument("--checkpoint-every", type=int, default=20,
                    help="Save a full checkpoint after every N passes(cohorts). 0 disables.")
-    p.add_argument("--max-passes-per-group", type=int, default=10,
-                   help="Safety valve to stop infinite loops when a group refuses to change.")
     p.add_argument("--test", action="store_true",
                    help="Test mode: limit to 10,000 descriptors for quick test runs.")
     args = p.parse_args()

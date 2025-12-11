@@ -140,6 +140,40 @@ def analyze_lineage(final_results_path: Path, lineage_path: Path, original_data_
     
     print(f"Analyzing {len(final_results)} final pairs...")
     
+    # Find identical source ID sets pointing to different final IDs
+    source_sets = {}
+    duplicates = []
+
+    for event in lineage_events:
+        new_id = event["new_pair_id"]
+        source_ids = tuple(sorted(event["source_pair_ids"]))  # Convert to sorted tuple for hashing
+        
+        if source_ids in source_sets:
+            # Found duplicate - same source IDs, different final ID
+            existing_id = source_sets[source_ids]
+            duplicates.append((source_ids, existing_id, new_id))
+        else:
+            source_sets[source_ids] = new_id
+
+    if duplicates:
+        print(f"\nFound {len(duplicates)} cases of identical source ID sets pointing to different final IDs")
+        for i, (source_ids, id1, id2) in enumerate(duplicates[:5]):
+            print(f"  {i+1}. Sources {source_ids[:3]}... -> Finals: {id1} and {id2}")
+        
+        # Get descriptor/explainer for these final IDs
+        final_id_info = {r["final_id"]: (r["descriptor"], r["explainer"]) for r in results}
+        
+        for i, (_, id1, id2) in enumerate(duplicates[:5]):
+            if id1 in final_id_info and id2 in final_id_info:
+                desc1, exp1 = final_id_info[id1]
+                desc2, exp2 = final_id_info[id2]
+                print(f"\nDuplicate {i+1}:")
+                print(f"  ID1 {id1}: {desc1} | {exp1[:50]}...")
+                print(f"  ID2 {id2}: {desc2} | {exp2[:50]}...")
+    
+    
+    
+    
     for i, result in enumerate(final_results):
         if i % 1000 == 0 and i > 0:
             print(f"Processed {i} pairs...")
