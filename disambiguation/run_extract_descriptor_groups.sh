@@ -17,6 +17,6 @@ module load pytorch/2.5
 source .venv_pt2.5_merge/bin/activate
 
 srun python3 extract_descriptor_groups.py \
-    --input ../results/new_descriptors/all_descriptors_new.jsonl \
-    --out-dir ../results/new_descriptors/grouped \
-    --num-splits 20
+    --input ../results/disambiguate_merges/round_4/results/all_disambig.jsonl \
+    --out-dir ../results/disambiguate_merges/round_4/results/grouped \
+    --num-splits 2

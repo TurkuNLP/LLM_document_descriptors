@@ -134,7 +134,7 @@ def generate_uuid_id() -> str:
 
 def ensure_unique_ids(
     grouped: Dict[str, List[Dict[str, str]]]
-) -> Dict[str, List[Dict[str, str]]]:
+) -> None:
     """Ensure all descriptor-explainer pairs have unique IDs.
     If duplicate IDs are found, raise ValueError because it indicates but upstream.
     We cannot simply generate new IDs here, because that would break the lineage mappings.
@@ -148,7 +148,20 @@ def ensure_unique_ids(
             else:
                 seen_ids.add(id)
     print(f"All {len(seen_ids)} descriptor-explainer pairs have unique IDs.")
-    return grouped
+
+
+def log_stats(grouped: Dict[str, List[Dict[str, str]]]) -> None:
+    """Log some statistics about the grouped descriptors."""
+    num_descriptors = len(grouped)
+    num_explainers = sum(len(expls) for expls in grouped.values())
+    singletons = sum(1 for expls in grouped.values() if len(expls) == 1)
+    multis = sum(1 for expls in grouped.values() if len(expls) > 1)
+    avg_explainers_per_descriptor = num_explainers / num_descriptors
+    print(f"Total unique descriptors: {num_descriptors}")
+    print(f"Total descriptor-explainer pairs: {num_explainers}")
+    print(f"Descriptors with single explainer: {singletons}")
+    print(f"Descriptors with multiple explainers: {multis}")
+    print(f"Average explainers per descriptor: {avg_explainers_per_descriptor:.2f}")
 
 
 def write_descriptors_with_ids(
@@ -215,26 +228,31 @@ def group_descriptors(input_path: Path, out_dir: Path, num_splits: int) -> None:
     # If input data waw "raw", there should be no duplicates, because of deduplication above
     # If input data was "processed", duplicates also should not exist because of UUID
     # This is just a sanity check
-    final_groups = ensure_unique_ids(final_groups)
+    ensure_unique_ids(final_groups)
+    log_stats(final_groups)
 
     write_descriptors_with_ids(descriptors, descriptors_with_ids_path)
     write_grouped_with_ids(grouped_out_path, final_groups)
     write_flat_pairs(flat_out_path, final_groups)
     if malformed:
         write_malformed_entries(malformed_out_path, malformed)
-        
-    if num_splits > 1:
-        print(f"Splitting grouped output into {num_splits} files...")
-        # Split the grouped output into smaller files
-        splits_out_dir = out_dir / "splits"
-        splits_out_dir.mkdir(parents=True, exist_ok=True)
-        split_large_files.split_jsonl_files(
-            input=grouped_out_path,
-            output_dir=splits_out_dir,
-            split_count=num_splits,
-            shuffle=True,
-            seed=42
-            )
+    
+    if not isinstance(num_splits, int):
+        print(f"Invalid num_splits value: {num_splits}. Must be an integer.")
+        print("Skipping splitting step.")
+    else:
+        if num_splits > 1:
+            print(f"Splitting grouped output into {num_splits} files...")
+            # Split the grouped output into smaller files
+            splits_out_dir = out_dir / "splits"
+            splits_out_dir.mkdir(parents=True, exist_ok=True)
+            split_large_files.split_jsonl_files(
+                input=grouped_out_path,
+                output_dir=splits_out_dir,
+                split_count=num_splits,
+                shuffle=True,
+                seed=42
+                )
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Extract and group descriptor-explainer pairs with IDs.")
