@@ -16,11 +16,11 @@ module load pytorch/2.5
 
 source .venv_pt2.5_merge/bin/activate
 
-merge_res_base="../results/disambiguate_merges/sim_2/results"
+merge_res_base="../results/disambiguate_merges/final_results"
 
 srun python3 trace_disambiguation_lineages.py \
   --original "../results/new_descriptors/all_descriptors_new.jsonl" \
   --final "$merge_res_base/all_disambig.jsonl" \
-  --lineage "$merge_res_base/combined_lineage.jsonl"\
-  --out "../results/disambiguate_merges/traced_lineages/enriched_counts_round_1.jsonl" \
+  --lineage "$merge_res_base/lineage_concat.jsonl"\
+  --out "../results/disambiguate_merges/traced_lineages/round_3_trace.jsonl" \
   

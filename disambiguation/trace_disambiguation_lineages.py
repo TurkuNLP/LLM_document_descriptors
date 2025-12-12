@@ -5,6 +5,7 @@ from collections import defaultdict, Counter
 import argparse
 from typing import Dict, Set, List, Any, Tuple, Iterable
 import numpy as np
+import os
 
 from input_processing import normalize_descriptor, split_pair, generate_stable_id
 
@@ -101,7 +102,12 @@ def collect_original_ids(original_data_path: Path) -> List[str]:
 
     return original_ids
 
-def analyze_lineage(final_results_path: Path, lineage_path: Path, original_data_path: Path, output_path: Path):
+def analyze_lineage(
+    final_results_path: Path,
+    lineage_path: Path,
+    original_data_path: Path,
+    output_path: Path
+    ) -> bool:
     """
     Analyze the lineage of final descriptor-explainer pairs.
     
@@ -135,6 +141,9 @@ def analyze_lineage(final_results_path: Path, lineage_path: Path, original_data_
     results = []
     memo = {}  # Memoization for find_root_inputs to avoid redundant computation
     
+    # Flip to False if any sanity checks fail
+    checks_passed = True
+    
     # Track which final ID each original ID traces to
     original_to_final = defaultdict(list)
     
@@ -156,6 +165,7 @@ def analyze_lineage(final_results_path: Path, lineage_path: Path, original_data_
             source_sets[source_ids] = new_id
 
     if duplicates:
+        checks_passed = False
         print(f"\nFound {len(duplicates)} cases of identical source ID sets pointing to different final IDs")
         for i, (source_ids, id1, id2) in enumerate(duplicates[:5]):
             print(f"  {i+1}. Sources {source_ids[:3]}... -> Finals: {id1} and {id2}")
@@ -240,6 +250,7 @@ def analyze_lineage(final_results_path: Path, lineage_path: Path, original_data_
     # SANITY CHECK 1: Each final pair is traceable to at least one original input
     no_roots = [r for r in results if not r["root_ids"]]
     if no_roots:
+        checks_passed = False
         print("\nWARNING: Found final pairs with no traceable root inputs!")
         print(f"Count: {len(no_roots)}")
         for i, r in enumerate(no_roots[:5]):
@@ -252,12 +263,14 @@ def analyze_lineage(final_results_path: Path, lineage_path: Path, original_data_
     # SANITY CHECK 2: All original inputs are traceable to exactly one final pair
     untraceable = unique_original_ids - all_root_ids
     if untraceable:
+        checks_passed = False
         print("\nWARNING: Found original inputs that aren't traceable to any final pair!")
         print(f"Count: {len(untraceable)}")
         print(f"Examples: {list(untraceable)[:5]}")
     
     duplicated = [oid for oid, finals in original_to_final.items() if len(finals) > 1]
     if duplicated:
+        checks_passed = False
         print("\nWARNING: Found original inputs that trace to multiple final pairs!")
         print(f"Count: {len(duplicated)}")
         for i, oid in enumerate(duplicated[:5]):
@@ -267,6 +280,8 @@ def analyze_lineage(final_results_path: Path, lineage_path: Path, original_data_
     
     if not untraceable and not duplicated:
         print("Sanity check passed: All original inputs trace to exactly one final pair.")
+        
+    return checks_passed
 
 
 if __name__ == "__main__":
@@ -281,4 +296,16 @@ if __name__ == "__main__":
                         help="Output path for analysis")
     
     args = parser.parse_args()
-    analyze_lineage(args.final, args.lineage, args.original, args.output)
+    checks_passed = analyze_lineage(args.final, args.lineage, args.original, args.output)
+    
+    slurm_id = os.getenv("SLURM_JOB_ID", "")
+    if not checks_passed:
+        with open(args.output.with_suffix('.failed'), 'w') as f:
+            f.write("Lineage analysis failed sanity checks.\n")
+            if slurm_id:
+                f.write(f"See log file with SLURM_ID {slurm_id} for details.\n")
+    else:
+        with open(args.output.with_suffix('.passed'), 'w') as f:
+            f.write("Lineage analysis passed all sanity checks.\n")
+            if slurm_id:
+                f.write(f"See log file with SLURM_ID: {slurm_id} for details.\n")
