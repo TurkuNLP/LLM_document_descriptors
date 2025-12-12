@@ -979,10 +979,17 @@ def main(args):
         
         # Take a cohort of groups to process this pass
         cohort = []
-        for _ in range(args.groups_per_llm_call):
-            if not pending:
-                break
-            cohort.append(pending.pop())
+        if args.cohort_size > 0:
+            for _ in range(args.cohort_size):
+                if not pending:
+                    break
+                cohort.append(pending.pop())
+        elif args.cohort_size == 0:
+            # Cohort size 0 means process all pending in one pass.
+            cohort = pending
+            pending = []
+        else:
+            raise ValueError("Cohort size must be non-negative.")
 
         logging.info("=" * 40)
         logging.info("Starting pass %d on cohort of %d groups.",
@@ -1073,7 +1080,7 @@ def main(args):
                      f"{time.strftime('%H:%M:%S', time.gmtime(pass_time))}. "
                      f"{len(pending)} pending remain.")
 
-    # Final save ---------------------------------------------------------
+    # --------------------------- Final save and sanity checks -----------------------------------
     # Sanity check: all final groups must be singletons
     bad = [g for g in final_groups if len(g.get("explainers", [])) != 1]
     if bad:
@@ -1105,8 +1112,9 @@ def main(args):
         with open(results_dir / "AUDIT_FAILED.txt", "w", encoding="utf-8") as f:
             f.write("Audit FAILED. See log for details.\n")
 
-    logging.info("Disambiguation done in %.2fs. Saved %d final pairs.",
-                time.time() - iter_start, len(pairs))
+    exec_time = time.time() - iter_start
+    logging.info(f"Disambiguation done in {time.strftime('%H:%M:%S', time.gmtime(exec_time))}. "
+                 f"Saved {len(pairs)} final pairs.")
 
 
 if __name__ == "__main__":
@@ -1118,8 +1126,8 @@ if __name__ == "__main__":
                    help="Path to JSONL file with objects {descriptor, pairs:[{id, explainer}]} or legacy {descriptor, explainers}.")
 
     # Batching parameters
-    p.add_argument("--groups-per-llm-call", dest="groups_per_llm_call", type=int, default=100,
-               help="How many groups to process together per vLLM call (cohort size).")
+    p.add_argument("--cohort_size", dest="cohort_size", type=int, default=100,
+               help="How many groups to process together at once. Set to 0 to process all at once (might cause OOMs).")
     p.add_argument("--max-prompts-per-call", dest="max_prompts_per_call", type=int, default=512,
                 help="Cap on prompts per vLLM.generate call.")
     p.add_argument("--max-chars-per-call", dest="max_chars_per_call", type=int, default=2_000_000,
