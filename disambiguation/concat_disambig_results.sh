@@ -6,7 +6,7 @@ file_dir="$1" # Directory containing disambiguation result files
 output_dir=${file_dir}/results
 
 
-disambig_pattern="disambig_simulation_2_*_disambig.jsonl"
+disambig_pattern="disambig_*_disambig.jsonl"
 disambig_out=${output_dir}/"all_disambig.jsonl"
 
 lineage_pattern="full_lineage.jsonl"
