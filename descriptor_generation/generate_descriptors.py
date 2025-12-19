@@ -600,7 +600,7 @@ if __name__ == "__main__":
     os.makedirs(f"../results/{args.run_id}", exist_ok=True)
 
     # Configure logging
-    log_file = Path(f"../results/{args.run_id}/{args.run_id}_log.txt")
+    log_file = Path(f"../results/{args.run_id}/{args.run_id}.log")
     configure_logging(log_file)
 
     # Log the run settings
