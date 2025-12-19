@@ -3,13 +3,12 @@ from __future__ import annotations
 """
 Harmonizer for descriptor;explainer pairs using:
 - Stella embeddings (Marqo/dunzhang-stella_en_400M_v5)
-- FAISS ANN search over the Schema
 - vLLM with guided JSON decoding to choose the best synonym (or none)
 """
 
 # Standard library
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import functools
 import json
 import logging
@@ -18,10 +17,8 @@ from pathlib import Path
 import time
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Any
 import hashlib
-import io
 
 # Third‑party
-import faiss  # type: ignore
 import json_repair  # type: ignore
 import numpy as np  # type: ignore
 import torch  # type: ignore
@@ -109,7 +106,7 @@ class Decision:
 
 class VerdictSchema(BaseModel):
     is_synonym: bool
-    chosen_id: str  # empty string if none
+    chosen_index: int
 
 
 # -----------------------------------------------------------------------------
@@ -129,8 +126,6 @@ def load_schema(path: Path) -> List[Pair]:
     with path.open("r", encoding="utf-8") as f:
         for i, line in enumerate(f):
             line = line.strip()
-            if not line:
-                continue
             obj = json.loads(line)
             pairs.append(Pair(id=obj["id"], descriptor=obj["descriptor"], explainer=obj["explainer"]))
     return pairs
@@ -153,8 +148,11 @@ def load_descriptors(path: Path) -> List[InputRow]:
             if not line:
                 continue
             obj = json.loads(line)
-            best_idx = int(np.argmax(obj["similarity"]))
-            desc_exp = obj["descriptors"][best_idx]
+            if obj.get("similarity"):
+                best_idx = int(np.argmax(obj["similarity"]))
+                desc_exp = obj["descriptors"][best_idx]
+            else:
+                desc_exp = obj["descriptors"][0]
 
             pairs_for_row: List[Pair] = []
             for desc_i, d_e in enumerate(desc_exp):
@@ -165,6 +163,7 @@ def load_descriptors(path: Path) -> List[InputRow]:
             rows.append(InputRow(row_idx=doc_i, raw=obj, pairs=pairs_for_row))
 
     return rows
+
 
 # -----------------------------------------------------------------------------
 # Embeddings (Stella)
@@ -240,76 +239,26 @@ def _schema_fingerprint(pairs: Sequence[Pair], model_name: str) -> str:
         h.update(b"\x00"); h.update((p.explainer or "").encode("utf-8", "ignore"))
     return h.hexdigest()
 
-# -----------------------------------------------------------------------------
-# FAISS index
-# -----------------------------------------------------------------------------
+def find_nn(embeddings: np.ndarray, query: np.ndarray, k: int = 1, dtype=torch.float16):
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    M = torch.from_numpy(embeddings).to(device=device, dtype=dtype)
+    M = torch.nn.functional.normalize(M, p=2, dim=1)
+    N = M.shape[0]
+    
+    q = torch.as_tensor(query, device=device, dtype=dtype)
+    if q.ndim == 1:
+        q = q.unsqueeze(0)  # (1, D)
+    q = torch.nn.functional.normalize(q, p=2, dim=1)  # (Q, D)
 
-class FaissIndex:
-    def __init__(self, nlist: int = 100, nprobe: int = 10):
-        self.nlist = nlist
-        self.nprobe = nprobe
-
-    @log_execution_time
-    def build(self, embeddings: np.ndarray) -> faiss.Index:
-        embeddings = np.ascontiguousarray(embeddings.astype("float32"))
-        d, n = embeddings.shape[1], embeddings.shape[0]
-
-        # Fallback to a flat index for small n or if IVF training fails
-        if n < max(2 * self.nlist, 100):
-            index = faiss.IndexFlatIP(d)
-            index.add(embeddings)
-            return index
-
-        try:
-            # Build index with Inner-Product quantizer
-            quantizer = faiss.IndexFlatIP(d)
-            index = faiss.IndexIVFFlat(quantizer, d, self.nlist, faiss.METRIC_INNER_PRODUCT)
-            index.cp.seed = 42  # for reproducibility
-            
-            # Train on sample of embeddings
-            rng = np.random.default_rng(42) # Set seed for reproducibility
-            train_sample = embeddings[rng.choice(n, size=min(100_000, n), replace=False)]
-            index.train(train_sample)
-            ids = np.arange(n, dtype=np.int64)
-            index.add_with_ids(embeddings, ids)
-            index.nprobe = self.nprobe
-            index.make_direct_map()
-            return index
-        except Exception as exc:
-            logging.warning("FAISS IVF build failed (%s); falling back to IndexFlatIP", exc)
-            index = faiss.IndexFlatIP(d)
-            index.add(embeddings)
-            return index
-
-    @log_execution_time
-    def neighbors(self, index: faiss.Index, embeddings: np.ndarray, k: int = 1) -> Tuple[np.ndarray, np.ndarray]:
-        if k < 1:
-            raise ValueError("k must be >= 1")
-        
-        # Search for k+1 neighbors, so we can afford to drop self
-        sims, idxs = index.search(embeddings, k + 1)  # candidate pool
-        n = idxs.shape[0]
-        out_idx = np.empty((n, 0), dtype=idxs.dtype)
-        out_sim = np.empty((n, 0), dtype=sims.dtype)
-        for i in range(n):
-            row_idx = idxs[i]
-            row_sim = sims[i]
-            # drop self if present
-            # Self might not be among neighbors in IVF
-            mask = row_idx != i  
-            row_idx = row_idx[mask]
-            row_sim = row_sim[mask]
-            # pad in case self wasn't present and we still need only top-k
-            out_idx = np.vstack([out_idx, row_idx[:k][None, :]]) if out_idx.size else row_idx[:k][None, :]
-            out_sim = np.vstack([out_sim, row_sim[:k][None, :]]) if out_sim.size else row_sim[:k][None, :]
-        return out_sim, out_idx
-
-def _save_faiss_index(path: Path, index: faiss.Index) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    faiss.write_index(index, str(path))
-
-def _load_faiss_index(path: Path) -> faiss.Index:
-    return faiss.read_index(str(path))
+    chunk_size = 2048
+    with torch.no_grad():
+        vals, idxs = [], []
+        for s in range(0, q.size(0), chunk_size):
+            sims = q[s:s+chunk_size] @ M.T
+            topv, topi = torch.topk(sims, k=min(k, N), dim=1)
+            vals.append(topv.cpu().numpy()); idxs.append(topi.cpu().numpy())
+    
+    return np.vstack(vals), np.vstack(idxs)
 
 # -----------------------------------------------------------------------------
 # vLLM selector
@@ -350,9 +299,7 @@ class SynonymSelector:
 
     @staticmethod
     def _prompt(query: Pair, candidates: List[Pair]) -> str:
-        cand_lines = []
-        for c in candidates:
-            cand_lines.append(f"- id={c.id} :: {c.text}")
+        cand_lines = [f"[{i}] {c.text}" for i, c in enumerate(candidates)]
         candidates_block = "\n".join(cand_lines)
         return (
             "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
@@ -360,13 +307,12 @@ class SynonymSelector:
             "Task: Given a query pair in the form 'descriptor; explainer' and a list of schema candidates,\n"
             "pick the single candidate that is synonymous or near‑synonymous in most contexts to the query.\n"
             "If many candidates are synonymous, choose the one that is the closest match.\n"
-            "Set chosen_id to exactly the chosen candidate's ID.\n"
-            "If none are acceptable, return is_synonym=false and chosen_id=\"\".\n"
+            "If you find a suitable candidate, respond with is_synonym=true and set chosen_index to exactly the chosen candidate's index.\n"
+            "If none are acceptable, return is_synonym=false.\n"
             "Output MUST be JSON only.\n"
             "<|eot_id|><|start_header_id|>user<|end_header_id|>\n"
             f"Query: {query.text}\n\n"
-            f"Candidates:\n{candidates_block}\n\n"
-            "Return JSON with keys: is_synonym (bool), chosen_id (string; empty if none).\n"
+            f"Candidates:\n{candidates_block}\n"
             "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
         )
 
@@ -418,15 +364,12 @@ class SynonymSelector:
         return in_tok, gen_tok
 
     @staticmethod
-    def _parse_text_to_decision(text: str) -> Optional[Decision]:
+    def _parse_text_to_obj(text: str) -> Optional[dict]:
         s = (text or "").strip().strip("` ")
         if s.lower().startswith("json"):
             s = s[4:].lstrip()
         try:
-            obj = json_repair.loads(s)
-            is_syn = bool(obj.get("is_synonym", False))
-            chosen = str(obj.get("chosen_id", "")).strip() or None
-            return Decision(chosen_id=chosen if is_syn else None)
+            return json_repair.loads(s)
         except Exception as exc:
             logging.warning("Failed to parse JSON verdict (%s): %r", exc, s[:200])
             return None
@@ -464,7 +407,7 @@ class SynonymSelector:
                 seed=42,
             )
             t0 = time.time()
-            outputs = self.llm.generate(prompts, sampling_params=params, use_tqdm=False)
+            outputs = self.llm.generate(prompts, sampling_params=params)
             t1 = time.time()
             in_tok, gen_tok = self._extract_tokens(outputs)
             tot = in_tok + gen_tok
@@ -476,20 +419,88 @@ class SynonymSelector:
                 outs = getattr(out, "outputs", None) or []
                 if outs:
                     text = (outs[0].text or "")
-                dec = self._parse_text_to_decision(text) or Decision(chosen_id=None)
-                # Remove possible "id=" preamble from model output
-                dec.chosen_id = self._clean_chosen_id(dec.chosen_id)
-                decisions[pos] = dec
-                # Write cache
+                obj = self._parse_text_to_obj(text) or {}
+                is_syn = bool(obj.get("is_synonym", False))
+                chosen_id: Optional[str] = None
+                if is_syn:
+                    if "chosen_index" in obj:
+                        try:
+                            idx = int(obj["chosen_index"])
+                        except Exception:
+                            idx = -1
+                        q, cands = batch[pos][0], batch[pos][1]
+                        if 0 <= idx < len(cands):
+                            chosen_id = cands[idx].id
+                        else:
+                            logging.warning("Chosen index %s out of range; defaulting to top-1.", idx)
+                            chosen_id = cands[0].id if cands else None
+                    else:
+                        chosen_id = self._clean_chosen_id(obj.get("chosen_id"))
+                decisions[pos] = Decision(chosen_id=chosen_id)
+                
+                # Write cache for future runs
                 if self._cache is not None:
                     q, cands = batch[pos]
                     ck = self._cache_key(q, cands)
                     try:
-                        self._cache[ck] = json.dumps({"chosen_id": dec.chosen_id or ""}, ensure_ascii=False)
+                        self._cache[ck] = json.dumps({"chosen_id": chosen_id or ""}, ensure_ascii=False)
                     except Exception:
                         pass
 
+
         return [d if d is not None else Decision(chosen_id=None) for d in decisions]
+    
+    
+# -----------------------------------------------------------------------------
+# Mocks for fast local testing
+# -----------------------------------------------------------------------------
+
+class RandomEmbedder:
+    """Mock embedder: returns unit-normalized random vectors (deterministic per text)."""
+    def __init__(self, dim: int = 1024, batch_size: int = 4096, seed: int = 0) -> None:
+        self.model_name = f"Mock/random-normal-dim{dim}"
+        self.dim = dim
+        self.batch_size = batch_size
+        self._base_rng = np.random.default_rng(seed)
+
+    @log_execution_time
+    def embed_texts(self, texts: Sequence[str]) -> np.ndarray:
+        n = len(texts)
+        if n == 0:
+            return np.zeros((0, self.dim), dtype=np.float32)
+
+        out = np.empty((n, self.dim), dtype=np.float32)
+        # Deterministic per-text vectors via hash-based seeds (order-independent)
+        for i, t in enumerate(texts):
+            h = int.from_bytes(hashlib.sha256(str(t).encode("utf-8")).digest()[:8], "little")
+            rng = np.random.default_rng(h)
+            v = rng.standard_normal(self.dim).astype(np.float32)
+            # Normalize
+            norm = np.linalg.norm(v) + 1e-12
+            out[i] = v / norm
+        return out
+
+
+class MockSynonymSelector(SynonymSelector):
+    """Mock LLM: randomly picks a candidate id with prob p_match; otherwise drops."""
+    def __init__(self, p_match: float = 0.75, seed: int = 42, batch_size: int = 1024) -> None:
+        # No real LLM needed; call super for compatibility but we won't use it.
+        super().__init__(model_name="mock/selector", cache_dir=None,
+                         temperature=0.0, batch_size=batch_size, cache_db=None)
+        self._rng = np.random.default_rng(seed)
+        self.p_match = float(p_match)
+
+    # Override to avoid vLLM entirely
+    @log_execution_time
+    def select_batch(self, batch: List[Tuple[Pair, List[Pair]]]) -> List[Decision]:
+        out: List[Decision] = []
+        for _q, cands in batch:
+            if not cands or self._rng.random() > self.p_match:
+                out.append(Decision(chosen_id=None))
+            else:
+                choice = cands[self._rng.integers(0, len(cands))]
+                out.append(Decision(chosen_id=choice.id))
+        return out
 
 
 # -----------------------------------------------------------------------------
@@ -506,14 +517,12 @@ def run(
     min_embed_score: float = 0.0,
     batch_size_embed: int = 64,
     batch_size_llm: int = 1024,
-    faiss_nlist: int = 256,
-    faiss_nprobe: int = 32,
     cache_dir: Optional[Path] = None,
     cache_db: Optional[Path] = None,
     verbosity: int = 1,
-    schema_embeds: Optional[Path] = None,
-    schema_index: Optional[Path] = None,
-    rebuild_cache: bool = False,    
+    schema_embed_path: Optional[Path] = None,
+    rebuild_cache: bool = False,
+    mock_run: bool = False, 
 ) -> None:
 
     results_dir = Path(f"../results/harmonized/{run_id}")
@@ -533,86 +542,70 @@ def run(
     # Load schema
     schema_pairs = load_schema(schema_path)
     if not schema_pairs:
-        logging.warning("Schema is empty; nothing to harmonize.")
+        raise ValueError("Schema is empty; nothing to harmonize.")
 
     # Build lookup by id
     schema_by_id: Dict[str, Pair] = {p.id: p for p in schema_pairs}
 
-    embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=batch_size_embed)
+    if mock_run:
+        logging.info("Using mock embedder and LLM for fast local testing.")
+        embedder = RandomEmbedder(dim=1024, batch_size=batch_size_embed, seed=42)
+        schema_fp = _schema_fingerprint(schema_pairs, model_name="mock-embedder")
+    else:
+        embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=batch_size_embed)
+        # Check if schema and embedding models match previously saved embeddings
+        schema_fp = _schema_fingerprint(schema_pairs, model_name="Marqo/dunzhang-stella_en_400M_v5")
 
-    # Check that schema and embedding models match previously saved embeddings
-    schema_fp = _schema_fingerprint(schema_pairs, model_name="Marqo/dunzhang-stella_en_400M_v5")
-    schema_emb: Optional[np.ndarray] = None
-
-    if (not rebuild_cache) and schema_embeds and schema_embeds.exists():
-        logging.info("Trying to load schema embeddings from %s", schema_embeds)
+    
+    schema_embeds= None
+    if (not rebuild_cache) and schema_embed_path and schema_embed_path.exists():
+        logging.info("Trying to load schema embeddings from %s", schema_embed_path)
         try:
-            cached_emb, meta = _load_schema_embeds(schema_embeds)
+            cached_emb, meta = _load_schema_embeds(schema_embed_path)
             if meta.get("fingerprint") == schema_fp:
-                logging.info("Loaded cached schema embeddings from %s", schema_embeds)
-                schema_emb = cached_emb
+                logging.info("Loaded cached schema embeddings from %s", schema_embed_path)
+                schema_embeds = cached_emb
             else:
                 logging.info("Schema/model fingerprint changed; ignoring cached embeddings")
         except Exception as exc:
             logging.warning("Failed to load cached embeddings (%s); will recompute", exc)
 
-    if schema_emb is None:
-        if not schema_pairs:
-            raise ValueError("Cannot embed empty schema.")
-        schema_emb = embedder.embed_texts([p.text for p in schema_pairs])
-        if schema_embeds:
+    if schema_embeds is None:
+        logging.info("Computing schema embeddings (%d items) ...", len(schema_pairs))
+        schema_embeds = embedder.embed_texts([p.text for p in schema_pairs])
+        if schema_embed_path and not mock_run: # only save real embeddings
             _save_schema_embeds(
+                schema_embed_path,
                 schema_embeds,
-                schema_emb,
                 meta={
                     "fingerprint": schema_fp,
                     "normalized": True,
                     "dtype": "float32",
-                    "shape": list(schema_emb.shape),
+                    "shape": list(schema_embeds.shape),
                     "model": "Marqo/dunzhang-stella_en_400M_v5",
                 },
             )
-            logging.info("Saved schema embeddings to %s", schema_embeds)
-
-    # ---- Build or load FAISS index over schema
-    faiss_indexer = FaissIndex(nlist=faiss_nlist, nprobe=faiss_nprobe)
-    faiss_idx: Optional[faiss.Index] = None
-
-    if (not rebuild_cache) and schema_index and schema_index.exists():
-        logging.info("Trying to load schema Faiss index from %s", schema_index)
-        try:
-            faiss_idx = _load_faiss_index(schema_index)
-            # reapply nprobe if IVF
-            try:
-                faiss_idx.nprobe = faiss_nprobe
-            except Exception:
-                pass
-            logging.info("Loaded cached FAISS index from %s", schema_index)
-        except Exception as exc:
-            logging.warning("Failed to load FAISS index (%s); will rebuild", exc)
-
-    if faiss_idx is None:
-        faiss_idx = faiss_indexer.build(schema_emb)
-        if schema_index:
-            _save_faiss_index(schema_index, faiss_idx)
-            logging.info("Saved FAISS index to %s", schema_index)
+            logging.info("Saved schema embeddings to %s", schema_embed_path)
 
     # Embed input
     logging.info("Embedding input descriptors (%d) ...", len(flat_inputs))
-    input_emb = embedder.embed_texts([p.text for p in flat_inputs])
+    query_embeds = embedder.embed_texts([p.text for p in flat_inputs])
 
     # Search for nearest K neighbors from schema
     logging.info("Finding %s neighbours from schema for each input descriptor", topk)
-    sims, idxs = faiss_indexer.neighbors(faiss_idx, input_emb, k=topk)
+    sims, idxs = find_nn(schema_embeds, query_embeds, k=topk)
 
-    # Prepare LLM batches
-    selector = SynonymSelector(
-        model_name=llm_name,
-        cache_dir=cache_dir,
-        temperature=0.1,
-        batch_size=batch_size_llm,
-        cache_db=cache_db,
-    )
+    if mock_run:
+        selector = MockSynonymSelector(p_match=0.75, seed=42, batch_size=batch_size_llm)
+        logging.info("Using mock LLM selector for fast local testing.")
+    else:
+        selector = SynonymSelector(
+            model_name=llm_name,
+            cache_dir=cache_dir,
+            temperature=0.1,
+            batch_size=batch_size_llm,
+            cache_db=cache_db,
+        )
 
     kept = 0
     dropped = 0
@@ -624,8 +617,6 @@ def run(
         cands: List[Pair] = []
         score_map: Dict[str, float] = {}
         for j, cid in enumerate(cand_ids):
-            if cid < 0:
-                continue
             score = float(cand_sims[j])
             if score < min_embed_score:
                 continue
@@ -633,8 +624,17 @@ def run(
             cands.append(p)
             score_map[p.id] = score
         if not cands:
-            dropped += 1
-            continue
+            # Fallback: always keep at least the single best candidate by similarity
+            j_best = int(np.argmax(cand_sims))
+            cid_best = int(cand_ids[j_best])
+            p_best = schema_pairs[cid_best]
+            cands = [p_best]
+            score_map = {p_best.id: float(cand_sims[j_best])}
+            logging.warning(
+                "All candidates below min_embed_score=%.4f for input %s; "
+                "falling back to top-1 candidate id=%s sim=%.6f",
+                min_embed_score, q.id, p_best.id, float(cand_sims[j_best]),
+            )
         llm_jobs.append((q, cands, score_map))
 
     # Iterate in micro‑batches for the LLM
@@ -646,7 +646,9 @@ def run(
     decision_log_path = results_dir / "decision_log.jsonl"
     with decision_log_path.open("w", encoding="utf-8") as audit_f:
         harm_by_row: Dict[int, List[str]] = {}
-        for batch in _iter_batches(llm_jobs, selector.batch_size):
+        total_batches = (len(llm_jobs) + selector.batch_size - 1) // selector.batch_size
+        for i, batch in enumerate(_iter_batches(llm_jobs, selector.batch_size), start=1):
+            logging.info("Processing batch %d/%d", i, total_batches)
             decisions = selector.select_batch([(q, cands) for (q, cands, _scores) in batch])
 
             for (q, cands, score_map), dec in zip(batch, decisions):
@@ -665,6 +667,7 @@ def run(
                             "input_id": q.id,
                             "input_descriptor": q.descriptor,
                             "input_explainer": q.explainer,
+                            "is_synonym": True,
                             "chosen_id": chosen.id,
                             "descriptor": chosen.descriptor,
                             "explainer": chosen.explainer,
@@ -676,6 +679,27 @@ def run(
                     audit_f.write("\n")
                 else:
                     dropped += 1
+                    # Log negative verdict with full context
+                    json.dump(
+                        {
+                            "input_id": q.id,
+                            "input_descriptor": q.descriptor,
+                            "input_explainer": q.explainer,
+                            "is_synonym": False,
+                            "candidates": [
+                                {
+                                    "id": c.id,
+                                    "descriptor": c.descriptor,
+                                    "explainer": c.explainer,
+                                    "embed_sim": score_map.get(c.id),
+                                }
+                                for c in cands
+                            ],
+                        },
+                        audit_f,
+                        ensure_ascii=False,
+                    )
+                    audit_f.write("\n")
 
     out_path = results_dir / f"{run_id}_harmonized.jsonl"
     with out_path.open("w", encoding="utf-8") as f:
@@ -711,20 +735,18 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size-embed", type=int, default=64)
     p.add_argument("--batch-size-llm", type=int, default=1024)
 
-    p.add_argument("--faiss-nlist", type=int, default=256)
-    p.add_argument("--faiss-nprobe", type=int, default=32)
-
     p.add_argument("--cache-dir", type=Path, default=None, help="HF cache dir for models")
     p.add_argument("--cache-db", type=Path, default=None, help="SQLite file to cache LLM decisions")
 
     p.add_argument("--verbosity", type=int, default=1, choices=[0,1,2])
 
-    p.add_argument("--schema-embeds", type=Path, default="../results/schema_embeddings.npz",
+    p.add_argument("--schema-embed-path", type=Path, default="../results/final_schema/schema_embeddings.npz",
                 help="Path to save/load cached schema embeddings (.npz)")
-    p.add_argument("--schema-index", type=Path, default="../results/schema_index.faiss",
-                help="Path to save/load cached FAISS index (.faiss)")
     p.add_argument("--rebuild-cache", action="store_true",
                 help="Force recomputation of schema embeddings/index, ignoring any cache")
+    
+    p.add_argument("--mock-run", action="store_true",
+                help="Use mock embedder and LLM for fast local testing (no real model calls)")
 
     return p
 
@@ -740,14 +762,12 @@ def main() -> None:
         min_embed_score=args.min_embed_score,
         batch_size_embed=args.batch_size_embed,
         batch_size_llm=args.batch_size_llm,
-        faiss_nlist=args.faiss_nlist,
-        faiss_nprobe=args.faiss_nprobe,
         cache_dir=args.cache_dir,
         cache_db=args.cache_db,
         verbosity=args.verbosity,
-        schema_embeds=args.schema_embeds,
-        schema_index=args.schema_index,
-        rebuild_cache=args.rebuild_cache,  
+        schema_embed_path=args.schema_embed_path,
+        rebuild_cache=args.rebuild_cache,
+        mock_run=args.mock_run,
     )
 
 
