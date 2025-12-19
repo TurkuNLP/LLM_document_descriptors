@@ -35,10 +35,10 @@ from typing import Dict, List, Optional, Tuple
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 
+from pydantic import BaseModel # type: ignore
+
 import json_repair  # type: ignore
 import torch #type: ignore
-
-from normalize_descriptor import normalize_descriptor
 
 # -----------------------------------------------------------------------------
 # Data structures
@@ -49,11 +49,13 @@ class Pair:
     id: str
     descriptor: str
     explainer: str
-    source_ids: List[str]
 
     @property
     def descriptor_text(self) -> str:
         return (self.descriptor or "").strip()
+    
+class OutputSchema(BaseModel):
+    keep: int
 
 
 # -----------------------------------------------------------------------------
@@ -74,34 +76,29 @@ def setup_logging(logging_dir: Path, verbosity: int = 1) -> None:
 
 
 def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
-    pairs: List[Pair] = []
+    limit = sample_size
+    pairs = []
     with path.open("r", encoding="utf-8") as f:
         for i, line in enumerate(f):
             line = line.strip()
             if not line:
                 continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                logging.warning("Skipping malformed JSON line %d", i)
-                continue
-            pid = str(obj.get("id", f"{i:08d}"))
-            d = str(obj.get("descriptor", ""))
-            e = str(obj.get("explainer", ""))
-            src = obj.get("source_pair_ids")
-            if src is None:
-                source_ids: List[str] = []
-            elif isinstance(src, list):
-                source_ids = [str(s) for s in src]
-            else:
-                source_ids = [str(src)]
-            if not d and not e:
-                continue
-            pairs.append(Pair(id=pid, descriptor=d, explainer=e, source_ids=source_ids))
-            if sample_size is not None and len(pairs) >= sample_size:
-                logging.info("Test mode: limiting to %d rows", sample_size)
+            obj = json.loads(line)
+            d = str(obj.get("descriptor")).strip()
+            e = str(obj.get("explainer")).strip()
+            if not d or not e:
+                raise ValueError(f"Missing descriptor or explainer at line {i+1} in {path}")
+            pid = obj.get("id")
+            if not pid:
+                raise ValueError(f"Missing id at line {i+1} in {path}")
+            pairs.append(Pair(id=str(pid), descriptor=d, explainer=e))
+
+
+            if limit is not None and len(pairs) >= limit:
+                logging.info("Test mode: limiting to %d unique IDs", limit)
                 break
-    logging.info("Loaded %d rows from %s", len(pairs), path)
+    
+    assert pairs, f"No valid pairs found in {path}"
     return pairs
 
 
@@ -112,7 +109,6 @@ def write_jsonl(path: Path, pairs: List[Pair]) -> None:
                 "id": p.id,
                 "descriptor": p.descriptor,
                 "explainer": p.explainer,
-                "source_pair_ids": p.source_ids,
             }, ensure_ascii=False) + "\n")
     logging.info("Wrote %d pairs -> %s", len(pairs), path)
 
@@ -148,27 +144,22 @@ class GroupChooser:
 
     @staticmethod
     def _schema() -> GuidedDecodingParams:
-        # minimal JSON schema: {"keep_id": string}
-        return GuidedDecodingParams(json={
-            "type": "object",
-            "properties": {"keep_id": {"type": "string"}},
-            "required": ["keep_id"],
-            "additionalProperties": False,
-        })
+        return GuidedDecodingParams(json=OutputSchema.model_json_schema())
 
     @staticmethod
-    def _prompt(cands: List[Pair]) -> str:
+    def _prompt(cands: List[Pair], indices: List[int]) -> str:
         lines = []
-        for p in cands:
-            lines.append(f"id: {p.id} | descriptor: {p.descriptor} | explainer: {p.explainer}")
+        for i, p in zip(indices, cands):
+            lines.append(f"index: {str(i)} | descriptor: {p.descriptor} | explainer: {p.explainer}")
         joined = "\n".join(lines)
         return (
             "<|begin_of_text|><|start_header_id|>system<|end_header_id|>"
             "You are selecting a representative pair among candidates that share the same descriptor.\n"
             "The descriptor describes a document, while the explainer provides additional context.\n"
             "Your task is to choose the most representative pair among the given pairs.\n"
+            "Return the integer index of the pair to keep in the field 'keep'.\n"
             "When choosing the representative pair, prefer concise, general, commonly used phrasing that covers the meaning of all pairs.\n"
-            "Return ONLY JSON with: keep_id (string). Do not invent or rewrite anything.\n"
+            "Return ONLY JSON with: keep (int). Do not invent or rewrite anything.\n"
             "<|eot_id|><|start_header_id|>user<|end_header_id|>\n" + joined +
             "<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
         )
@@ -178,7 +169,8 @@ class GroupChooser:
             return cands[0].id
         _ = self.llm
         assert self._llm is not None
-        prompts = [self._prompt(cands)]
+        cand_indices = [i for i in range(len(cands))]
+        prompts = [self._prompt(cands, cand_indices)]
         params = SamplingParams(
             temperature=self.temperature,
             max_tokens=64,
@@ -188,20 +180,27 @@ class GroupChooser:
         )
         out = self._llm.generate(prompts, params)[0]
         text = (out.outputs[0].text if out.outputs else "").strip()
+        obj = json_repair.loads(text)
+        keep = str(obj.get("keep"))
+        keep = self.sanitize_keep_id(keep, cands)
+        keep_id = cands[keep].id
+
+        return keep_id
+    
+    def sanitize_keep_id(self, keep_idx: str, cands: List[Pair]) -> str:
+        # If model returned something like "keep: 0", extract 0
+        if ":" in keep_idx:
+            keep_idx = keep_idx.split(":", 1)[1].strip()
         try:
-            if json_repair is not None:
-                obj = json_repair.loads(text)
-            else:
-                obj = json.loads(text)
-            keep = str(obj.get("keep_id"))
-            if keep and any(p.id == keep for p in cands):
-                return keep
-        except Exception:
-            logging.warning("LLM parse failure; falling back to deterministic tie-breaker. Raw: %r", text)
-        # Deterministic tie-breaker on failure: prefer non-empty explainer, then shorter descriptor, then lexicographic id
-        def key(p: Pair):
-            return (0 if p.explainer.strip() else 1, len(p.descriptor.strip()), p.id)
-        return sorted(cands, key=key)[0].id
+            keep_idx = int(keep_idx)
+        except ValueError:
+            raise ValueError(f"Cannot parse keep_idx: {keep_idx}")
+        
+        # Validate keep_id
+        if keep_idx < 0 or keep_idx >= len(cands):
+            raise ValueError(f"keep_id index out of range: {keep_idx}. Valid range: 0 to {len(cands)-1}")
+        
+        return keep_idx
 
 
 # -----------------------------------------------------------------------------
@@ -211,9 +210,9 @@ class GroupChooser:
 def group_by_descriptor(pairs: List[Pair]) -> Dict[str, List[Pair]]:
     groups: Dict[str, List[Pair]] = {}
     for p in pairs:
-        key = normalize_descriptor(p.descriptor_text)
-        if not key and not (p.explainer or "").strip():
-            continue
+        key = p.descriptor_text
+        if not key or not p.explainer.strip():
+            raise ValueError(f"Empty descriptor or explainer for pair id={p.id}")
         groups.setdefault(key, []).append(p)
     return groups
 
@@ -232,7 +231,6 @@ def reduce_groups(groups: Dict[str, List[Pair]], chooser: GroupChooser) -> Tuple
         keep_id = chooser.choose_keep_id(members)
         kept = next(p for p in members if p.id == keep_id)
         # Aggregate provenance from all members into kept
-        all_src: List[str] = list(kept.source_ids)
         for m in members:
             if m is kept:
                 continue
@@ -245,8 +243,7 @@ def reduce_groups(groups: Dict[str, List[Pair]], chooser: GroupChooser) -> Tuple
                 "dropped": {"id": m.id, "descriptor": m.descriptor, "explainer": m.explainer},
                 "decision_reason": "LLM_decision",
             })
-            all_src.extend(m.source_ids if m.source_ids else [])
-        kept_agg = Pair(id=kept.id, descriptor=kept.descriptor, explainer=kept.explainer, source_ids=sorted(set(all_src)))
+        kept_agg = Pair(id=kept.id, descriptor=kept.descriptor, explainer=kept.explainer)
         final_pairs.append(kept_agg)
         kept_to_members[kept.id] = [m.id for m in members]
 
@@ -268,7 +265,7 @@ def main() -> None:
     ap.add_argument("--test", type=int, default=None, help="Limit number of input rows (for quick tests)")
     args = ap.parse_args()
 
-    out_dir = Path("../results") / args.run_id
+    out_dir = Path("../results/synonym_merges") / args.run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     setup_logging(out_dir, args.verbose)

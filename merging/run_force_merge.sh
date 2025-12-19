@@ -25,7 +25,7 @@ gpu-energy --save
 arr_idx=$SLURM_ARRAY_TASK_ID
 
 run_id="force_merge_2"
-input_file="${SLURM_SUBMIT_DIR}/../results/synonym_merges/synonym_merge_1/synonym_merge_1.jsonl"
+input_file="${SLURM_SUBMIT_DIR}/../results/synonym_merges/synonym_merge_2/synonym_merge_2.jsonl"
 
 srun python3 force_merge.py --run-id=$run_id \
                               --input=$input_file \
