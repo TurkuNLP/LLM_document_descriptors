@@ -157,12 +157,34 @@ class DescriptorGenerator:
     def validate_output(output):
         validated = json_repair.loads(output)
         return validated if isinstance(validated, dict) else {}
+    
+    def determine_start_index(self, start_index: str, data: list) -> int:
+        if start_index == "auto":
+            descriptor_file = self.base_dir / f"descriptors_{self.run_id}.jsonl"
+            if descriptor_file.exists():
+                with open(descriptor_file, "r") as f:
+                    start_index = sum(1 for _ in f)
+            logging.info(f"Start index determined as {start_index}.")
+        elif start_index.isdigit():
+            start_index = int(start_index)
+
+        # Validate start_index
+        if not isinstance(start_index, int):
+            raise ValueError("start_index must be 'auto' or an integer.")
+        elif start_index < 0:
+            raise ValueError("start_index must be a non-negative integer.")
+        elif start_index >= len(data):
+            raise ValueError("start_index is out of bounds for the dataset.")
+        
+        return start_index
 
     def batched(self, data, batch_size=None, start_index=None):
         if not batch_size:
             batch_size = self.batch_size
         if not start_index:
             start_index = self.start_index
+            
+        start_index = self.determine_start_index(start_index, data)
 
         batch = []
         for i, doc in enumerate(data):
@@ -564,7 +586,8 @@ if __name__ == "__main__":
     
     # Data processing arguments
     parser.add_argument(
-        "--start-index", type=int, default=0, help="Index of first document to analyse."
+        "--start-index", type=str, default="auto",
+        help="Index of first document to analyse or 'auto' to find start index based on already processed documents."
     )
     parser.add_argument(
         "--num-batches",
