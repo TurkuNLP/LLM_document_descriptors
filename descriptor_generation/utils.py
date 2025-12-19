@@ -184,7 +184,7 @@ def init_results(batch):
     # Determine the document ID key, defaulting to "id"
     # Different datasets may use different keys for document IDs
     # Customize as needed
-    candidates = ["doc_id", "ID", "document_id", "warc_record_id"]
+    candidates = ["doc_id", "ID", "id", "text_id", "document_id", "warc_record_id"]
     id_key = next((key for key in candidates if key in sample), "id")
     
     return {
