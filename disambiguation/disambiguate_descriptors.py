@@ -889,7 +889,7 @@ def main(args):
     results_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = results_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    configure_logging(Path(results_dir / f"{args.run_id}_log.txt"))
+    configure_logging(Path(results_dir / f"{args.run_id}.log"))
     print(f"Starting run {args.run_id}", flush=True)
     with open(results_dir / f"{args.run_id}_settings.txt", "w", encoding="utf-8") as f:
         slurm_id = os.environ.get("SLURM_JOB_ID", "N/A")
@@ -1126,8 +1126,8 @@ if __name__ == "__main__":
                    help="Path to JSONL file with objects {descriptor, pairs:[{id, explainer}]} or legacy {descriptor, explainers}.")
 
     # Batching parameters
-    p.add_argument("--cohort_size", dest="cohort_size", type=int, default=100,
-               help="How many groups to process together at once. Set to 0 to process all at once (might cause OOMs).")
+    p.add_argument("--cohort-size", dest="cohort_size", type=int, default=100,
+               help="How many groups to process together at once. Set to 0 to process all in one pass (might cause OOMs).")
     p.add_argument("--max-prompts-per-call", dest="max_prompts_per_call", type=int, default=512,
                 help="Cap on prompts per vLLM.generate call.")
     p.add_argument("--max-chars-per-call", dest="max_chars_per_call", type=int, default=2_000_000,

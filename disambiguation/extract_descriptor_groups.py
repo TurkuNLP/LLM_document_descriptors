@@ -157,11 +157,15 @@ def log_stats(grouped: Dict[str, List[Dict[str, str]]]) -> None:
     singletons = sum(1 for expls in grouped.values() if len(expls) == 1)
     multis = sum(1 for expls in grouped.values() if len(expls) > 1)
     avg_explainers_per_descriptor = num_explainers / num_descriptors
+    largest_groups = sorted(grouped.items(), key=lambda x: len(x[1]), reverse=True)[:5]
     print(f"Total unique descriptors: {num_descriptors}")
     print(f"Total descriptor-explainer pairs: {num_explainers}")
     print(f"Descriptors with single explainer: {singletons}")
     print(f"Descriptors with multiple explainers: {multis}")
-    print(f"Average explainers per descriptor: {avg_explainers_per_descriptor:.2f}")
+    print(f"Average explainers per descriptor: {avg_explainers_per_descriptor:.3f}")
+    print("Top 5 largest descriptor groups:")
+    for d, expls in largest_groups:
+        print(f"  Descriptor: '{d}' - {len(expls)} explainers")
 
 
 def write_descriptors_with_ids(
