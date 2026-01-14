@@ -74,7 +74,7 @@ Reconstruct the original document as accurately as possible using both the descr
 2. Format:
     - The output must be formatted as a JSON object. Follow this formatting exactly.
     - Never add any preamble or anything else outside the JSON object.
-    - Example: {{"document": "<rewritten version of the document>"}} <|eot_id|><|start_header_id|>user<|end_header_id|>
+    - Example: {{"text": "<rewritten version of the document>"}} <|eot_id|><|start_header_id|>user<|end_header_id|>
 
 *Descriptors*:
 <start>

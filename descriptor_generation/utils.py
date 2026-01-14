@@ -60,7 +60,7 @@ def get_best_results(results):
         best_index = np.argmax(doc["similarity"])
 
         best_results[idx] = {
-            "document": doc["document"],
+            "text": doc["text"],
             "doc_id": doc["doc_id"],
             "descriptors": doc["general"][best_index],
             "specifics": doc["specific"][best_index],
@@ -189,7 +189,7 @@ def init_results(batch):
     
     return {
         index: {
-            "document": doc["text"],
+            "text": doc["text"],
             "doc_id": doc.get(id_key, 0),
             "descriptors": [],
             "specifics": [],

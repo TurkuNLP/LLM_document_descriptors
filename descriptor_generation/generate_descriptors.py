@@ -318,7 +318,7 @@ class DescriptorGenerator:
 
         elif stage == "rewrite":
             class ResponseFormat(BaseModel):
-                document: str
+                text: str
 
         elif stage == "revise":
             class ResponseFormat(BaseModel):
@@ -385,14 +385,14 @@ class DescriptorGenerator:
                         general_descriptors, specific_descriptors
                     )
                     rewrites = [
-                        output.get("document", "Generation failed.") for output in model_outputs
+                        output.get("text", "Generation failed.") for output in model_outputs
                     ]
                     for i, index in enumerate(results):
                         results[index]["rewrite"].append(rewrites[i])
 
                     for index in results:
                         similarities = self.embedder.calculate_similarity(
-                            results[index]["document"], results[index]["rewrite"]
+                            results[index]["text"], results[index]["rewrite"]
                         )
                         results[index]["similarity"].extend(similarities)
 
@@ -484,7 +484,7 @@ class DescriptorGenerator:
 
                 # Extract output and append to results.
                 rewrites = [
-                    output.get("document", "Generation failed.")
+                    output.get("text", "Generation failed.")
                     for output in model_outputs
                 ]
                 self.update_results(results, rewrites=rewrites)
@@ -517,7 +517,7 @@ class DescriptorGenerator:
             if self.num_rewrites > 0:
                 for index in results:
                     similarities = self.embedder.calculate_similarity(
-                        results[index]["document"], results[index]["rewrite"]
+                        results[index]["text"], results[index]["rewrite"]
                     )
                     results[index]["similarity"].extend(similarities)
 
