@@ -1,11 +1,12 @@
 from collections import Counter
 import copy
 from datasets import load_dataset  # type: ignore
+from datetime import datetime
 import functools
 import json
 import logging
 import time
-import numpy as np
+import numpy as np # type: ignore
 from pathlib import Path
 
 # Get the root logger (inherits settings from main function)
@@ -23,6 +24,50 @@ def log_execution_time(func):
         return result
     return wrapper
 
+class CustomJSONEncoder(json.JSONEncoder):
+    """JSON encoder for handling common non-serializable objects before attempting to save results.
+    """
+    
+    def default(self, obj):
+        # Handle datetime objects (including date, time)
+        if isinstance(obj, (datetime, np.datetime64)):
+            return obj.isoformat()
+            
+        # Handle numpy arrays and scalars
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.number):
+            return obj.item()
+            
+        # Handle pathlib objects
+        if isinstance(obj, Path):
+            return str(obj)
+            
+        # Handle sets
+        if isinstance(obj, set):
+            return list(obj)
+            
+        # Try to convert objects with __dict__ attribute
+        if hasattr(obj, '__dict__'):
+            try:
+                return {
+                    '__type__': obj.__class__.__name__,
+                    'data': obj.__dict__
+                }
+            except (AttributeError, TypeError):
+                pass
+                
+        # Last resort: create a string representation with type info
+        try:
+            return {
+                '__type__': obj.__class__.__name__,
+                '__str__': str(obj),
+                '__repr__': repr(obj)
+            }
+        except Exception as e:
+            logging.warning(f"Could not serialize object of type {type(obj)}: {e}")
+            return f"<Unserializable object of type {type(obj).__name__}>"
+
 
 def sanitize_unicode(obj):
     if isinstance(obj, str):
@@ -36,21 +81,16 @@ def sanitize_unicode(obj):
 
 def save_results(results, path, run_id, only_best=True):
     output_file = path / f"descriptors_{run_id}.jsonl"
+    
+    # Determine which documents to save
+    docs_to_save = get_best_results(results).values() if only_best else results.values()
 
     with open(output_file, "a", encoding="utf-8") as f:
-        if only_best:
-            best_results = get_best_results(results)
-            for doc in best_results.values():
-                # Sanitize the document to avoid encoding issues
-                doc = sanitize_unicode(doc)
-                json.dump(doc, f, ensure_ascii=False)
-                f.write("\n")
-        else:
-            for doc in results.values():
-                # Sanitize the document to avoid encoding issues
-                doc = sanitize_unicode(doc)
-                json.dump(doc, f, ensure_ascii=False)
-                f.write("\n")
+        for doc in docs_to_save:
+            # Sanitize the document to avoid encoding issues
+            doc = sanitize_unicode(doc)
+            json.dump(doc, f, ensure_ascii=False, cls=CustomJSONEncoder)
+            f.write("\n")
 
 
 def get_best_results(results):
@@ -106,36 +146,28 @@ def load_documents(source, cache):
         list: A list of documents loaded from the selected data source.
     """
     
-    # Try, if source is a JSONL
-    try:
-        path = Path(source)
-        if path.is_file() and path.suffix == ".jsonl":
-            with open(path, "r") as f:
-                lines = f.readlines()
-                return [json.loads(line) for line in lines]
-    except Exception:
-        pass
+    # First, see if data source is a known shorthand
+    hf_shorthands = {"fineweb": "HuggingFaceFW/fineweb", 
+                     "tweet_sentiment_extraction": "mteb/tweet_sentiment_extraction",
+                     "emotion": "mteb/emotion",
+                     "arxiv": "mteb/ArxivClassification",
+                     "imdb": "stanfordnlp/imdb"}
+    local_shorthands = ["core"]
     
-    # Try, if source if parquet file
-    try:
-        path = Path(source)
-        if path.is_file() and path.suffix == ".parquet":
-            import pandas as pd #type:ignore
-            df = pd.read_parquet(source)
-            data = df.to_dict(orient="records")
-            return data
-    except Exception:
-        pass
-
-    # Original fineweb sample
-    if source.lower() == "fineweb":
-        return load_dataset("HuggingFaceFW/fineweb",
+    if source.lower() in hf_shorthands:
+        if source.lower() != "fineweb":
+            return load_dataset(hf_shorthands[source.lower()],
+                    split="train",
+                    streaming=True,
+                    cache_dir=cache)
+        else:
+            return load_dataset(hf_shorthands[source.lower()],
                             name="sample-10BT",
                             split="train",
                             streaming=True,
                             cache_dir=cache)
-        
-    elif source.lower() =="core":
+            
+    elif source.lower() in local_shorthands:
         data = []
         with open("../data/core/train.tsv", "r") as f:
             lines = f.readlines()
@@ -144,41 +176,37 @@ def load_documents(source, cache):
                 data.append({"id": line[1], "text": line[2].strip()})
         return data
     
-    elif source.lower() == "tweet_sentiment_extraction":
-        return load_dataset("mteb/tweet_sentiment_extraction",
-                    split="train",
-                    streaming=True,
-                    cache_dir=cache)
-                
-    elif source.lower() == "emotion":
-        return load_dataset("mteb/emotion",
-                            split="train",
-                            streaming=True,
-                            cache_dir=cache)
-        
-    elif source.lower() == "arxiv":
-        return load_dataset("mteb/ArxivClassification",
-                            split="train",
-                            streaming=True,
-                            cache_dir=cache)
-        
-    elif source.lower() == "imdb":
-        return load_dataset("stanfordnlp/imdb",
-                            split="train",
-                            streaming=True,
-                            cache_dir=cache)
-        
-    else:
+    else: # source is not a known shorthand
+        # Try, if source is a local file
+        try:
+            path = Path(source)
+            if path.is_file() and path.suffix == ".jsonl":
+                with open(path, "r") as f:
+                    lines = f.readlines()
+                    return [json.loads(line) for line in lines]
+            elif path.is_file() and path.suffix == ".parquet":
+                import pandas as pd #type:ignore
+                df = pd.read_parquet(source)
+                data = df.to_dict(orient="records")
+                return data
+        except Exception:
+            # If loading from local file fails, proceed trying to load from dataset
+            pass
+        # Try, if source is a dataset from HuggingFace
         try:
             return load_dataset(source,
                             split="train",
                             streaming=True,
                             cache_dir=cache)
-        
+        # Source is not shorthand, local file, or dataset so raise error
         except:
             raise ValueError(f"Invalid data source '{source}'.")
     
 def init_results(batch):
+    
+    if not batch:
+        raise ValueError("Batch cannot be empty")
+    
     sample = batch[0]
 
     # Determine the document ID key, defaulting to "id"
@@ -187,8 +215,10 @@ def init_results(batch):
     candidates = ["doc_id", "ID", "id", "text_id", "document_id", "warc_record_id"]
     id_key = next((key for key in candidates if key in sample), "id")
     
-    return {
-        index: {
+    results = {}
+    
+    for index, doc in enumerate(batch):
+        result_doc = {
             "text": doc["text"],
             "doc_id": doc.get(id_key, 0),
             "descriptors": [],
@@ -196,8 +226,16 @@ def init_results(batch):
             "rewrite": [],
             "similarity": [],
         }
-        for index, doc in enumerate(batch)
-    }
+    
+        # Add any additional fields from the original document
+        # These could be metadata fields that are useful later
+        for key, value in doc.items():
+            if key not in result_doc and key != "text" and key != id_key:
+                result_doc[key] = value
+        
+        results[index] = result_doc
+        
+    return results
     
     
 def initialise_descriptor_vocab(path):
