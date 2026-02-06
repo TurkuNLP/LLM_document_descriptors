@@ -12,6 +12,7 @@ The descriptors you generate should be useful for two purposes:
 
 1. Generate Descriptors:
     - Describe the document in aspects including, but not limited to, style, tone, genre, topic, domain, language, quality, sentiment etc. Describe anything that you believe is essential for understanding, summarizing, or rewriting the document.
+    - The descriptors should be in English, even if the document is in another language.
     - If necessary, you can add minute details into the "specifics" list. This list can contain individual words, phrases and other details that do not necessarily describe the document but are important for rewriting it. 
 
 2. Descriptor Details:
