@@ -130,6 +130,9 @@ def sample_data(
         for example in final_sample:
             f.write(example if example.endswith("\n") else example + "\n")
 
+    # Remove checkpoint file after successful sampling
+    Path(f"{output_path}.checkpoint").unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
 
