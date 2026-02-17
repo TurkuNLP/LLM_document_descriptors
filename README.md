@@ -1,5 +1,5 @@
 Repo for the GreenNLP/OpenEuroLLM document descriptor research project.
-The research project aims to use LLMs to create a dynamic taxonomy of descriptive labels ("descriptors") for web documents.
+This research project aims to use LLMs to create a dynamic taxonomy of descriptive labels ("descriptors") for web documents. Descriptors can be used to filter, subsample and retrive relevant documents from a much larger collection.
 
 Made to run on the LUMI supercomputer: https://lumi-supercomputer.eu/.
 Runs vLLM 0.6.6.
@@ -32,9 +32,9 @@ To run descriptor generation pipeline on LUMI:
 
 1. Clone this repo into your project `scratch/`
 
-2. `cd doc_descriptors`
+2. `cd LLM_document_descriptors`
 
-3. Create a virtual environment. Read more: https://docs.csc.fi/support/tutorials/python-usage-guide/#installing-python-packages-to-existing-modules
+3. Create and activate a virtual environment. Read more: https://docs.csc.fi/support/tutorials/python-usage-guide/#installing-python-packages-to-existing-modules
 ```
 module purge
 module use /appl/local/csc/modulefiles
@@ -49,4 +49,4 @@ source venv/bin/activate
 
 7. In `run_generate_descriptors.sh`, change `--account` to your project. It is recommended to reserve a full node, i.e., 8 GPUs because reserving less tends to cause NCCL errors. You have to give a `--run-id`, e.g. 'run1'. All other parameters are set to reasonable defaults that you can change if you want to.
 
-8. Run the descriptor generation pipeline: `sbatch run_vllm.sh`
+8. Run the descriptor generation pipeline: `sbatch run_generate_descriptors.sh`. The `--num-rewrites` parameter will have a big impact on how long the run takes. Set it to `0` for fastest processing but possibly worse results. With `--num-rewrites=0` processing a batch of 500 documents takes about 10 minutes and with `--num-rewrites=3` it takes about one hour.
