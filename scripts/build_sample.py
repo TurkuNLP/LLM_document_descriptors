@@ -23,11 +23,15 @@ def load_jsonl_file(file_path: str) -> Iterator[dict]:
                     for line in text_reader:
                         if line.strip():
                             yield line
-    else:
+    elif file_path.endswith(".jsonl"):
         with open(file_path, "r") as f:
             for line in f:
                 if line.strip():
                     yield line
+    else:
+        raise ValueError(
+            f"Unsupported file format: {file_path}. Only .jsonl and jsonl.zst are supported."
+        )
 
 
 def get_jsonl_files(input_path: str) -> List[str]:
@@ -37,17 +41,25 @@ def get_jsonl_files(input_path: str) -> List[str]:
     if path.is_file():
         return [str(path)]
     elif path.is_dir():
+        # Sort files by name to ensure consistent processing order
+        # This is important for continuing sampling from checkpoints in case of interruptions
         files = sorted(path.glob("*.jsonl*"), key=lambda f: f.name)
         return [str(f) for f in files if f.is_file()]
     else:
         raise FileNotFoundError(f"Path does not exist: {input_path}")
 
 
-def save_checkpoint(sampled: List[str], checkpoint_path: str):
+def save_checkpoint(sampled: List[str], checkpoint_path: str) -> None:
     """Save intermediate sample to checkpoint file."""
     with open(checkpoint_path, "a") as f:
         for example in sampled:
             f.write(example if example.endswith("\n") else example + "\n")
+
+
+def save_checkpoint_idx(idx: int, checkpoint_path: str) -> None:
+    """Save index to checkpoint file."""
+    with open(checkpoint_path, "w") as f:
+        f.write(str(idx))
 
 
 def sample_data(
@@ -71,14 +83,25 @@ def sample_data(
     sampled = []
 
     line_counter = 0
-    doc_counter = 0
     num_sampled = 0
+
+    if (
+        Path(f"{output_path}.checkpoint").exists()
+        and Path(f"{output_path}.checkpoint.idx").exists()
+    ):
+        with open(f"{output_path}.checkpoint.idx", "r") as f:
+            doc_counter = int(f.read().strip())
+        print(f"Resuming from checkpoint at document {doc_counter}", flush=True)
+    else:
+        doc_counter = 0
 
     start_time = time.time()
     # Input can be a directory containing multiple JSONL files or a single JSONL file
     # If compressed files are present, they should have .zst extension and will be decompressed on the fly
     files_to_process = get_jsonl_files(input_path)
-    for file_path in files_to_process:
+    for i, file_path in enumerate(files_to_process):
+        if i < doc_counter:
+            continue  # Skip files that have already been processed in previous runs
         doc_counter += 1
         for line in load_jsonl_file(file_path):
             line_counter += 1
@@ -103,12 +126,14 @@ def sample_data(
             )
             print("Saving checkpoint...", flush=True)
             save_checkpoint(sampled, f"{output_path}.checkpoint")
+            save_checkpoint_idx(doc_counter, f"{output_path}.checkpoint.idx")
             sampled = (
                 []
             )  # Clear the sampled list to free memory after saving checkpoint
 
     if sampled:  # Save any remaining samples after processing all files
         save_checkpoint(sampled, f"{output_path}.checkpoint")
+        save_checkpoint_idx(doc_counter, f"{output_path}.checkpoint.idx")
         sampled = []
 
     print("Finished initial sampling.", flush=True)
@@ -130,8 +155,9 @@ def sample_data(
         for example in final_sample:
             f.write(example if example.endswith("\n") else example + "\n")
 
-    # Remove checkpoint file after successful sampling
+    # Remove checkpoint files after successful sampling
     Path(f"{output_path}.checkpoint").unlink(missing_ok=True)
+    Path(f"{output_path}.checkpoint.idx").unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
