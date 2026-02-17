@@ -45,7 +45,7 @@ source venv/bin/activate
 
 4. Install requirements: `pip install -r requirements.txt`
 
-5. By default, the model will be downloaded into you home directory, which will fill up very quickly. I recommend creating a cache folder in your `scratch` and adding this line to your .bashrc so you don't have to worry about setting the cache folder manually: `export HF_HOME="/scratch/<your-project>/my_cache"`. You can also set the caching directory in run_vllm.sh with the flag `--cache-dir`, e.g. `--cache-dir="/scratch/<your-project>/my_cache"`
+5. By default, the model will be downloaded into you home directory, which will fill up very quickly. I recommend creating a cache folder in your `scratch` and adding this line to your .bashrc so you don't have to worry about setting the cache folder manually: `export HF_HOME="/scratch/<your-project>/my_cache"`. You can also set the caching directory in `run_generate_descriptors.sh` with the flag `--cache-dir`, e.g. `--cache-dir="/scratch/<your-project>/my_cache"`
 
 7. In `run_generate_descriptors.sh`, change `--account` to your project. It is recommended to reserve a full node, i.e., 8 GPUs because reserving less tends to cause NCCL errors. You have to give a `--run-id`, e.g. 'run1'. All other parameters are set to reasonable defaults that you can change if you want to.
 
