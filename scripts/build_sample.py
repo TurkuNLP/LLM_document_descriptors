@@ -57,7 +57,16 @@ def sample_data(
     initial_keep_prob: float,
     checkpoint_interval: int,
 ) -> None:
+    """Take a sample of documents from JSONL files using reservoir sampling with an initial random sampling step.
+    To preserve memory, we keep only a fraction of the documents in the initial sample and then perform a final random sample to get the desired number of samples.
 
+    Args:
+        input_path (str): Path to input directory or file containing JSONL data (can include .zst compressed files)
+        output_path (str): Path to output file where the sampled documents will be saved (in JSONL format)
+        sample_size (int): Number of samples to keep in the final output
+        initial_keep_prob (float): Probability to keep a document in the initial sample
+        checkpoint_interval (int): Number of files to process before saving a checkpoint
+    """
     # Collect initial sample
     sampled = []
 
@@ -152,4 +161,8 @@ if __name__ == "__main__":
         args.n,
         args.initial_keep_prob,
         args.checkpoint_interval,
+    )
+
+    print(
+        f"Sampling completed successfully. Results saved to {args.output}", flush=True
     )
