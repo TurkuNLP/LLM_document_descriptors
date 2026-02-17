@@ -106,7 +106,7 @@ def extract_pairs_from_doc(doc: dict) -> List[Tuple[str, str]]:
         chosen_lists: List[List[str]]
         if isinstance(sims, list) and len(sims) == len(src) and len(sims) > 0:
             try:
-                import numpy as _np
+                import numpy as _np  # type: ignore
 
                 best_idx = int(_np.argmax(_np.array(sims)))
                 chosen_lists = [src[best_idx]]
@@ -261,7 +261,7 @@ def count_contributions(
             sims = doc.get("similarity")
             if isinstance(sims, list) and len(sims) == len(src) and len(sims) > 0:
                 try:
-                    import numpy as _np
+                    import numpy as _np  # type: ignore
 
                     best_idx = int(_np.argmax(_np.array(sims)))
                     lists = src[best_idx]

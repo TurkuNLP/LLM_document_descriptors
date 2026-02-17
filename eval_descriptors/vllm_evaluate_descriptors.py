@@ -4,7 +4,7 @@ import os
 import torch  # type: ignore
 import torch.distributed as dist  # type: ignore
 import time
-import prompts
+import prompts # type: ignore
 import json
 from datasets import load_dataset  # type: ignore
 import random

@@ -1,6 +1,6 @@
 import torch  # type: ignore
-from transformers import AutoModel, AutoTokenizer
-import numpy as np
+from transformers import AutoModel, AutoTokenizer  # type: ignore
+import numpy as np  # type: ignore
 
 
 class StellaEmbedder:

@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-import numpy as np
+import numpy as np # type: ignore
 from typing import List, Dict, Tuple, Iterable
 import argparse
 import uuid

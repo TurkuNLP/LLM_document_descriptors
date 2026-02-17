@@ -1,7 +1,7 @@
 import os
-import numpy as np
+import numpy as np  # type: ignore
 from pathlib import Path
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # type: ignore
 
 runs = [
     "final_zero_vocab",

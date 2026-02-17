@@ -4,7 +4,7 @@ from pathlib import Path
 from collections import defaultdict, Counter
 import argparse
 from typing import Dict, Set, List, Any, Tuple, Iterable
-import numpy as np
+import numpy as np # type: ignore
 import os
 
 from input_processing import normalize_descriptor, split_pair, generate_stable_id

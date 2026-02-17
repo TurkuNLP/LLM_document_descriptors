@@ -1,7 +1,7 @@
 from embed import StellaEmbedder
-from datasets import load_dataset
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from datasets import load_dataset  # type: ignore
+from sklearn.metrics.pairwise import cosine_similarity  # type: ignore
+import numpy as np  # type: ignore
 
 
 data = load_dataset("ryanbaker/synonyms_1K")

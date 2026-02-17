@@ -4,7 +4,7 @@ from collections import defaultdict, Counter
 import pandas as pd  # type:ignore
 import seaborn as sns  # type:ignore
 import matplotlib.pyplot as plt  # type:ignore
-import numpy as np
+import numpy as np # type: ignore
 
 
 def read_similarity_scores(data_version, return_all=False):
