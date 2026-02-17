@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Set, List, Tuple
 import re
 
+
 # ---------- DSU ----------
 class DSU:
     def __init__(self):
@@ -30,8 +31,10 @@ class DSU:
         if self.rank[ra] == self.rank[rb]:
             self.rank[ra] += 1
 
+
 # ---------- Helpers ----------
 _ITER_RX = re.compile(r"iteration_(\d+)_llm_decisions\.jsonl$")
+
 
 def list_iteration_files(run_dir: Path) -> List[Tuple[int, Path]]:
     """Return [(iter_number, path), ...] sorted by iteration number."""
@@ -44,6 +47,7 @@ def list_iteration_files(run_dir: Path) -> List[Tuple[int, Path]]:
         files.append((it, p))
     files.sort(key=lambda t: t[0])
     return files
+
 
 def load_all_ids_from_jsonl(jsonl_path: Path, field: str = "id") -> Set[str]:
     ids: Set[str] = set()
@@ -58,8 +62,15 @@ def load_all_ids_from_jsonl(jsonl_path: Path, field: str = "id") -> Set[str]:
                 continue
     return ids
 
-def replay_iteration_jsonl(dsu: DSU, jsonl_path: Path, all_ids: Set[str],
-                           edges_out: List[Dict], run_label: str, iter_num: int) -> int:
+
+def replay_iteration_jsonl(
+    dsu: DSU,
+    jsonl_path: Path,
+    all_ids: Set[str],
+    edges_out: List[Dict],
+    run_label: str,
+    iter_num: int,
+) -> int:
     """Apply merges from one iteration decisions file, honoring per-iteration 'used' constraint."""
     used: Set[str] = set()
     merges = 0
@@ -69,8 +80,10 @@ def replay_iteration_jsonl(dsu: DSU, jsonl_path: Path, all_ids: Set[str],
             # collect ids even if never merged
             a_id = str(rec.get("a_id", "") or "")
             b_id = str(rec.get("b_id", "") or "")
-            if a_id: all_ids.add(a_id)
-            if b_id: all_ids.add(b_id)
+            if a_id:
+                all_ids.add(a_id)
+            if b_id:
+                all_ids.add(b_id)
 
             if not rec.get("is_synonym", False):
                 continue
@@ -80,11 +93,15 @@ def replay_iteration_jsonl(dsu: DSU, jsonl_path: Path, all_ids: Set[str],
                 continue
             if keep in used or drop in used:
                 continue  # would have been skipped by _apply_merges_greedy
-            used.add(keep); used.add(drop)
+            used.add(keep)
+            used.add(drop)
             dsu.union(keep, drop)
-            edges_out.append({"keep": keep, "drop": drop, "run": run_label, "iter": iter_num})
+            edges_out.append(
+                {"keep": keep, "drop": drop, "run": run_label, "iter": iter_num}
+            )
             merges += 1
     return merges
+
 
 def build_groups(dsu: DSU, all_ids: Set[str]) -> Dict[str, List[str]]:
     clusters: Dict[str, Set[str]] = {}
@@ -92,7 +109,11 @@ def build_groups(dsu: DSU, all_ids: Set[str]) -> Dict[str, List[str]]:
         root = dsu.find(x)
         clusters.setdefault(root, set()).add(x)
     # Sort members; keep DSU root as key (stable because DSU is deterministic here)
-    return {root: sorted(list(members)) for root, members in sorted(clusters.items(), key=lambda kv: kv[0])}
+    return {
+        root: sorted(list(members))
+        for root, members in sorted(clusters.items(), key=lambda kv: kv[0])
+    }
+
 
 # ---------- CLI ----------
 def parse_args() -> argparse.Namespace:
@@ -106,7 +127,7 @@ def parse_args() -> argparse.Namespace:
         metavar=("LABEL", "DIR"),
         required=True,
         help="Add a run with a label and its directory containing iteration_*_llm_decisions.jsonl. "
-             "Add in chronological order: five earlier runs first, then the final run.",
+        "Add in chronological order: five earlier runs first, then the final run.",
     )
     p.add_argument(
         "--all-ids",
@@ -114,21 +135,22 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="JSONL",
         help="Optional: JSONL file(s) with original 'id' fields to ensure all IDs, even if never in any decision, appear as singletons. "
-             "Repeat flag to add multiple files.",
+        "Repeat flag to add multiple files.",
     )
     p.add_argument(
         "--out-groups",
         type=str,
         default="merged_groups.jsonl",
-        help="Output JSONL: each line is {\"ROOT_ID\": [\"member1\", ...]}",
+        help='Output JSONL: each line is {"ROOT_ID": ["member1", ...]}',
     )
     p.add_argument(
         "--out-edges",
         type=str,
         default="merge_edges.jsonl",
-        help="Output JSONL: each line is {\"keep\":\"ID\", \"drop\":\"ID\", \"run\":\"label\", \"iter\":N}",
+        help='Output JSONL: each line is {"keep":"ID", "drop":"ID", "run":"label", "iter":N}',
     )
     return p.parse_args()
+
 
 def main():
     args = parse_args()
@@ -169,8 +191,11 @@ def main():
         for e in edges:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
-    print(f"\nDone. Wrote {len(groups)} groups to {out_groups} and {len(edges)} edges to {out_edges}. "
-          f"Total unions applied: {total_merges}")
+    print(
+        f"\nDone. Wrote {len(groups)} groups to {out_groups} and {len(edges)} edges to {out_edges}. "
+        f"Total unions applied: {total_merges}"
+    )
+
 
 if __name__ == "__main__":
     main()

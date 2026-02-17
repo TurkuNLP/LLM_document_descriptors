@@ -1,4 +1,3 @@
-
 import hashlib
 
 import unicodedata
@@ -7,6 +6,7 @@ from typing import Tuple
 
 # This module provides input processing utilities for descriptor disambiguation.
 # Functions from here should be used accross scripts to ensure consistent processing.
+
 
 def normalize_descriptor(s: str) -> str:
     """Canonical normalization of descriptor strings for merging
@@ -24,18 +24,22 @@ def normalize_descriptor(s: str) -> str:
     s = unicodedata.normalize("NFKC", str(s))
     # Replace some common typographic quotes/primes with ASCII
     replacements = {
-        "\u2018": "'", "\u2019": "'", "\u2032": "'",
-        "\u201C": '"', "\u201D": '"', "\u2033": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u2032": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2033": '"',
     }
     for u, r in replacements.items():
         s = s.replace(u.encode("utf-8").decode("unicode_escape"), r)
     # Collapse literal backslash-escaped quotes into quotes
     s = s.replace('\\"', '"').replace("\\'", "'")
     # Normalize spaces and remove invisibles
-    s = s.replace("\u00A0", " ").replace("\u200B", "")  # NBSP, ZWSP
+    s = s.replace("\u00a0", " ").replace("\u200b", "")  # NBSP, ZWSP
     s = " ".join(s.split())
     # Replace underscores and spaces with single space, lowercase, and trim
-    re.sub(r'[_\s]+', ' ', (s or ''))
+    re.sub(r"[_\s]+", " ", (s or ""))
     s = s.casefold()
     return s.strip()
 
@@ -62,4 +66,3 @@ def generate_stable_id(descriptor: str, explainer: str, *, length: int = 12) -> 
     key = f"{descriptor}\u241f{explainer}"  # use an unlikely separator
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
     return digest[:length]
-

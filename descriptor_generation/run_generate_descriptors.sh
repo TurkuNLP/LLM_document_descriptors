@@ -22,15 +22,15 @@ PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
 gpu-energy --save
 
-run_id="core"
+run_id="dclm_80k"
 
 srun python3 generate_descriptors.py --run-id=$run_id \
                                      --temperature=0.1 \
-                                     --batch-size=1000 \
-                                     --num-batches=-1 \
-                                     --num-rewrites=3 \
-                                     --start-index=0 \
-                                     --data-source="../data/core/train.jsonl" \
+                                     --batch-size=500 \
+                                     --num-batches=40 \
+                                     --num-rewrites=1 \
+                                     --start-index=80000 \
+                                     --data-source="mlfoundations/dclm-baseline-1.0" \
                                      #--text-column="comment_text"
 
 gpu-energy --diff

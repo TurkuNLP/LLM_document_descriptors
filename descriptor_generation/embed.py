@@ -1,7 +1,7 @@
-import torch # type: ignore
+import torch  # type: ignore
 from transformers import AutoModel, AutoTokenizer
 import numpy as np
-from sklearn.preprocessing import normalize #type: ignore
+from sklearn.preprocessing import normalize  # type: ignore
 
 
 class StellaEmbedder:
@@ -9,18 +9,14 @@ class StellaEmbedder:
         model_name = "Marqo/dunzhang-stella_en_400M_v5"
         self.model = (
             AutoModel.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                cache_dir = cache_dir
+                model_name, trust_remote_code=True, cache_dir=cache_dir
             )
             .cuda()
             .eval()
             .half()
         )
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            cache_dir = cache_dir
+            model_name, trust_remote_code=True, cache_dir=cache_dir
         )
         self.batch_size = batch_size
 
@@ -46,18 +42,26 @@ class StellaEmbedder:
                 )
                 all_embeddings.append(embeddings.cpu().numpy())
         return np.vstack(all_embeddings)
-    
-    def embed_for_sts(self, docs):        
+
+    def embed_for_sts(self, docs):
         with torch.no_grad():
-            input_data = self.tokenizer(docs, padding="longest", truncation=True, max_length=512, return_tensors="pt")
+            input_data = self.tokenizer(
+                docs,
+                padding="longest",
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            )
             input_data = {k: v.cuda() for k, v in input_data.items()}
             attention_mask = input_data["attention_mask"]
             last_hidden_state = self.model(**input_data)[0]
-            last_hidden = last_hidden_state.masked_fill(~attention_mask[..., None].bool(), 0.0)
+            last_hidden = last_hidden_state.masked_fill(
+                ~attention_mask[..., None].bool(), 0.0
+            )
             vectors = last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-            
+
             return normalize(vectors.cpu().numpy())
-    
+
     def calculate_similarity(self, original, rewrites):
         sts_prompt = "Instruct: Retrieve semantically similar text.\nQuery: "
 
@@ -65,9 +69,13 @@ class StellaEmbedder:
         rewrites = [rewrites] if isinstance(rewrites, str) else rewrites
 
         # Embed original with prompt
-        original_embeddings = self.embed_for_sts(original).reshape(1, -1)  # Ensure (1, D)
-        rewrite_embeddings = self.embed_for_sts(rewrites).reshape(len(rewrites), -1)  # Ensure (N, D)
+        original_embeddings = self.embed_for_sts(original).reshape(
+            1, -1
+        )  # Ensure (1, D)
+        rewrite_embeddings = self.embed_for_sts(rewrites).reshape(
+            len(rewrites), -1
+        )  # Ensure (N, D)
 
         similarities = (original_embeddings @ rewrite_embeddings.T).astype(np.float32)
-        
+
         return [round(float(sim), 4) for sim in similarities[0]]

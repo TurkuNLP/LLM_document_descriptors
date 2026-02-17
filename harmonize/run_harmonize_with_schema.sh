@@ -2,7 +2,7 @@
 #SBATCH --job-name=harmonize
 #SBATCH --account=project_462000963
 #SBATCH --partition=standard-g
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
@@ -10,7 +10,7 @@
 #SBATCH --mem=128G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
-#SBATCH --array=0-9
+#SBATCH --array=4,6
 
 module purge
 module use /appl/local/csc/modulefiles
@@ -29,7 +29,7 @@ RUN_ID_BASE="descriptors_${benchmark_name}"
 
 echo "SLURM_ARRAY_TASK_ID: " $SLURM_ARRAY_TASK_ID
 echo "================================"
-echo "Reading data from $DATA_DIR"
+echo "Reading data from $INPUT_DIR"
 echo "================================"
 
 # Get a sorted list of .jsonl files into an array

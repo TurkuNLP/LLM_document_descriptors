@@ -88,8 +88,9 @@ Reconstruct the original document as accurately as possible using both the descr
 <end><|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
 
 
-
-def revise_keyphrases_prompt_one_descriptor_type(original_document, rewritten_document, descriptors, specifics):
+def revise_keyphrases_prompt_one_descriptor_type(
+    original_document, rewritten_document, descriptors, specifics
+):
     return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 ##Instruction:

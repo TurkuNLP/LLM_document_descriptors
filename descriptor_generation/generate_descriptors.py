@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 import json
 import logging
 import math
-import numpy as np
+import numpy as np  # type: ignore
 import os
 from pathlib import Path
 from random import shuffle
@@ -49,7 +49,7 @@ logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 # Suppress transformers logging (used internally by sentence_transformers)
 logging.getLogger("transformers").setLevel(logging.WARNING)
 # Suppress FutureWarnings
-warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action="ignore", category=FutureWarning)
 
 
 def configure_logging(log_file: Path) -> None:
@@ -58,12 +58,12 @@ def configure_logging(log_file: Path) -> None:
         logging.root.removeHandler(h)
 
     file_h = logging.FileHandler(log_file)
-    file_h.setFormatter(logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(message)s"))
+    file_h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 
     stream_h = logging.StreamHandler()
-    stream_h.setFormatter(logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(message)s"))
+    stream_h.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
 
     logging.root.setLevel(logging.INFO)
     logging.root.addHandler(file_h)
@@ -102,7 +102,6 @@ class DescriptorGenerator:
             gpu_memory_utilization=0.8,
         )
 
-
     def generate(self, input, stage):
         response_schema = self.get_response_format(stage)
         max_tokens = {
@@ -123,7 +122,7 @@ class DescriptorGenerator:
             input, sampling_params=sampling_params, use_tqdm=False
         )
         elapsed = time.perf_counter() - start if start else 0.0
-        
+
         response_texts = []
         in_tok = 0
         gen_tok = 0
@@ -157,7 +156,7 @@ class DescriptorGenerator:
     def validate_output(output):
         validated = json_repair.loads(output)
         return validated if isinstance(validated, dict) else {}
-    
+
     def determine_start_index(self, start_index: str, data: list) -> int:
         if start_index == "auto":
             descriptor_file = self.base_dir / f"descriptors_{self.run_id}.jsonl"
@@ -173,9 +172,10 @@ class DescriptorGenerator:
             raise ValueError("start_index must be 'auto' or an integer.")
         elif start_index < 0:
             raise ValueError("start_index must be a non-negative integer.")
-        elif start_index >= len(data):
-            raise ValueError("start_index is out of bounds for the dataset.")
-        
+        # Uncommented because this does not work if full dataset is not loaded into memory
+        # elif start_index >= len(data):
+        #    raise ValueError("start_index is out of bounds for the dataset.")
+
         return start_index
 
     def batched(self, data, batch_size=None, start_index=None):
@@ -183,7 +183,7 @@ class DescriptorGenerator:
             batch_size = self.batch_size
         if not start_index:
             start_index = self.start_index
-            
+
         start_index = self.determine_start_index(start_index, data)
 
         batch = []
@@ -201,13 +201,10 @@ class DescriptorGenerator:
     def initial_stage(self, documents):
         stage = "initial"
         prompts = [
-            self.format_prompt(stage=stage, original=document)
-            for document in documents
+            self.format_prompt(stage=stage, original=document) for document in documents
         ]
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [
-            self.validate_output(output) for output in batched_output
-        ]
+        validated_outputs = [self.validate_output(output) for output in batched_output]
 
         return validated_outputs
 
@@ -230,10 +227,8 @@ class DescriptorGenerator:
         for g, s in zip(general, specific):
             prompts.append(self.format_prompt(stage=stage, descriptors=g, specifics=s))
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [
-            self.validate_output(output) for output in batched_output
-        ]
-        
+        validated_outputs = [self.validate_output(output) for output in batched_output]
+
         return validated_outputs
 
     @log_execution_time
@@ -265,10 +260,8 @@ class DescriptorGenerator:
                 )
             )
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [
-            self.validate_output(output) for output in batched_output
-        ]
-        
+        validated_outputs = [self.validate_output(output) for output in batched_output]
+
         return validated_outputs
 
     def update_descriptor_vocab(self, descriptor_path):
@@ -277,7 +270,9 @@ class DescriptorGenerator:
             for line in f.readlines():
                 doc = json.loads(line.strip())
                 for descriptor_list in doc["descriptors"]:
-                    descriptors_without_explanations = self.remove_explanations(descriptor_list)
+                    descriptors_without_explanations = self.remove_explanations(
+                        descriptor_list
+                    )
                     desc_counts.update(descriptors_without_explanations)
 
         save_descriptors(desc_counts, descriptor_path)
@@ -304,23 +299,29 @@ class DescriptorGenerator:
         if stage == "initial":
             return descriptor_prompts.initial_prompt_one_descriptor_type(original)
         elif stage == "rewrite":
-            return descriptor_prompts.rewrite_prompt_one_descriptor_type(descriptors, specifics)
+            return descriptor_prompts.rewrite_prompt_one_descriptor_type(
+                descriptors, specifics
+            )
         elif stage == "revise":
             return descriptor_prompts.revise_keyphrases_prompt_one_descriptor_type(
-                original, rewritten, descriptors, specifics)
+                original, rewritten, descriptors, specifics
+            )
 
     @staticmethod
     def get_response_format(stage):
         if stage == "initial":
+
             class ResponseFormat(BaseModel):
                 descriptors: list[str]
                 specifics: list[str]
 
         elif stage == "rewrite":
+
             class ResponseFormat(BaseModel):
                 text: str
 
         elif stage == "revise":
+
             class ResponseFormat(BaseModel):
                 differences: str
                 descriptors: list[str]
@@ -353,11 +354,13 @@ class DescriptorGenerator:
 
     def generate_final_rewrites(self):
         filepath = self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl"
-        
+
         # Calculate the number of docs we have processed for logging purpses
-        with open(filepath, 'rb') as f:
-            num_docs= sum(buf.count(b'\n') for buf in iter(lambda: f.read(1024 * 1024), b''))
-        
+        with open(filepath, "rb") as f:
+            num_docs = sum(
+                buf.count(b"\n") for buf in iter(lambda: f.read(1024 * 1024), b"")
+            )
+
         with open(filepath, "r") as f:
             batch_num = 0
             results = {}
@@ -366,15 +369,17 @@ class DescriptorGenerator:
                 doc = json.loads(line.strip())
                 results[idx] = doc
                 idx += 1
-                
+
                 # Process in batches of batch_size
-                
+
                 # TO FIX: if document do not neatly divide into batch_size
                 # last documents will not be processed!
                 if idx == self.batch_size:
                     batch_num += 1
-                    logging.info(f"Processing batch {batch_num} out of "
-                                 f"{math.ceil(num_docs/self.batch_size)}.")
+                    logging.info(
+                        f"Processing batch {batch_num} out of "
+                        f"{math.ceil(num_docs/self.batch_size)}."
+                    )
                     general_descriptors = []
                     specific_descriptors = []
                     for index in results:
@@ -385,7 +390,8 @@ class DescriptorGenerator:
                         general_descriptors, specific_descriptors
                     )
                     rewrites = [
-                        output.get("text", "Generation failed.") for output in model_outputs
+                        output.get("text", "Generation failed.")
+                        for output in model_outputs
                     ]
                     for i, index in enumerate(results):
                         results[index]["rewrite"].append(rewrites[i])
@@ -402,13 +408,15 @@ class DescriptorGenerator:
                         for doc in results.values():
                             json_line = json.dumps(doc, ensure_ascii=False)
                             f.write(json_line + "\n")
-                            
+
                     idx = 0
                     results = {}
 
     def make_checkpoint(self):
         # Calculate how many documents we have processed so far
-        with open(self.base_dir / f"descriptor_count_growth_{self.run_id}.txt", "r") as f:
+        with open(
+            self.base_dir / f"descriptor_count_growth_{self.run_id}.txt", "r"
+        ) as f:
             num_batches = len(f.readlines())
         docs_processed = num_batches * self.batch_size
         checkpoint_dir = self.base_dir / f"checkpoint_{docs_processed}"
@@ -421,13 +429,13 @@ class DescriptorGenerator:
                 destination_path = checkpoint_dir / item_path.name
                 # Copy the file
                 shutil.copy2(item_path, destination_path)
-               
-    @staticmethod 
+
+    @staticmethod
     def remove_explanations(list_of_descriptors):
         return [
-            descriptor.split(";")[0] if ";" in descriptor else descriptor 
+            descriptor.split(";")[0] if ";" in descriptor else descriptor
             for descriptor in list_of_descriptors
-            ]
+        ]
 
     def pipeline(self):
 
@@ -435,7 +443,7 @@ class DescriptorGenerator:
         logging.info("Model loaded.")
         data = load_documents(self.data_source, self.cache_dir)
         logging.info("Data loaded.")
-        
+
         # The text needs to be in a column called "text".
         # If not, give the column name in --text-column arg and it will be renamed to "text"
         if self.text_column != "text":
@@ -448,7 +456,7 @@ class DescriptorGenerator:
                 break
             logging.info(f"===============New Batch: {batch_num}===============")
             start = time.time()
-            
+
             # Initialise empty results dictionary
             results = init_results(batch)
 
@@ -459,12 +467,16 @@ class DescriptorGenerator:
 
             # Extract output and append to results.
             general_descriptors = [
-                output.get("descriptors", "Generation failed.") for output in model_outputs
+                output.get("descriptors", "Generation failed.")
+                for output in model_outputs
             ]
             specific_descriptors = [
-                output.get("specifics", "Generation failed.") for output in model_outputs
+                output.get("specifics", "Generation failed.")
+                for output in model_outputs
             ]
-            self.update_results(results, general=general_descriptors, specific=specific_descriptors)
+            self.update_results(
+                results, general=general_descriptors, specific=specific_descriptors
+            )
 
             # Generate rewrites of the document based on descriptors.
             # After the rewrite, we revise the descriptors to create an even better rewrite.
@@ -484,8 +496,7 @@ class DescriptorGenerator:
 
                 # Extract output and append to results.
                 rewrites = [
-                    output.get("text", "Generation failed.")
-                    for output in model_outputs
+                    output.get("text", "Generation failed.") for output in model_outputs
                 ]
                 self.update_results(results, rewrites=rewrites)
 
@@ -510,7 +521,11 @@ class DescriptorGenerator:
                         output.get("specifics", "Generation failed.")
                         for output in model_outputs
                     ]
-                    self.update_results(results, general=general_descriptors, specific=specific_descriptors)
+                    self.update_results(
+                        results,
+                        general=general_descriptors,
+                        specific=specific_descriptors,
+                    )
 
             # Calculate similarity between rewrites and original.
             # Append to results.
@@ -524,25 +539,28 @@ class DescriptorGenerator:
             # Save all results so far
             save_results(results, self.base_dir, self.run_id, only_best=False)
             logging.info("Results saved.")
-            
+
             # Update the descriptor vocabulary with new descriptors
             self.update_descriptor_vocab(descriptor_path)
-            
+
             # Log execution time
             end = time.time()
             execution_time = end - start
-            logging.info(f"Processing batch took {time.strftime('%H:%M:%S', time.gmtime(execution_time))}.")
-            
+            logging.info(
+                f"Processing batch took {time.strftime('%H:%M:%S', time.gmtime(execution_time))}."
+            )
+
             if self.checkpoint_interval > 0:
                 if batch_num > 0 and (batch_num + 1) % self.checkpoint_interval == 0:
                     self.make_checkpoint()
                     logging.info(f"Checkpoint created after {batch_num + 1} batches.")
-            
+
             # Stop iterating through new data after num_batches batches have been processed.
             if self.num_batches == -1:
                 continue
             elif batch_num + 1 >= self.num_batches:
                 break
+
 
 def main(args):
 
@@ -556,12 +574,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="A script for getting document descriptors with LLMs."
     )
-    
+
     # Basic arguments
     parser.add_argument(
         "--run-id", type=str, required=True, help="ID for this run, e.g. run1"
     )
-    
+
     # Model arguments
     parser.add_argument(
         "--model",
@@ -583,11 +601,13 @@ if __name__ == "__main__":
         default=200,
         help="Number of documents given to the model at one time.",
     )
-    
+
     # Data processing arguments
     parser.add_argument(
-        "--start-index", type=str, default="auto",
-        help="Index of first document to analyse or 'auto' to find start index based on already processed documents."
+        "--start-index",
+        type=str,
+        default="auto",
+        help="Index of first document to analyse or 'auto' to find start index based on already processed documents.",
     )
     parser.add_argument(
         "--num-batches",
@@ -602,19 +622,23 @@ if __name__ == "__main__":
         help="How many rewriting cycles the script should go through.",
     )
     parser.add_argument(
-        "--checkpoint-interval", type=int, default=0,
+        "--checkpoint-interval",
+        type=int,
+        default=0,
         help="Number of batches after which all results so far will be saved into a checkpoint. "
-        "If 0, no checkpoints are created. Default: 0 (no checkpoints)."
+        "If 0, no checkpoints are created. Default: 0 (no checkpoints).",
     )
-    
+
     # Data arguments
     parser.add_argument(
         "--data-source", type=str, default="fineweb", help="Which data set to process."
     )
     parser.add_argument(
-        "--text-column", type=str, default="text", help="Name of the text column in the dataset."
+        "--text-column",
+        type=str,
+        default="text",
+        help="Name of the text column in the dataset.",
     )
-
 
     args = parser.parse_args()
 

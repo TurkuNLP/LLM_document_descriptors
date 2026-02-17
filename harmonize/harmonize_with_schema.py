@@ -32,6 +32,7 @@ from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 # Logging helpers
 # -----------------------------------------------------------------------------
 
+
 def setup_logging(log_file: Path, verbosity: int = 1) -> None:
     """Configure both file and stdout logging, creating the directory if needed."""
     level = logging.WARNING
@@ -75,9 +76,11 @@ def log_execution_time(func):
 
     return wrapper
 
+
 # -----------------------------------------------------------------------------
 # Data structures
 # -----------------------------------------------------------------------------
+
 
 @dataclass
 class Pair:
@@ -93,11 +96,13 @@ class Pair:
             return f"{d}; {e}"
         return d or e
 
+
 @dataclass
 class InputRow:
     row_idx: int
-    raw: Any           # original parsed JSON object or raw string
+    raw: Any  # original parsed JSON object or raw string
     pairs: List[Pair]  # descriptor/explainer items for this row
+
 
 @dataclass
 class Decision:
@@ -113,6 +118,7 @@ class VerdictSchema(BaseModel):
 # IO
 # -----------------------------------------------------------------------------
 
+
 def _split_descriptor_explainer(s: str) -> Tuple[str, str]:
     if ";" in s:
         left, right = s.split(";", 1)
@@ -127,7 +133,13 @@ def load_schema(path: Path) -> List[Pair]:
         for i, line in enumerate(f):
             line = line.strip()
             obj = json.loads(line)
-            pairs.append(Pair(id=obj["id"], descriptor=obj["descriptor"], explainer=obj["explainer"]))
+            pairs.append(
+                Pair(
+                    id=obj["id"],
+                    descriptor=obj["descriptor"],
+                    explainer=obj["explainer"],
+                )
+            )
     return pairs
 
 
@@ -169,10 +181,13 @@ def load_descriptors(path: Path) -> List[InputRow]:
 # Embeddings (Stella)
 # -----------------------------------------------------------------------------
 
+
 class StellaEmbedder:
     """Minimal pooled embedding wrapper around Marqo/dunzhang-stella_en_400M_v5."""
 
-    def __init__(self, cache_dir: Optional[Path], batch_size: int = 32, device: str = "cuda:0") -> None:
+    def __init__(
+        self, cache_dir: Optional[Path], batch_size: int = 32, device: str = "cuda:0"
+    ) -> None:
         cache_dir = os.environ.get("HF_HOME") or (cache_dir if cache_dir else None)
         model_name = "Marqo/dunzhang-stella_en_400M_v5"
         self.device = torch.device(device)
@@ -210,17 +225,24 @@ class StellaEmbedder:
                 attn = inputs["attention_mask"]  # [B, T]
                 masked = outputs.masked_fill(~attn[..., None].bool(), 0.0)
                 pooled = masked.sum(dim=1) / attn.sum(dim=1)[..., None]
-                
+
                 # Normalize to unit length for distance measuring
                 pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
                 all_embeddings.append(pooled.detach().cpu().numpy().astype("float32"))
-        return np.vstack(all_embeddings) if all_embeddings else np.zeros((0, 1024), dtype="float32")
-    
+        return (
+            np.vstack(all_embeddings)
+            if all_embeddings
+            else np.zeros((0, 1024), dtype="float32")
+        )
+
 
 def _save_schema_embeds(path: Path, emb: np.ndarray, meta: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     meta_bytes = json.dumps(meta, ensure_ascii=False).encode("utf-8")
-    np.savez_compressed(str(path), emb=emb, meta=np.frombuffer(meta_bytes, dtype=np.uint8))
+    np.savez_compressed(
+        str(path), emb=emb, meta=np.frombuffer(meta_bytes, dtype=np.uint8)
+    )
+
 
 def _load_schema_embeds(path: Path) -> Tuple[np.ndarray, dict]:
     with np.load(str(path), allow_pickle=False) as z:
@@ -229,22 +251,27 @@ def _load_schema_embeds(path: Path) -> Tuple[np.ndarray, dict]:
         meta = json.loads(meta_bytes.decode("utf-8"))
         return emb, meta
 
+
 def _schema_fingerprint(pairs: Sequence[Pair], model_name: str) -> str:
     h = hashlib.sha256()
     h.update(model_name.encode("utf-8"))
     for p in pairs:
         # include ids + text so any change invalidates cache
-        h.update(b"\x00"); h.update(p.id.encode("utf-8", "ignore"))
-        h.update(b"\x00"); h.update((p.descriptor or "").encode("utf-8", "ignore"))
-        h.update(b"\x00"); h.update((p.explainer or "").encode("utf-8", "ignore"))
+        h.update(b"\x00")
+        h.update(p.id.encode("utf-8", "ignore"))
+        h.update(b"\x00")
+        h.update((p.descriptor or "").encode("utf-8", "ignore"))
+        h.update(b"\x00")
+        h.update((p.explainer or "").encode("utf-8", "ignore"))
     return h.hexdigest()
+
 
 def find_nn(embeddings: np.ndarray, query: np.ndarray, k: int = 1, dtype=torch.float16):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     M = torch.from_numpy(embeddings).to(device=device, dtype=dtype)
     M = torch.nn.functional.normalize(M, p=2, dim=1)
     N = M.shape[0]
-    
+
     q = torch.as_tensor(query, device=device, dtype=dtype)
     if q.ndim == 1:
         q = q.unsqueeze(0)  # (1, D)
@@ -254,11 +281,13 @@ def find_nn(embeddings: np.ndarray, query: np.ndarray, k: int = 1, dtype=torch.f
     with torch.no_grad():
         vals, idxs = [], []
         for s in range(0, q.size(0), chunk_size):
-            sims = q[s:s+chunk_size] @ M.T
+            sims = q[s : s + chunk_size] @ M.T
             topv, topi = torch.topk(sims, k=min(k, N), dim=1)
-            vals.append(topv.cpu().numpy()); idxs.append(topi.cpu().numpy())
-    
+            vals.append(topv.cpu().numpy())
+            idxs.append(topi.cpu().numpy())
+
     return np.vstack(vals), np.vstack(idxs)
+
 
 # -----------------------------------------------------------------------------
 # vLLM selector
@@ -273,11 +302,15 @@ class SynonymSelector:
         cache_db: Optional[Path] = None,
     ) -> None:
         self.model_name = model_name
-        self.cache_dir = os.environ.get("HF_HOME") or (str(cache_dir) if cache_dir else None)
+        self.cache_dir = os.environ.get("HF_HOME") or (
+            str(cache_dir) if cache_dir else None
+        )
         self.temperature = temperature
         self.batch_size = batch_size
         self._llm: Optional[LLM] = None
-        self._cache: Optional[SqliteDict] = SqliteDict(str(cache_db), autocommit=True) if cache_db else None
+        self._cache: Optional[SqliteDict] = (
+            SqliteDict(str(cache_db), autocommit=True) if cache_db else None
+        )
 
     @property
     def llm(self) -> LLM:
@@ -333,7 +366,9 @@ class SynonymSelector:
     def _cache_key(query: Pair, candidates: List[Pair]) -> str:
         key = {
             "query": {"id": query.id, "d": query.descriptor, "e": query.explainer},
-            "candidates": [{"id": c.id, "d": c.descriptor, "e": c.explainer} for c in candidates],
+            "candidates": [
+                {"id": c.id, "d": c.descriptor, "e": c.explainer} for c in candidates
+            ],
         }
         return json.dumps(key, ensure_ascii=False, sort_keys=True)
 
@@ -388,7 +423,9 @@ class SynonymSelector:
                 if cached:
                     try:
                         obj = json.loads(cached)
-                        decisions[i] = Decision(chosen_id=self._clean_chosen_id(obj.get("chosen_id")))
+                        decisions[i] = Decision(
+                            chosen_id=self._clean_chosen_id(obj.get("chosen_id"))
+                        )
                     except Exception:
                         pass
 
@@ -418,7 +455,7 @@ class SynonymSelector:
                 text = ""
                 outs = getattr(out, "outputs", None) or []
                 if outs:
-                    text = (outs[0].text or "")
+                    text = outs[0].text or ""
                 obj = self._parse_text_to_obj(text) or {}
                 is_syn = bool(obj.get("is_synonym", False))
                 chosen_id: Optional[str] = None
@@ -432,31 +469,37 @@ class SynonymSelector:
                         if 0 <= idx < len(cands):
                             chosen_id = cands[idx].id
                         else:
-                            logging.warning("Chosen index %s out of range; defaulting to top-1.", idx)
+                            logging.warning(
+                                "Chosen index %s out of range; defaulting to top-1.",
+                                idx,
+                            )
                             chosen_id = cands[0].id if cands else None
                     else:
                         chosen_id = self._clean_chosen_id(obj.get("chosen_id"))
                 decisions[pos] = Decision(chosen_id=chosen_id)
-                
+
                 # Write cache for future runs
                 if self._cache is not None:
                     q, cands = batch[pos]
                     ck = self._cache_key(q, cands)
                     try:
-                        self._cache[ck] = json.dumps({"chosen_id": chosen_id or ""}, ensure_ascii=False)
+                        self._cache[ck] = json.dumps(
+                            {"chosen_id": chosen_id or ""}, ensure_ascii=False
+                        )
                     except Exception:
                         pass
 
-
         return [d if d is not None else Decision(chosen_id=None) for d in decisions]
-    
-    
+
+
 # -----------------------------------------------------------------------------
 # Mocks for fast local testing
 # -----------------------------------------------------------------------------
 
+
 class RandomEmbedder:
     """Mock embedder: returns unit-normalized random vectors (deterministic per text)."""
+
     def __init__(self, dim: int = 1024, batch_size: int = 4096, seed: int = 0) -> None:
         self.model_name = f"Mock/random-normal-dim{dim}"
         self.dim = dim
@@ -472,7 +515,9 @@ class RandomEmbedder:
         out = np.empty((n, self.dim), dtype=np.float32)
         # Deterministic per-text vectors via hash-based seeds (order-independent)
         for i, t in enumerate(texts):
-            h = int.from_bytes(hashlib.sha256(str(t).encode("utf-8")).digest()[:8], "little")
+            h = int.from_bytes(
+                hashlib.sha256(str(t).encode("utf-8")).digest()[:8], "little"
+            )
             rng = np.random.default_rng(h)
             v = rng.standard_normal(self.dim).astype(np.float32)
             # Normalize
@@ -483,10 +528,18 @@ class RandomEmbedder:
 
 class MockSynonymSelector(SynonymSelector):
     """Mock LLM: randomly picks a candidate id with prob p_match; otherwise drops."""
-    def __init__(self, p_match: float = 0.75, seed: int = 42, batch_size: int = 1024) -> None:
+
+    def __init__(
+        self, p_match: float = 0.75, seed: int = 42, batch_size: int = 1024
+    ) -> None:
         # No real LLM needed; call super for compatibility but we won't use it.
-        super().__init__(model_name="mock/selector", cache_dir=None,
-                         temperature=0.0, batch_size=batch_size, cache_db=None)
+        super().__init__(
+            model_name="mock/selector",
+            cache_dir=None,
+            temperature=0.0,
+            batch_size=batch_size,
+            cache_db=None,
+        )
         self._rng = np.random.default_rng(seed)
         self.p_match = float(p_match)
 
@@ -507,6 +560,7 @@ class MockSynonymSelector(SynonymSelector):
 # Main pipeline
 # -----------------------------------------------------------------------------
 
+
 @log_execution_time
 def run(
     input_path: Path,
@@ -522,7 +576,7 @@ def run(
     verbosity: int = 1,
     schema_embed_path: Optional[Path] = None,
     rebuild_cache: bool = False,
-    mock_run: bool = False, 
+    mock_run: bool = False,
 ) -> None:
 
     results_dir = Path(f"../results/harmonized/{run_id}")
@@ -533,7 +587,7 @@ def run(
     input_rows = load_descriptors(input_path)
     # Flatten per-descriptor inputs for embed/search/LLM, keeping a map to regroup
     flat_inputs: List[Pair] = []
-    owner_row: Dict[str, int] = {}   # pair.id -> row_idx
+    owner_row: Dict[str, int] = {}  # pair.id -> row_idx
     for r in input_rows:
         for p in r.pairs:
             flat_inputs.append(p)
@@ -554,26 +608,33 @@ def run(
     else:
         embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=batch_size_embed)
         # Check if schema and embedding models match previously saved embeddings
-        schema_fp = _schema_fingerprint(schema_pairs, model_name="Marqo/dunzhang-stella_en_400M_v5")
+        schema_fp = _schema_fingerprint(
+            schema_pairs, model_name="Marqo/dunzhang-stella_en_400M_v5"
+        )
 
-    
-    schema_embeds= None
+    schema_embeds = None
     if (not rebuild_cache) and schema_embed_path and schema_embed_path.exists():
         logging.info("Trying to load schema embeddings from %s", schema_embed_path)
         try:
             cached_emb, meta = _load_schema_embeds(schema_embed_path)
             if meta.get("fingerprint") == schema_fp:
-                logging.info("Loaded cached schema embeddings from %s", schema_embed_path)
+                logging.info(
+                    "Loaded cached schema embeddings from %s", schema_embed_path
+                )
                 schema_embeds = cached_emb
             else:
-                logging.info("Schema/model fingerprint changed; ignoring cached embeddings")
+                logging.info(
+                    "Schema/model fingerprint changed; ignoring cached embeddings"
+                )
         except Exception as exc:
-            logging.warning("Failed to load cached embeddings (%s); will recompute", exc)
+            logging.warning(
+                "Failed to load cached embeddings (%s); will recompute", exc
+            )
 
     if schema_embeds is None:
         logging.info("Computing schema embeddings (%d items) ...", len(schema_pairs))
         schema_embeds = embedder.embed_texts([p.text for p in schema_pairs])
-        if schema_embed_path and not mock_run: # only save real embeddings
+        if schema_embed_path and not mock_run:  # only save real embeddings
             _save_schema_embeds(
                 schema_embed_path,
                 schema_embeds,
@@ -633,7 +694,10 @@ def run(
             logging.warning(
                 "All candidates below min_embed_score=%.4f for input %s; "
                 "falling back to top-1 candidate id=%s sim=%.6f",
-                min_embed_score, q.id, p_best.id, float(cand_sims[j_best]),
+                min_embed_score,
+                q.id,
+                p_best.id,
+                float(cand_sims[j_best]),
             )
         llm_jobs.append((q, cands, score_map))
 
@@ -647,18 +711,27 @@ def run(
     with decision_log_path.open("w", encoding="utf-8") as audit_f:
         harm_by_row: Dict[int, List[str]] = {}
         total_batches = (len(llm_jobs) + selector.batch_size - 1) // selector.batch_size
-        for i, batch in enumerate(_iter_batches(llm_jobs, selector.batch_size), start=1):
+        for i, batch in enumerate(
+            _iter_batches(llm_jobs, selector.batch_size), start=1
+        ):
             logging.info("Processing batch %d/%d", i, total_batches)
-            decisions = selector.select_batch([(q, cands) for (q, cands, _scores) in batch])
+            decisions = selector.select_batch(
+                [(q, cands) for (q, cands, _scores) in batch]
+            )
 
             for (q, cands, score_map), dec in zip(batch, decisions):
                 if dec.chosen_id:
                     chosen = schema_by_id.get(dec.chosen_id)
                     if chosen is None:
-                        logging.warning("Chosen id %s not in schema; defaulting to top-1 candidate.", dec.chosen_id)
+                        logging.warning(
+                            "Chosen id %s not in schema; defaulting to top-1 candidate.",
+                            dec.chosen_id,
+                        )
                         chosen = cands[0]
                     row_idx = owner_row[q.id]
-                    harm_by_row.setdefault(row_idx, []).append(f"{chosen.descriptor}; {chosen.explainer}")
+                    harm_by_row.setdefault(row_idx, []).append(
+                        f"{chosen.descriptor}; {chosen.explainer}"
+                    )
                     kept += 1
 
                     embed_sim = score_map.get(chosen.id)
@@ -722,31 +795,63 @@ def run(
 # CLI
 # -----------------------------------------------------------------------------
 
+
 def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Replace descriptor;explainer pairs in INPUT with synonyms from SCHEMA")
+    p = argparse.ArgumentParser(
+        description="Replace descriptor;explainer pairs in INPUT with synonyms from SCHEMA"
+    )
     p.add_argument("--input", type=Path, required=True, help="Path to input JSONL")
     p.add_argument("--schema", type=Path, required=True, help="Path to schema JSONL")
     p.add_argument("--run-id", type=str, required=True, help="Name for run")
-    p.add_argument("--llm", type=str, default="meta-llama/Llama-3.3-70B-Instruct", help="vLLM model name")
+    p.add_argument(
+        "--llm",
+        type=str,
+        default="meta-llama/Llama-3.3-70B-Instruct",
+        help="vLLM model name",
+    )
 
-    p.add_argument("--topk", type=int, default=5, help="Number of schema candidates per input for LLM")
-    p.add_argument("--min-embed-score", type=float, default=0.0, help="Drop schema candidates below this cosine.")
+    p.add_argument(
+        "--topk",
+        type=int,
+        default=5,
+        help="Number of schema candidates per input for LLM",
+    )
+    p.add_argument(
+        "--min-embed-score",
+        type=float,
+        default=0.0,
+        help="Drop schema candidates below this cosine.",
+    )
 
     p.add_argument("--batch-size-embed", type=int, default=64)
     p.add_argument("--batch-size-llm", type=int, default=1024)
 
-    p.add_argument("--cache-dir", type=Path, default=None, help="HF cache dir for models")
-    p.add_argument("--cache-db", type=Path, default=None, help="SQLite file to cache LLM decisions")
+    p.add_argument(
+        "--cache-dir", type=Path, default=None, help="HF cache dir for models"
+    )
+    p.add_argument(
+        "--cache-db", type=Path, default=None, help="SQLite file to cache LLM decisions"
+    )
 
-    p.add_argument("--verbosity", type=int, default=1, choices=[0,1,2])
+    p.add_argument("--verbosity", type=int, default=1, choices=[0, 1, 2])
 
-    p.add_argument("--schema-embed-path", type=Path, default="../results/final_schema/schema_embeddings.npz",
-                help="Path to save/load cached schema embeddings (.npz)")
-    p.add_argument("--rebuild-cache", action="store_true",
-                help="Force recomputation of schema embeddings/index, ignoring any cache")
-    
-    p.add_argument("--mock-run", action="store_true",
-                help="Use mock embedder and LLM for fast local testing (no real model calls)")
+    p.add_argument(
+        "--schema-embed-path",
+        type=Path,
+        default="../results/final_schema/schema_embeddings.npz",
+        help="Path to save/load cached schema embeddings (.npz)",
+    )
+    p.add_argument(
+        "--rebuild-cache",
+        action="store_true",
+        help="Force recomputation of schema embeddings/index, ignoring any cache",
+    )
+
+    p.add_argument(
+        "--mock-run",
+        action="store_true",
+        help="Use mock embedder and LLM for fast local testing (no real model calls)",
+    )
 
     return p
 

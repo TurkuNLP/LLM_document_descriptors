@@ -1,6 +1,6 @@
 from pathlib import Path
 
-paths = [Path("..")/"logs",  Path("..")/"logs"/"archive"]
+paths = [Path("..") / "logs", Path("..") / "logs" / "archive"]
 
 watt_hours = []
 
@@ -12,6 +12,6 @@ for path in paths:
                 for line in file_lines:
                     if line.startswith("TOTAL:"):
                         watt_hours.append(float(line.split(" ")[1]))
-                        
-                        
+
+
 print(sum(watt_hours), flush=True)

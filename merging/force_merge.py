@@ -35,14 +35,15 @@ from typing import Dict, List, Optional, Tuple
 from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 
-from pydantic import BaseModel # type: ignore
+from pydantic import BaseModel  # type: ignore
 
 import json_repair  # type: ignore
-import torch #type: ignore
+import torch  # type: ignore
 
 # -----------------------------------------------------------------------------
 # Data structures
 # -----------------------------------------------------------------------------
+
 
 @dataclass
 class Pair:
@@ -53,7 +54,8 @@ class Pair:
     @property
     def descriptor_text(self) -> str:
         return (self.descriptor or "").strip()
-    
+
+
 class OutputSchema(BaseModel):
     keep: int
 
@@ -62,17 +64,28 @@ class OutputSchema(BaseModel):
 # I/O helpers
 # -----------------------------------------------------------------------------
 
+
 def setup_logging(logging_dir: Path, verbosity: int = 1) -> None:
     logging_dir.mkdir(parents=True, exist_ok=True)
     log_file = logging_dir / f"{logging_dir.name}.log"
-    level = logging.WARNING if verbosity <= 0 else (logging.INFO if verbosity == 1 else logging.DEBUG)
+    level = (
+        logging.WARNING
+        if verbosity <= 0
+        else (logging.INFO if verbosity == 1 else logging.DEBUG)
+    )
     root = logging.getLogger()
     for h in list(root.handlers):
         root.removeHandler(h)
     root.setLevel(level)
     fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-    fh = logging.FileHandler(log_file, encoding="utf-8"); fh.setLevel(level); fh.setFormatter(fmt); root.addHandler(fh)
-    sh = logging.StreamHandler(); sh.setLevel(level); sh.setFormatter(fmt); root.addHandler(sh)
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+    sh = logging.StreamHandler()
+    sh.setLevel(level)
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
 
 
 def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
@@ -87,17 +100,18 @@ def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
             d = str(obj.get("descriptor")).strip()
             e = str(obj.get("explainer")).strip()
             if not d or not e:
-                raise ValueError(f"Missing descriptor or explainer at line {i+1} in {path}")
+                raise ValueError(
+                    f"Missing descriptor or explainer at line {i+1} in {path}"
+                )
             pid = obj.get("id")
             if not pid:
                 raise ValueError(f"Missing id at line {i+1} in {path}")
             pairs.append(Pair(id=str(pid), descriptor=d, explainer=e))
 
-
             if limit is not None and len(pairs) >= limit:
                 logging.info("Test mode: limiting to %d unique IDs", limit)
                 break
-    
+
     assert pairs, f"No valid pairs found in {path}"
     return pairs
 
@@ -105,11 +119,17 @@ def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
 def write_jsonl(path: Path, pairs: List[Pair]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for p in pairs:
-            f.write(json.dumps({
-                "id": p.id,
-                "descriptor": p.descriptor,
-                "explainer": p.explainer,
-            }, ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "id": p.id,
+                        "descriptor": p.descriptor,
+                        "explainer": p.explainer,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
     logging.info("Wrote %d pairs -> %s", len(pairs), path)
 
 
@@ -117,11 +137,20 @@ def write_jsonl(path: Path, pairs: List[Pair]) -> None:
 # LLM wrapper
 # -----------------------------------------------------------------------------
 
+
 class GroupChooser:
     """Encapsulate the LLM that picks keep_id in a group."""
-    def __init__(self, model_name: str, cache_dir: Optional[Path] = None, temperature: float = 0.1) -> None:
+
+    def __init__(
+        self,
+        model_name: str,
+        cache_dir: Optional[Path] = None,
+        temperature: float = 0.1,
+    ) -> None:
         self.model_name = model_name
-        self.cache_dir = os.environ.get("HF_HOME") or (str(cache_dir) if cache_dir else None)
+        self.cache_dir = os.environ.get("HF_HOME") or (
+            str(cache_dir) if cache_dir else None
+        )
         self.temperature = temperature
         self._llm = None
 
@@ -133,13 +162,15 @@ class GroupChooser:
             if n_gpus == 0:
                 raise RuntimeError("No GPU available.")
             logging.info("Loading LLM, using %d GPU(s).", n_gpus)
-            self._llm = LLM(model=self.model_name,
-                            download_dir=self.cache_dir, 
-                            dtype="bfloat16", 
-                            max_model_len=2048, 
-                            tensor_parallel_size=n_gpus, 
-                            enforce_eager=False, 
-                            gpu_memory_utilization=0.85)
+            self._llm = LLM(
+                model=self.model_name,
+                download_dir=self.cache_dir,
+                dtype="bfloat16",
+                max_model_len=2048,
+                tensor_parallel_size=n_gpus,
+                enforce_eager=False,
+                gpu_memory_utilization=0.85,
+            )
         return self._llm
 
     @staticmethod
@@ -150,7 +181,9 @@ class GroupChooser:
     def _prompt(cands: List[Pair], indices: List[int]) -> str:
         lines = []
         for i, p in zip(indices, cands):
-            lines.append(f"index: {str(i)} | descriptor: {p.descriptor} | explainer: {p.explainer}")
+            lines.append(
+                f"index: {str(i)} | descriptor: {p.descriptor} | explainer: {p.explainer}"
+            )
         joined = "\n".join(lines)
         return (
             "<|begin_of_text|><|start_header_id|>system<|end_header_id|>"
@@ -160,8 +193,9 @@ class GroupChooser:
             "Return the integer index of the pair to keep in the field 'keep'.\n"
             "When choosing the representative pair, prefer concise, general, commonly used phrasing that covers the meaning of all pairs.\n"
             "Return ONLY JSON with: keep (int). Do not invent or rewrite anything.\n"
-            "<|eot_id|><|start_header_id|>user<|end_header_id|>\n" + joined +
-            "<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
+            "<|eot_id|><|start_header_id|>user<|end_header_id|>\n"
+            + joined
+            + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
         )
 
     def choose_keep_id(self, cands: List[Pair]) -> str:
@@ -186,7 +220,7 @@ class GroupChooser:
         keep_id = cands[keep].id
 
         return keep_id
-    
+
     def sanitize_keep_id(self, keep_idx: str, cands: List[Pair]) -> str:
         # If model returned something like "keep: 0", extract 0
         if ":" in keep_idx:
@@ -195,17 +229,20 @@ class GroupChooser:
             keep_idx = int(keep_idx)
         except ValueError:
             raise ValueError(f"Cannot parse keep_idx: {keep_idx}")
-        
+
         # Validate keep_id
         if keep_idx < 0 or keep_idx >= len(cands):
-            raise ValueError(f"keep_id index out of range: {keep_idx}. Valid range: 0 to {len(cands)-1}")
-        
+            raise ValueError(
+                f"keep_id index out of range: {keep_idx}. Valid range: 0 to {len(cands)-1}"
+            )
+
         return keep_idx
 
 
 # -----------------------------------------------------------------------------
 # Core merge logic
 # -----------------------------------------------------------------------------
+
 
 def group_by_descriptor(pairs: List[Pair]) -> Dict[str, List[Pair]]:
     groups: Dict[str, List[Pair]] = {}
@@ -217,7 +254,9 @@ def group_by_descriptor(pairs: List[Pair]) -> Dict[str, List[Pair]]:
     return groups
 
 
-def reduce_groups(groups: Dict[str, List[Pair]], chooser: GroupChooser) -> Tuple[List[Pair], List[dict], Dict[str, List[str]]]:
+def reduce_groups(
+    groups: Dict[str, List[Pair]], chooser: GroupChooser
+) -> Tuple[List[Pair], List[dict], Dict[str, List[str]]]:
     """Return (final_pairs, lineage_records, groups_mapping)."""
     final_pairs: List[Pair] = []
     lineage: List[dict] = []
@@ -234,16 +273,28 @@ def reduce_groups(groups: Dict[str, List[Pair]], chooser: GroupChooser) -> Tuple
         for m in members:
             if m is kept:
                 continue
-            lineage.append({
-                "event_type": "synonym_merge",
-                "descriptor": kept.descriptor,
-                "new_pair_id": kept.id,
-                "source_pair_ids": [m.id],
-                "kept": {"id": kept.id, "descriptor": kept.descriptor, "explainer": kept.explainer},
-                "dropped": {"id": m.id, "descriptor": m.descriptor, "explainer": m.explainer},
-                "decision_reason": "LLM_decision",
-            })
-        kept_agg = Pair(id=kept.id, descriptor=kept.descriptor, explainer=kept.explainer)
+            lineage.append(
+                {
+                    "event_type": "synonym_merge",
+                    "descriptor": kept.descriptor,
+                    "new_pair_id": kept.id,
+                    "source_pair_ids": [m.id],
+                    "kept": {
+                        "id": kept.id,
+                        "descriptor": kept.descriptor,
+                        "explainer": kept.explainer,
+                    },
+                    "dropped": {
+                        "id": m.id,
+                        "descriptor": m.descriptor,
+                        "explainer": m.explainer,
+                    },
+                    "decision_reason": "LLM_decision",
+                }
+            )
+        kept_agg = Pair(
+            id=kept.id, descriptor=kept.descriptor, explainer=kept.explainer
+        )
         final_pairs.append(kept_agg)
         kept_to_members[kept.id] = [m.id for m in members]
 
@@ -251,18 +302,35 @@ def reduce_groups(groups: Dict[str, List[Pair]], chooser: GroupChooser) -> Tuple
     final_pairs.sort(key=lambda p: p.id)
     return final_pairs, lineage, kept_to_members
 
+
 # -----------------------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------------------
 
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Collapse duplicate descriptors via LLM representative selection")
-    ap.add_argument("--run-id", required=True, help="Run identifier (used for output folder & file names)")
-    ap.add_argument("--input", required=True, help="Path to input JSONL with fields: id, descriptor, explainer, source_pair_ids")
+    ap = argparse.ArgumentParser(
+        description="Collapse duplicate descriptors via LLM representative selection"
+    )
+    ap.add_argument(
+        "--run-id",
+        required=True,
+        help="Run identifier (used for output folder & file names)",
+    )
+    ap.add_argument(
+        "--input",
+        required=True,
+        help="Path to input JSONL with fields: id, descriptor, explainer, source_pair_ids",
+    )
     ap.add_argument("--model", default="meta-llama/Llama-3.3-70B-Instruct")
     ap.add_argument("--temperature", type=float, default=0.1)
     ap.add_argument("--verbose", type=int, default=1, help="0=warn, 1=info, 2=debug")
-    ap.add_argument("--test", type=int, default=None, help="Limit number of input rows (for quick tests)")
+    ap.add_argument(
+        "--test",
+        type=int,
+        default=None,
+        help="Limit number of input rows (for quick tests)",
+    )
     args = ap.parse_args()
 
     out_dir = Path("../results/synonym_merges") / args.run_id
@@ -271,7 +339,8 @@ def main() -> None:
     setup_logging(out_dir, args.verbose)
     with (out_dir / f"{args.run_id}_settings.txt").open("w", encoding="utf-8") as f:
         for k, v in sorted(vars(args).items()):
-            logging.info("%s: %s", k, v); f.write(f"{k}: {v}\n")
+            logging.info("%s: %s", k, v)
+            f.write(f"{k}: {v}\n")
 
     pairs = read_jsonl(Path(args.input), sample_size=args.test)
 

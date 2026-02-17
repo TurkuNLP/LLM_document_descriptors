@@ -59,37 +59,57 @@ from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 # Logging
 # -----------------------------------------------------------------------------
 
+
 def setup_logging(logging_dir: Path, verbosity: int = 1) -> None:
     logging_dir.mkdir(parents=True, exist_ok=True)
     log_file = logging_dir / f"{logging_dir.name}.log"
-    level = logging.WARNING if verbosity <= 0 else (logging.INFO if verbosity == 1 else logging.DEBUG)
+    level = (
+        logging.WARNING
+        if verbosity <= 0
+        else (logging.INFO if verbosity == 1 else logging.DEBUG)
+    )
     root = logging.getLogger()
     for h in list(root.handlers):
         root.removeHandler(h)
     root.setLevel(level)
     fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-    fh = logging.FileHandler(log_file, encoding="utf-8"); fh.setLevel(level); fh.setFormatter(fmt); root.addHandler(fh)
-    sh = logging.StreamHandler(); sh.setLevel(level); sh.setFormatter(fmt); root.addHandler(sh)
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+    sh = logging.StreamHandler()
+    sh.setLevel(level)
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
 
 
 def log_execution_time(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        t0 = time.time(); out = func(*args, **kwargs); t1 = time.time()
-        logging.info("Execution of %s took %s.", func.__name__, time.strftime("%H:%M:%S", time.gmtime(t1 - t0)))
+        t0 = time.time()
+        out = func(*args, **kwargs)
+        t1 = time.time()
+        logging.info(
+            "Execution of %s took %s.",
+            func.__name__,
+            time.strftime("%H:%M:%S", time.gmtime(t1 - t0)),
+        )
         return out
+
     return wrapper
+
 
 # -----------------------------------------------------------------------------
 # Data structures
 # -----------------------------------------------------------------------------
+
 
 @dataclass
 class Pair:
     id: str
     descriptor: str
     explainer: str
-    
+
     @property
     def text(self) -> str:
         d, e = self.descriptor.strip(), self.explainer.strip()
@@ -118,9 +138,11 @@ class MergeResult:
     similarity: Optional[float]
     reason: str  # LLM_decision | cache_hit | below_min_similarity | parse_error
 
+
 # -----------------------------------------------------------------------------
 # I/O
 # -----------------------------------------------------------------------------
+
 
 @log_execution_time
 def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
@@ -135,17 +157,18 @@ def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
             d = str(obj.get("descriptor")).strip()
             e = str(obj.get("explainer")).strip()
             if not d or not e:
-                raise ValueError(f"Missing descriptor or explainer at line {i+1} in {path}")
+                raise ValueError(
+                    f"Missing descriptor or explainer at line {i+1} in {path}"
+                )
             pid = obj.get("id")
             if not pid:
                 raise ValueError(f"Missing id at line {i+1} in {path}")
             pairs.append(Pair(id=str(pid), descriptor=d, explainer=e))
 
-
             if limit is not None and len(pairs) >= limit:
                 logging.info("Test mode: limiting to %d unique IDs", limit)
                 break
-    
+
     assert pairs, f"No valid pairs found in {path}"
     return pairs
 
@@ -153,26 +176,41 @@ def read_jsonl(path: Path, sample_size: Optional[int] = None) -> List[Pair]:
 def write_jsonl(path: Path, pairs: Sequence[Pair]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for p in pairs:
-            f.write(json.dumps({
-                "id": p.id,
-                "descriptor": p.descriptor,
-                "explainer": p.explainer,
-            }, ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "id": p.id,
+                        "descriptor": p.descriptor,
+                        "explainer": p.explainer,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
     logging.info("Wrote %d pairs -> %s", len(pairs), path)
 
 
-def _log_dropped(pairs: Sequence[Pair], dropped: List[Tuple[int, int, float]], path: Path) -> None:
+def _log_dropped(
+    pairs: Sequence[Pair], dropped: List[Tuple[int, int, float]], path: Path
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for i, j, s in dropped:
             a, b = pairs[i], pairs[j]
             reason = "nan_similarity" if np.isnan(s) else "below_min_similarity"
-            rec = {"i": i, "j": j, "a_id": a.id, "b_id": b.id,
-                   "a_descriptor": a.descriptor, "b_descriptor": b.descriptor,
-                   "a_explainer": a.explainer, "b_explainer": b.explainer,
-                   "similarity": None if np.isnan(s) else round(float(s), 6),
-                   "reason": reason}
+            rec = {
+                "i": i,
+                "j": j,
+                "a_id": a.id,
+                "b_id": b.id,
+                "a_descriptor": a.descriptor,
+                "b_descriptor": b.descriptor,
+                "a_explainer": a.explainer,
+                "b_explainer": b.explainer,
+                "similarity": None if np.isnan(s) else round(float(s), 6),
+                "reason": reason,
+            }
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
@@ -182,23 +220,30 @@ def _write_all_decisions_jsonl(path: Path, records: List[dict]) -> None:
         for rec in records:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+
 # -----------------------------------------------------------------------------
 # Embeddings
 # -----------------------------------------------------------------------------
 class StellaEmbedder:
-    def __init__(self, cache_dir: Optional[Path], batch_size: int = 128, device: str = "cuda:0") -> None:
+    def __init__(
+        self, cache_dir: Optional[Path], batch_size: int = 128, device: str = "cuda:0"
+    ) -> None:
         model_name = "Marqo/dunzhang-stella_en_400M_v5"
         # Single-GPU (or CPU fallback)
         want_cuda = device.startswith("cuda") and torch.cuda.is_available()
         self.device = torch.device(device if want_cuda else "cpu")
         torch_dtype = torch.float16 if self.device.type == "cuda" else torch.float32
 
-        self.model = AutoModel.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            cache_dir=str(cache_dir) if cache_dir else None,
-            #dtype=torch_dtype,
-        ).to(self.device).eval()
+        self.model = (
+            AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                cache_dir=str(cache_dir) if cache_dir else None,
+                # dtype=torch_dtype,
+            )
+            .to(self.device)
+            .eval()
+        )
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
@@ -212,7 +257,9 @@ class StellaEmbedder:
     def _save_embeds(path: Path, emb: np.ndarray, meta: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         meta_bytes = json.dumps(meta, ensure_ascii=False).encode("utf-8")
-        np.savez_compressed(str(path), emb=emb, meta=np.frombuffer(meta_bytes, dtype=np.uint8))
+        np.savez_compressed(
+            str(path), emb=emb, meta=np.frombuffer(meta_bytes, dtype=np.uint8)
+        )
 
     @staticmethod
     def _load_embeds(path: Path) -> Tuple[np.ndarray, dict]:
@@ -232,24 +279,31 @@ class StellaEmbedder:
         return h.hexdigest()
 
     @log_execution_time
-    def embed_texts(self, texts: Sequence[str], cache_path: Optional[Path] = None) -> np.ndarray:
+    def embed_texts(
+        self, texts: Sequence[str], cache_path: Optional[Path] = None
+    ) -> np.ndarray:
         # 1) Load from cache if available & matches fingerprint
         fp = self._fingerprint_texts(texts, self.model_name)
         if cache_path and cache_path.exists():
             try:
                 cached_emb, meta = self._load_embeds(cache_path)
-                if meta.get("fingerprint") == fp and meta.get("model_name") == self.model_name:
+                if (
+                    meta.get("fingerprint") == fp
+                    and meta.get("model_name") == self.model_name
+                ):
                     logging.info("Loaded embeddings from cache: %s", cache_path)
                     return cached_emb
                 else:
-                    logging.info("Cache exists but fingerprint/model mismatch; re-embedding.")
+                    logging.info(
+                        "Cache exists but fingerprint/model mismatch; re-embedding."
+                    )
             except Exception as e:
                 logging.warning("Failed to load cache (%s); re-embedding.", e)
 
         # 2) Compute embeddings
         out: List[np.ndarray] = []
         for i in range(0, len(texts), self.batch_size):
-            batch = list(texts[i:i + self.batch_size])
+            batch = list(texts[i : i + self.batch_size])
             with torch.no_grad():
                 inputs = self.tokenizer(
                     batch,
@@ -257,10 +311,16 @@ class StellaEmbedder:
                     truncation=True,
                     max_length=512,
                     return_tensors="pt",
-                ).to(self.device)  # single-device path
+                ).to(
+                    self.device
+                )  # single-device path
 
                 outputs = self.model(**inputs)
-                hidden = outputs[0] if isinstance(outputs, (tuple, list)) else outputs.last_hidden_state
+                hidden = (
+                    outputs[0]
+                    if isinstance(outputs, (tuple, list))
+                    else outputs.last_hidden_state
+                )
                 attn = inputs["attention_mask"]  # already on self.device
                 masked = hidden.masked_fill(~attn[..., None].bool(), 0.0)
                 pooled = masked.sum(dim=1) / attn.sum(dim=1)[..., None]
@@ -299,36 +359,53 @@ class StellaEmbedder:
 # Neighbor search
 # -----------------------------------------------------------------------------
 
+
 @log_execution_time
 def find_nn(embeddings: np.ndarray, k: int = 1, dtype=torch.float16):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     M = torch.from_numpy(embeddings).to(device=device, dtype=dtype)
     M = torch.nn.functional.normalize(M, p=2, dim=1)
     logging.info("Finding nearest neighbours. Matrix shape %s", tuple(M.shape))
-    slice_size = 1000; N = M.shape[0]
-    vals: List[np.ndarray] = []; idxs: List[np.ndarray] = []
+    slice_size = 1000
+    N = M.shape[0]
+    vals: List[np.ndarray] = []
+    idxs: List[np.ndarray] = []
     with torch.no_grad():
         for i in range(0, N, slice_size):
-            row = M[i:i+slice_size]
+            row = M[i : i + slice_size]
             sim = row @ M.T
             diag_rows = torch.arange(i, min(i + slice_size, N), device=device)
             sim[torch.arange(sim.size(0), device=device), diag_rows] = float("-inf")
             topv, topi = torch.topk(sim, k=k, dim=1)
-            vals.append(topv.cpu().numpy()); idxs.append(topi.cpu().numpy())
+            vals.append(topv.cpu().numpy())
+            idxs.append(topi.cpu().numpy())
     return np.vstack(vals), np.vstack(idxs)
+
 
 # -----------------------------------------------------------------------------
 # LLM combiner
 # -----------------------------------------------------------------------------
 
+
 class SynonymCombiner:
-    def __init__(self, model_name: str, cache_dir: Optional[Path], temperature: float = 0.1, cache_db_path: Optional[Path] = None, batch_size: int = 512) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        cache_dir: Optional[Path],
+        temperature: float = 0.1,
+        cache_db_path: Optional[Path] = None,
+        batch_size: int = 512,
+    ) -> None:
         self.model_name = model_name
-        self.cache_dir = os.environ.get("HF_HOME") or (str(cache_dir) if cache_dir else None)
+        self.cache_dir = os.environ.get("HF_HOME") or (
+            str(cache_dir) if cache_dir else None
+        )
         self.temperature = temperature
         self._llm = None
         self.cache_db_path = cache_db_path
-        self._cache = SqliteDict(str(cache_db_path), autocommit=True) if cache_db_path else None
+        self._cache = (
+            SqliteDict(str(cache_db_path), autocommit=True) if cache_db_path else None
+        )
         self.batch_size = batch_size
 
     @property
@@ -339,20 +416,23 @@ class SynonymCombiner:
                 raise RuntimeError("No GPU available.")
             logging.info("Loading LLM, using %d GPU(s).", n_gpus)
             logging.info("Batch size per LLM call: %d", self.batch_size)
-            self._llm = LLM(model=self.model_name,
-                            download_dir=self.cache_dir, 
-                            dtype="bfloat16", 
-                            max_model_len=2048, 
-                            tensor_parallel_size=n_gpus, 
-                            enforce_eager=False, 
-                            gpu_memory_utilization=0.85)
+            self._llm = LLM(
+                model=self.model_name,
+                download_dir=self.cache_dir,
+                dtype="bfloat16",
+                max_model_len=2048,
+                tensor_parallel_size=n_gpus,
+                enforce_eager=False,
+                gpu_memory_utilization=0.85,
+            )
         return self._llm
 
     def _response_format(self) -> GuidedDecodingParams:
         return GuidedDecodingParams(json=DecisionSchema.model_json_schema())
 
     def _prompt(self, a: Pair, b: Pair) -> str:
-        return ("""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+        return (
+            """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 You are deciding whether two descriptor–explainer pairs, A and B, refer to the same concept.
 The descriptors describe a document, while the explainer provides additional context.
 
@@ -379,22 +459,30 @@ If not synonyms:
 
 Return ONLY JSON with keys: is_synonym (bool), keep ("A"|"B"), drop ("A"|"B").
 Do not rewrite or invent descriptors.
-<|eot_id|><|start_header_id|>user<|end_header_id|>""" + f"""
+<|eot_id|><|start_header_id|>user<|end_header_id|>"""
+            + f"""
 A:
 descriptor: {a.descriptor}
 explainer: {a.explainer}
 ==============
 B:
 descriptor: {b.descriptor}
-explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>""")
+explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+        )
 
     def _cache_key(self, a: Pair, b: Pair) -> str:
-        key = tuple(sorted([(a.id, a.descriptor, a.explainer), (b.id, b.descriptor, b.explainer)], key=lambda x: x[0]))
+        key = tuple(
+            sorted(
+                [(a.id, a.descriptor, a.explainer), (b.id, b.descriptor, b.explainer)],
+                key=lambda x: x[0],
+            )
+        )
         return json.dumps(key, ensure_ascii=False)
 
     @staticmethod
     def _tokens_in_outputs(outputs):
-        in_tok = 0; gen_tok = 0
+        in_tok = 0
+        gen_tok = 0
         for o in outputs:
             if getattr(o, "prompt_token_ids", None):
                 in_tok += len(o.prompt_token_ids)
@@ -409,7 +497,13 @@ explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
     def _log_throughput(in_tok, gen_tok, elapsed):
         tot_tok = gen_tok + in_tok
         if elapsed > 0 and tot_tok > 0:
-            logging.info("LLM throughput: %.1f tok/s (%.1f gen tok/s) — %s tokens in %.2fs", tot_tok/elapsed, (gen_tok/elapsed if gen_tok else 0), tot_tok, elapsed)
+            logging.info(
+                "LLM throughput: %.1f tok/s (%.1f gen tok/s) — %s tokens in %.2fs",
+                tot_tok / elapsed,
+                (gen_tok / elapsed if gen_tok else 0),
+                tot_tok,
+                elapsed,
+            )
 
     @log_execution_time
     def decide_batch(self, pairs: List[Tuple[Pair, Pair]]) -> List[Decision]:
@@ -421,7 +515,12 @@ explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
                 if ck in self._cache:
                     try:
                         obj = json.loads(self._cache[ck])
-                        decisions[i] = Decision(bool(obj.get("is_synonym", False)), str(obj.get("keep_id", "")), str(obj.get("drop_id", "")), reason=str(obj.get("reason", "cache_hit")))
+                        decisions[i] = Decision(
+                            bool(obj.get("is_synonym", False)),
+                            str(obj.get("keep_id", "")),
+                            str(obj.get("drop_id", "")),
+                            reason=str(obj.get("reason", "cache_hit")),
+                        )
                         continue
                     except Exception:
                         pass
@@ -435,23 +534,30 @@ explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
 
         def _plen(i: int) -> int:
             a, b = pairs[i]
-            return len(a.descriptor)+len(a.explainer)+len(b.descriptor)+len(b.explainer)
-        
-        # Sort by prompt length (ascending) to improve batching efficiency    
+            return (
+                len(a.descriptor)
+                + len(a.explainer)
+                + len(b.descriptor)
+                + len(b.explainer)
+            )
+
+        # Sort by prompt length (ascending) to improve batching efficiency
         uncached_idxs.sort(key=_plen)
-        
-        logging.info("%d uncached candidate pairs to evaluate with LLM.", len(uncached_idxs))
+
+        logging.info(
+            "%d uncached candidate pairs to evaluate with LLM.", len(uncached_idxs)
+        )
 
         for start in range(0, len(uncached_idxs), self.batch_size):
             logging.info(
-                "Processing batch %d out of %d", 
-                start // self.batch_size + 1, 
-                (len(uncached_idxs) + self.batch_size - 1) // self.batch_size
-                )
-            chunk = uncached_idxs[start:start+self.batch_size]
+                "Processing batch %d out of %d",
+                start // self.batch_size + 1,
+                (len(uncached_idxs) + self.batch_size - 1) // self.batch_size,
+            )
+            chunk = uncached_idxs[start : start + self.batch_size]
             batch_pairs = [pairs[i] for i in chunk]
             batch_prompts = [self._prompt(a, b) for (a, b) in batch_pairs]
-            
+
             params = SamplingParams(
                 temperature=self.temperature,
                 top_p=0.5,
@@ -459,17 +565,19 @@ explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
                 max_tokens=512,
                 stop=["<|eot_id|>"],
                 guided_decoding=self._response_format(),
-                seed=42
-                )
-            
+                seed=42,
+            )
+
             # LLM call
             t0 = time.time()
-            outputs = self.llm.generate(batch_prompts, sampling_params=params, use_tqdm=False)
+            outputs = self.llm.generate(
+                batch_prompts, sampling_params=params, use_tqdm=False
+            )
             t1 = time.time()
-            
+
             # Log throughput
             in_tok, gen_tok = self._tokens_in_outputs(outputs)
-            self._log_throughput(in_tok, gen_tok, t1-t0)
+            self._log_throughput(in_tok, gen_tok, t1 - t0)
 
             parsed: List[Decision] = []
             for out_idx, out in enumerate(outputs):
@@ -477,25 +585,35 @@ explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
                 outs = getattr(out, "outputs", None) or []
                 if not outs:
                     raise ValueError("LLM returned no outputs.")
-                
+
                 text = (outs[0].text or "").strip(" `\n").removeprefix("json").strip()
                 try:
                     obj = json_repair.loads(text)
                     keep_lbl = str(obj.get("keep", "")).strip().upper()
                     drop_lbl = str(obj.get("drop", "")).strip().upper()
                     is_syn = bool(obj.get("is_synonym", False))
-                    
+
                     # Ensure IDs in output are valid
-                    if keep_lbl not in {"A", "B"} or drop_lbl not in {"A", "B"} or keep_lbl == drop_lbl:
-                        parsed.append(Decision(False, a.id, b.id, reason="invalid_ids_in_output"))
-                        logging.warning("Invalid IDs in LLM output; treating as non-merge: %s", text)
+                    if (
+                        keep_lbl not in {"A", "B"}
+                        or drop_lbl not in {"A", "B"}
+                        or keep_lbl == drop_lbl
+                    ):
+                        parsed.append(
+                            Decision(False, a.id, b.id, reason="invalid_ids_in_output")
+                        )
+                        logging.warning(
+                            "Invalid IDs in LLM output; treating as non-merge: %s", text
+                        )
                         continue
                     # Map A and B to actual IDs
                     if keep_lbl == "A":
                         keep_id, drop_id = a.id, b.id
                     else:
                         keep_id, drop_id = b.id, a.id
-                    parsed.append(Decision(is_syn, keep_id, drop_id, reason="LLM_decision"))
+                    parsed.append(
+                        Decision(is_syn, keep_id, drop_id, reason="LLM_decision")
+                    )
 
                 except Exception as exc:
                     a, b = batch_pairs[out_idx]
@@ -506,7 +624,10 @@ explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
                 d = parsed[local_idx]
                 decisions[global_idx] = d
                 # Update cache if LLM-produced decision. Do not cache parse errors or other abnormalities.
-                if self._cache is not None and decisions[global_idx].reason == "LLM_decision":
+                if (
+                    self._cache is not None
+                    and decisions[global_idx].reason == "LLM_decision"
+                ):
                     a, b = pairs[global_idx]
                     ck = self._cache_key(a, b)
                     self._cache[ck] = json.dumps(d.__dict__, ensure_ascii=False)
@@ -515,26 +636,38 @@ explainer: {b.explainer}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
         del outputs
         del batch_prompts
         del batch_pairs
-        torch.cuda.synchronize() # Ensure all GPU work is done
+        torch.cuda.synchronize()  # Ensure all GPU work is done
         torch.cuda.empty_cache()
         gc.collect()
-        
+
         return decisions
+
 
 # -----------------------------------------------------------------------------
 # Candidate construction
 # -----------------------------------------------------------------------------
 
-def candidate_synonyms(neighbor_idx: np.ndarray, scores: np.ndarray, *, strategy: Literal["mutual", "unique"] = "mutual", min_similarity: Optional[float] = None) -> Tuple[List[Tuple[int, int, float]], List[Tuple[int, int, float]]]:
+
+def candidate_synonyms(
+    neighbor_idx: np.ndarray,
+    scores: np.ndarray,
+    *,
+    strategy: Literal["mutual", "unique"] = "mutual",
+    min_similarity: Optional[float] = None,
+) -> Tuple[List[Tuple[int, int, float]], List[Tuple[int, int, float]]]:
     assert neighbor_idx.shape == scores.shape
     n, k = neighbor_idx.shape
-    kept: Dict[Tuple[int, int], float] = {}; dropped_map: Dict[Tuple[int, int], float] = {}
+    kept: Dict[Tuple[int, int], float] = {}
+    dropped_map: Dict[Tuple[int, int], float] = {}
 
     def _maybe_keep(a: int, b: int, sim: float) -> None:
-        if a == b or a < 0 or b < 0 or a >= n or b >= n: return
+        if a == b or a < 0 or b < 0 or a >= n or b >= n:
+            return
         i, j = (a, b) if a < b else (b, a)
-        if min_similarity is not None and (np.isnan(sim) or sim < float(min_similarity)):
-            prev = dropped_map.get((i, j));
+        if min_similarity is not None and (
+            np.isnan(sim) or sim < float(min_similarity)
+        ):
+            prev = dropped_map.get((i, j))
             if prev is None or sim > prev:
                 dropped_map[(i, j)] = sim
             return
@@ -546,18 +679,21 @@ def candidate_synonyms(neighbor_idx: np.ndarray, scores: np.ndarray, *, strategy
         return [], []
     if strategy == "mutual":
         for i in range(n):
-            j = int(neighbor_idx[i, 0]);
-            if j < 0 or j == i or j >= n: continue
+            j = int(neighbor_idx[i, 0])
+            if j < 0 or j == i or j >= n:
+                continue
             jj0 = int(neighbor_idx[j, 0]) if j < n and k > 0 else -1
-            if jj0 != i: continue
+            if jj0 != i:
+                continue
             sim_ij = float(scores[i, 0]) if scores.size else float("-inf")
             sim_ji = float(scores[j, 0]) if scores.size else float("-inf")
             _maybe_keep(i, j, max(sim_ij, sim_ji))
     else:
         for i in range(n):
             for col in range(k):
-                j = int(neighbor_idx[i, col]);
-                if j < 0 or j == i: continue
+                j = int(neighbor_idx[i, col])
+                if j < 0 or j == i:
+                    continue
                 sim = float(scores[i, col]) if scores.size else float("-inf")
                 _maybe_keep(i, j, sim)
 
@@ -565,24 +701,43 @@ def candidate_synonyms(neighbor_idx: np.ndarray, scores: np.ndarray, *, strategy
     triples.sort(key=lambda t: t[2], reverse=True)
     dropped_list = [(i, j, s) for (i, j), s in dropped_map.items()]
     dropped_list.sort(key=lambda t: (np.isnan(t[2]), t[2]))
-    
+
     if triples:
         sims = [t[2] for t in triples]
-        logging.info("Pair similarity — avg: %.4f | max: %.4f | min: %.4f", sum(sims)/len(sims), max(sims), min(sims))
-    logging.info("Dropped %d candidate pairs due to threshold %s.", len(dropped_list), "None" if min_similarity is None else f"{float(min_similarity):.4f}")
+        logging.info(
+            "Pair similarity — avg: %.4f | max: %.4f | min: %.4f",
+            sum(sims) / len(sims),
+            max(sims),
+            min(sims),
+        )
+    logging.info(
+        "Dropped %d candidate pairs due to threshold %s.",
+        len(dropped_list),
+        "None" if min_similarity is None else f"{float(min_similarity):.4f}",
+    )
     return triples, dropped_list
+
 
 # -----------------------------------------------------------------------------
 # Merge application + lineage writing
 # -----------------------------------------------------------------------------
 
-def apply_merges_write_lineage(pairs: List[Pair], decisions: List[Decision], triples: List[Tuple[int, int, float]], iteration: int, lineage_path: Path, all_candidates_path: Path) -> Tuple[List[Pair], List[MergeResult]]:
+
+def apply_merges_write_lineage(
+    pairs: List[Pair],
+    decisions: List[Decision],
+    triples: List[Tuple[int, int, float]],
+    iteration: int,
+    lineage_path: Path,
+    all_candidates_path: Path,
+) -> Tuple[List[Pair], List[MergeResult]]:
     id_to_pair: Dict[str, Pair] = {p.id: p for p in pairs}
-    used: Set[str] = set(); merges: List[MergeResult] = []
+    used: Set[str] = set()
+    merges: List[MergeResult] = []
 
     # Build lookup from (a.id,b.id) by index to similarity for bookkeeping
     sim_map: Dict[Tuple[str, str], float] = {}
-    for (i, j, s) in triples:
+    for i, j, s in triples:
         a, b = pairs[i], pairs[j]
         key = tuple(sorted((a.id, b.id)))
         sim_map[key] = float(s)
@@ -590,7 +745,7 @@ def apply_merges_write_lineage(pairs: List[Pair], decisions: List[Decision], tri
     # Compose records for ALL candidates (evaluated=True) as we go
     all_records: List[dict] = []
 
-    for (i_j_s, d) in zip(triples, decisions):
+    for i_j_s, d in zip(triples, decisions):
         i, j, s = i_j_s
         a, b = pairs[i], pairs[j]
         # Sanity: decision must reference these IDs only
@@ -601,30 +756,56 @@ def apply_merges_write_lineage(pairs: List[Pair], decisions: List[Decision], tri
             keep, drop = d.keep_id, d.drop_id
             if keep == drop or keep in used or drop in used:
                 # Treat as non-merge in this iteration
-                all_records.append({"iteration": iteration, "evaluated": True, "is_synonym": False,
-                                    "a_id": a.id, "b_id": b.id, "similarity": float(s),
-                                    "reason": "already_used_or_self"})
+                all_records.append(
+                    {
+                        "iteration": iteration,
+                        "evaluated": True,
+                        "is_synonym": False,
+                        "a_id": a.id,
+                        "b_id": b.id,
+                        "similarity": float(s),
+                        "reason": "already_used_or_self",
+                    }
+                )
                 continue
             if keep not in id_to_pair or drop not in id_to_pair:
-                all_records.append({"iteration": iteration, "evaluated": True, "is_synonym": False,
-                                    "a_id": a.id, "b_id": b.id, "similarity": float(s),
-                                    "reason": "id_missing"})
+                all_records.append(
+                    {
+                        "iteration": iteration,
+                        "evaluated": True,
+                        "is_synonym": False,
+                        "a_id": a.id,
+                        "b_id": b.id,
+                        "similarity": float(s),
+                        "reason": "id_missing",
+                    }
+                )
                 continue
             used.add(keep)
             used.add(drop)
-            merges.append(MergeResult(kept=keep, dropped=drop, iteration=iteration, similarity=float(s), reason=d.reason))
+            merges.append(
+                MergeResult(
+                    kept=keep,
+                    dropped=drop,
+                    iteration=iteration,
+                    similarity=float(s),
+                    reason=d.reason,
+                )
+            )
         # record decision
-        all_records.append({
-            "iteration": iteration,
-            "evaluated": True,
-            "is_synonym": bool(d.is_synonym),
-            "a_id": a.id,
-            "b_id": b.id,
-            "similarity": float(s),
-            "keep_id": d.keep_id,
-            "drop_id": d.drop_id,
-            "reason": d.reason,
-        })
+        all_records.append(
+            {
+                "iteration": iteration,
+                "evaluated": True,
+                "is_synonym": bool(d.is_synonym),
+                "a_id": a.id,
+                "b_id": b.id,
+                "similarity": float(s),
+                "keep_id": d.keep_id,
+                "drop_id": d.drop_id,
+                "reason": d.reason,
+            }
+        )
 
     # Write per-iteration lineage edges for merges
     lineage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -639,8 +820,16 @@ def apply_merges_write_lineage(pairs: List[Pair], decisions: List[Decision], tri
                 "iteration": m.iteration,
                 "new_pair_id": kept_p.id,
                 "source_pair_ids": [dropped_p.id],
-                "kept": {"id": kept_p.id, "descriptor": kept_p.descriptor, "explainer": kept_p.explainer},
-                "dropped": {"id": dropped_p.id, "descriptor": dropped_p.descriptor, "explainer": dropped_p.explainer},
+                "kept": {
+                    "id": kept_p.id,
+                    "descriptor": kept_p.descriptor,
+                    "explainer": kept_p.explainer,
+                },
+                "dropped": {
+                    "id": dropped_p.id,
+                    "descriptor": dropped_p.descriptor,
+                    "explainer": dropped_p.explainer,
+                },
                 "similarity": m.similarity,
                 "decision_reason": m.reason,
             }
@@ -659,20 +848,21 @@ def apply_merges_write_lineage(pairs: List[Pair], decisions: List[Decision], tri
 # Orchestration
 # -----------------------------------------------------------------------------
 
+
 @log_execution_time
 def iterate_until_converged(
-    pairs: List[Pair], 
-    embedded_texts: np.ndarray, 
-    k: int, 
-    max_iters: int, 
-    min_similarity: Optional[float], 
-    output_dir: Optional[Path], 
-    combiner: SynonymCombiner, 
+    pairs: List[Pair],
+    embedded_texts: np.ndarray,
+    k: int,
+    max_iters: int,
+    min_similarity: Optional[float],
+    output_dir: Optional[Path],
+    combiner: SynonymCombiner,
     candidate_strategy: Literal["mutual", "unique"],
     *,
     start_iter: int = 1,
-    ) -> Tuple[List[Pair], List[List[MergeResult]]]:
-    
+) -> Tuple[List[Pair], List[List[MergeResult]]]:
+
     all_merges: List[List[MergeResult]] = []
     iteration = start_iter - 1
 
@@ -689,10 +879,14 @@ def iterate_until_converged(
         logging.info("Finding neighbors...")
         sims, neigh = find_nn(emb, k=k)
 
-        triples, dropped = candidate_synonyms(neigh, sims, strategy=candidate_strategy, min_similarity=min_similarity)
+        triples, dropped = candidate_synonyms(
+            neigh, sims, strategy=candidate_strategy, min_similarity=min_similarity
+        )
         # Log raw drops
         if output_dir:
-            _log_dropped(pairs, dropped, output_dir / f"iteration_{iteration}_dropped.jsonl")
+            _log_dropped(
+                pairs, dropped, output_dir / f"iteration_{iteration}_dropped.jsonl"
+            )
 
         if not triples:
             logging.info("No candidate proposals. Stopping.")
@@ -706,24 +900,38 @@ def iterate_until_converged(
         skipped_records: List[dict] = []
         for i, j, s in dropped:
             a, b = pairs[i], pairs[j]
-            skipped_records.append({
-                "iteration": iteration,
-                "evaluated": False,
-                "is_synonym": False,
-                "a_id": a.id,
-                "b_id": b.id,
-                "similarity": None if np.isnan(s) else float(s),
-                "reason": "below_min_similarity" if not np.isnan(s) else "nan_similarity",
-            })
+            skipped_records.append(
+                {
+                    "iteration": iteration,
+                    "evaluated": False,
+                    "is_synonym": False,
+                    "a_id": a.id,
+                    "b_id": b.id,
+                    "similarity": None if np.isnan(s) else float(s),
+                    "reason": (
+                        "below_min_similarity" if not np.isnan(s) else "nan_similarity"
+                    ),
+                }
+            )
         # Write them in a temp file; we'll append evaluated ones inside apply_merges_write_lineage
         if output_dir:
             tmp_all = output_dir / f"iteration_{iteration}_all_candidates.jsonl"
             _write_all_decisions_jsonl(tmp_all, skipped_records)
 
         # Apply merges + write per-iteration lineage and the evaluated candidates
-        lineage_iter_path = output_dir / f"iteration_{iteration}_lineage.jsonl" if output_dir else Path(f"iteration_{iteration}_lineage.jsonl")
-        all_cand_iter_path = output_dir / f"iteration_{iteration}_all_candidates.jsonl" if output_dir else Path(f"iteration_{iteration}_all_candidates.jsonl")
-        new_pairs, merges = apply_merges_write_lineage(pairs, decisions, triples, iteration, lineage_iter_path, all_cand_iter_path)
+        lineage_iter_path = (
+            output_dir / f"iteration_{iteration}_lineage.jsonl"
+            if output_dir
+            else Path(f"iteration_{iteration}_lineage.jsonl")
+        )
+        all_cand_iter_path = (
+            output_dir / f"iteration_{iteration}_all_candidates.jsonl"
+            if output_dir
+            else Path(f"iteration_{iteration}_all_candidates.jsonl")
+        )
+        new_pairs, merges = apply_merges_write_lineage(
+            pairs, decisions, triples, iteration, lineage_iter_path, all_cand_iter_path
+        )
 
         all_merges.append(merges)
 
@@ -734,7 +942,12 @@ def iterate_until_converged(
             current = [idx for idx, keep in zip(current, kept_mask) if keep]
         pairs = new_pairs
 
-        logging.info("Iteration %d merged %d pairs; %d remain", iteration, len(merges), len(pairs))
+        logging.info(
+            "Iteration %d merged %d pairs; %d remain",
+            iteration,
+            len(merges),
+            len(pairs),
+        )
         if output_dir:
             write_jsonl(output_dir / f"checkpoint_iter_{iteration}.jsonl", pairs)
 
@@ -750,26 +963,39 @@ def iterate_until_converged(
 
     return pairs, all_merges
 
+
 # -----------------------------------------------------------------------------
 # DSU (for groups)
 # -----------------------------------------------------------------------------
 class DSU:
     def __init__(self) -> None:
-        self.parent: Dict[str, str] = {}; self.rank: Dict[str, int] = {}
+        self.parent: Dict[str, str] = {}
+        self.rank: Dict[str, int] = {}
+
     def find(self, x: str) -> str:
-        if x not in self.parent: self.parent[x] = x; self.rank[x] = 0; return x
-        if self.parent[x] != x: self.parent[x] = self.find(self.parent[x])
+        if x not in self.parent:
+            self.parent[x] = x
+            self.rank[x] = 0
+            return x
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])
         return self.parent[x]
+
     def union(self, a: str, b: str) -> None:
         ra, rb = self.find(a), self.find(b)
-        if ra == rb: return
-        if self.rank[ra] < self.rank[rb]: ra, rb = rb, ra
+        if ra == rb:
+            return
+        if self.rank[ra] < self.rank[rb]:
+            ra, rb = rb, ra
         self.parent[rb] = ra
-        if self.rank[ra] == self.rank[rb]: self.rank[ra] += 1
+        if self.rank[ra] == self.rank[rb]:
+            self.rank[ra] += 1
+
 
 # -----------------------------------------------------------------------------
 # CLI entry
 # -----------------------------------------------------------------------------
+
 
 def main(args: argparse.Namespace) -> None:
     input_path = Path(args.input)
@@ -779,20 +1005,27 @@ def main(args: argparse.Namespace) -> None:
     lineage_concat_path = out_dir / f"{args.run_id}_lineage.jsonl"
     decision_cache_path = out_dir / (args.decision_cache or "decision_cache.sqlite")
 
-    cache_dir = Path(args.cache_dir) if args.cache_dir else (Path(os.environ.get("HF_HOME")) if os.environ.get("HF_HOME") else None)
+    cache_dir = (
+        Path(args.cache_dir)
+        if args.cache_dir
+        else (Path(os.environ.get("HF_HOME")) if os.environ.get("HF_HOME") else None)
+    )
 
     setup_logging(out_dir, args.verbose)
     with open(out_dir / f"{args.run_id}_settings.txt", "a", encoding="utf-8") as f:
         f.write(f"slurm id: {os.environ.get('SLURM_JOB_ID')}\n")
         for k, v in sorted(vars(args).items()):
-            logging.info(f"{k}: {v}"); f.write(f"{k}: {v}\n")
+            logging.info(f"{k}: {v}")
+            f.write(f"{k}: {v}\n")
         f.write("===========================\n")
 
     # Resume or fresh start
     if args.resume_from is not None:
         ckpt_path = out_dir / f"checkpoint_iter_{args.resume_from}.jsonl"
         if not ckpt_path.exists():
-            raise SystemExit(f"--resume-from {args.resume_from} but {ckpt_path} not found.")
+            raise SystemExit(
+                f"--resume-from {args.resume_from} but {ckpt_path} not found."
+            )
         logging.info("Resuming from %s", ckpt_path)
         pairs = read_jsonl(ckpt_path, sample_size=None)
         start_iter = args.resume_from + 1
@@ -801,24 +1034,39 @@ def main(args: argparse.Namespace) -> None:
         start_iter = 1
 
     all_ids = [p.id for p in pairs]
-    
+
     logging.info("Starting embedding model...")
     embedder = StellaEmbedder(cache_dir=cache_dir, batch_size=args.batch_size)
     logging.info("Embedding %d pairs...", len(pairs))
-    embedded_texts = embedder.embed_texts([p.text for p in pairs], cache_path=Path(args.embedding_cache))
+    embedded_texts = embedder.embed_texts(
+        [p.text for p in pairs], cache_path=Path(args.embedding_cache)
+    )
     # Remove model and tokenizer to free GPU memory
     embedder.drop_model()
-    
-    combiner = SynonymCombiner(model_name=args.model, cache_dir=cache_dir, temperature=args.temperature, cache_db_path=Path(decision_cache_path), batch_size=args.llm_batch_size)
+
+    combiner = SynonymCombiner(
+        model_name=args.model,
+        cache_dir=cache_dir,
+        temperature=args.temperature,
+        cache_db_path=Path(decision_cache_path),
+        batch_size=args.llm_batch_size,
+    )
 
     final_pairs, all_merges = iterate_until_converged(
-        pairs=pairs, embedded_texts=embedded_texts, k=args.k, max_iters=args.max_iters, min_similarity=args.min_similarity,
-        output_dir=out_dir, combiner=combiner, candidate_strategy=args.candidate_strategy, start_iter=start_iter
+        pairs=pairs,
+        embedded_texts=embedded_texts,
+        k=args.k,
+        max_iters=args.max_iters,
+        min_similarity=args.min_similarity,
+        output_dir=out_dir,
+        combiner=combiner,
+        candidate_strategy=args.candidate_strategy,
+        start_iter=start_iter,
     )
 
     # Persist results
     write_jsonl(output_path, final_pairs)
-    
+
     def _iter_num(path: Path) -> int:
         m = re.search(r"iteration_(\d+)_lineage\.jsonl$", path.name)
         return int(m.group(1)) if m else -1
@@ -855,22 +1103,45 @@ def main(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Combine synonym descriptor-explainer pairs with embeddings + LLM (with lineage)")
+    p = argparse.ArgumentParser(
+        description="Combine synonym descriptor-explainer pairs with embeddings + LLM (with lineage)"
+    )
     p.add_argument("--run-id", type=str, default="default", help="Run ID")
-    p.add_argument("--input", type=str, required=True, help="Path to input JSONL with fields: id, descriptor, explainer")
-    p.add_argument("--resume-from", type=int, default=None,
-               help="Resume from iteration N (loads checkpoint_iter_N.jsonl and continues with N+1)")
-
+    p.add_argument(
+        "--input",
+        type=str,
+        required=True,
+        help="Path to input JSONL with fields: id, descriptor, explainer",
+    )
+    p.add_argument(
+        "--resume-from",
+        type=int,
+        default=None,
+        help="Resume from iteration N (loads checkpoint_iter_N.jsonl and continues with N+1)",
+    )
 
     # Embeddings
     p.add_argument("--cache-dir", type=str, default=None)
     p.add_argument("--batch-size", type=int, default=128, help="Embedding batch size")
-    p.add_argument("--embedding-cache", type=str, default="../results/synonym_merges/embeddings.npz")
+    p.add_argument(
+        "--embedding-cache",
+        type=str,
+        default="../results/synonym_merges/embeddings.npz",
+    )
 
     # Neighbor params (brute-force search)
-    p.add_argument("--k", type=int, default=1, help="#neighbors per item (excluding self)")
-    p.add_argument("--min-similarity", type=float, default=0.0, help="Minimum cosine sim to send pair to LLM")
-    p.add_argument("--candidate-strategy", choices=["unique", "mutual"], default="mutual")
+    p.add_argument(
+        "--k", type=int, default=1, help="#neighbors per item (excluding self)"
+    )
+    p.add_argument(
+        "--min-similarity",
+        type=float,
+        default=0.0,
+        help="Minimum cosine sim to send pair to LLM",
+    )
+    p.add_argument(
+        "--candidate-strategy", choices=["unique", "mutual"], default="mutual"
+    )
 
     # LLM
     p.add_argument("--model", type=str, default="meta-llama/Llama-3.3-70B-Instruct")
@@ -880,11 +1151,20 @@ if __name__ == "__main__":
 
     # Loop
     p.add_argument("--max-iters", type=int, default=50, help="Maximum iterations")
-    p.add_argument("--test", nargs="?", const=10000, default=None, type=int, help="Limit items in test mode (default 10k)")
+    p.add_argument(
+        "--test",
+        nargs="?",
+        const=10000,
+        default=None,
+        type=int,
+        help="Limit items in test mode (default 10k)",
+    )
     p.add_argument("--verbose", type=int, default=1, help="0=warn, 1=info, 2=debug")
 
     args = p.parse_args()
-    t0 = time.time(); main(args); t1 = time.time()
+    t0 = time.time()
+    main(args)
+    t1 = time.time()
     logging.info("========================================")
     logging.info("Finished. Took %s.", time.strftime("%H:%M:%S", time.gmtime(t1 - t0)))
     logging.info("========================================")

@@ -153,9 +153,12 @@ def generate(llm, batched_input, response_schema):
     batched_outputs = llm.generate(
         batched_input, sampling_params=sampling_params, use_tqdm=True
     )
-    
+
     # Remove reasoning part of the output if it exists.
-    batched_outputs = [re.sub(r"<think>.*?</think>", "", out.outputs[0].text, flags=re.DOTALL) for out in batched_outputs]
+    batched_outputs = [
+        re.sub(r"<think>.*?</think>", "", out.outputs[0].text, flags=re.DOTALL)
+        for out in batched_outputs
+    ]
     return [out.strip(" `\njson") for out in batched_outputs]
 
 
@@ -276,13 +279,13 @@ def batched(descriptors, batch_size, batch_count):
     # Create the list of lists
     result = []
     for i in range(0, len(descriptors), batch_size * batch_count):
-        chunk = descriptors[i:i + batch_size * batch_count]
-        sublists = [chunk[j:j + batch_size] for j in range(0, len(chunk), batch_size)]
+        chunk = descriptors[i : i + batch_size * batch_count]
+        sublists = [chunk[j : j + batch_size] for j in range(0, len(chunk), batch_size)]
         result.append(sublists)
 
     return result
-   
-        
+
+
 def check_output_format(output, llm):
     validated_output = []
     for out in output:
@@ -294,8 +297,10 @@ def check_output_format(output, llm):
             if not reformatted == "FAIL":
                 validated_output.append(reformatted)
             else:
-                validated_output.append(json.loads('{"good_candidates": [], "bad_candidates": []}'))
-                
+                validated_output.append(
+                    json.loads('{"good_candidates": [], "bad_candidates": []}')
+                )
+
     return validated_output
 
 
@@ -304,12 +309,12 @@ def save_results(results):
         for line in results:
             for desc in line.get("good_candidates"):
                 desc = desc.strip(" \n")
-                f.write(desc+"\n")
+                f.write(desc + "\n")
     with open(f"../results/bad_candidate_descriptors.txt", "a") as f:
         for line in results:
             for desc in line.get("bad_candidates"):
                 desc = desc.strip(" \n")
-                f.write(desc+"\n")
+                f.write(desc + "\n")
 
 
 def main(args):
@@ -323,11 +328,9 @@ def main(args):
 
     logging.info("Loading model...")
     llm = LLM_setup(model, cache_dir)
-    
 
     logging.info("Starting document processing pipeline...")
-    
-    
+
     for i in range(3):
         results = []
         if i == 0:
@@ -335,9 +338,7 @@ def main(args):
         else:
             data = load_data("next")
         for batch_num, batch in enumerate(batched(data, batch_size, num_batches)):
-            prompts = [
-                format_prompt(descs) for descs in batch
-            ]
+            prompts = [format_prompt(descs) for descs in batch]
             json_schema = get_response_format()
             batched_outputs = generate(llm, prompts, json_schema)
             output = check_output_format(batched_outputs, llm)
@@ -345,13 +346,13 @@ def main(args):
         save_results(results)
         logging.info("Results saved.")
 
-        
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         description="A script for getting document descriptors with LLMs."
     )
-    
+
     parser.add_argument(
         "--run-id", type=str, required=True, help="ID for this run, e.g. run1"
     )
@@ -375,8 +376,10 @@ if __name__ == "__main__":
         help="Number of descriptors to give to the model at once.",
     )
     parser.add_argument(
-        "--num-batches", type=int, default=100,
-        help="Number of LLM calls to do at once."
+        "--num-batches",
+        type=int,
+        default=100,
+        help="Number of LLM calls to do at once.",
     )
     parser.add_argument(
         "--temperature", type=float, default=0, help="Model temperature."

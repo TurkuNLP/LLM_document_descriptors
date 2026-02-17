@@ -44,6 +44,7 @@ def select_true_finals(adj, final_ids):
             sinks.add(fid)
     return sinks
 
+
 def normalize_descriptor(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.sub(r"[_\s]+", " ", s)
@@ -54,7 +55,9 @@ def pair_id(descriptor_normalized: str, explainer_raw: str, length: int = 12) ->
     key = f"{descriptor_normalized}{SEP}{explainer_raw}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:length]
 
+
 # -------------------- IO helpers --------------------
+
 
 def load_jsonl(path: Path) -> List[dict]:
     data = []
@@ -69,7 +72,9 @@ def load_jsonl(path: Path) -> List[dict]:
                 raise ValueError(f"Invalid JSON on {path}:{line_no}: {e}") from e
     return data
 
+
 # -------------------- Source extractor --------------------
+
 
 def split_pair(text: str) -> Tuple[str, str]:
     if not isinstance(text, str):
@@ -102,6 +107,7 @@ def extract_pairs_from_doc(doc: dict) -> List[Tuple[str, str]]:
         if isinstance(sims, list) and len(sims) == len(src) and len(sims) > 0:
             try:
                 import numpy as _np
+
                 best_idx = int(_np.argmax(_np.array(sims)))
                 chosen_lists = [src[best_idx]]
             except Exception:
@@ -117,7 +123,9 @@ def extract_pairs_from_doc(doc: dict) -> List[Tuple[str, str]]:
         return out
     return []
 
+
 # -------------------- Lineage graph --------------------
+
 
 def iter_lineage_files(paths: List[Path]) -> List[Path]:
     out: List[Path] = []
@@ -152,7 +160,9 @@ def build_graph_from_lineage(lineage_paths: List[Path]) -> DefaultDict[str, List
                     adj[s].append(tgt)
     return adj
 
+
 # -------------------- Finals --------------------
+
 
 def iter_disambig_files(paths: List[Path]) -> List[Path]:
     out: List[Path] = []
@@ -179,14 +189,23 @@ def load_finals_multi(paths: List[Path]) -> Tuple[Set[str], Dict[str, Tuple[str,
                 final_ids.add(pid)
                 nd = normalize_descriptor(desc)
                 if pid in id2pair and id2pair[pid] != (nd, expl):
-                    print(f"[warn] conflicting final pair for id {pid}: {id2pair[pid]} vs {(nd, expl)} from {p}")
+                    print(
+                        f"[warn] conflicting final pair for id {pid}: {id2pair[pid]} vs {(nd, expl)} from {p}"
+                    )
                 else:
                     id2pair[pid] = (nd, expl)
     return final_ids, id2pair
 
+
 # -------------------- Reachability + counting --------------------
 
-def reachable_finals(start_id: str, adj: Dict[str, List[str]], final_ids: Set[str], cache: Dict[str, Set[str]]) -> Set[str]:
+
+def reachable_finals(
+    start_id: str,
+    adj: Dict[str, List[str]],
+    final_ids: Set[str],
+    cache: Dict[str, Set[str]],
+) -> Set[str]:
     if start_id in cache:
         return cache[start_id]
     seen: Set[str] = set()
@@ -243,6 +262,7 @@ def count_contributions(
             if isinstance(sims, list) and len(sims) == len(src) and len(sims) > 0:
                 try:
                     import numpy as _np
+
                     best_idx = int(_np.argmax(_np.array(sims)))
                     lists = src[best_idx]
                 except Exception:
@@ -270,14 +290,18 @@ def count_contributions(
             continue
         fin_pairs = [id2pair[fid] for fid in finals]  # (desc_norm, expl_raw)
         fin_pairs_sorted = sorted(set(fin_pairs), key=lambda t: (t[0], t[1]))
-        resolved_pairs_records.append({
-            "original_id": pid,
-            "original_descriptor": id2orig[pid][0],
-            "original_explainer": id2orig[pid][1],
-            "final_ids": sorted(list(finals)),
-            "final_pairs": [{"descriptor": d, "explainer": e} for (d, e) in fin_pairs_sorted],
-            "occurrences": int(occ),
-        })
+        resolved_pairs_records.append(
+            {
+                "original_id": pid,
+                "original_descriptor": id2orig[pid][0],
+                "original_explainer": id2orig[pid][1],
+                "final_ids": sorted(list(finals)),
+                "final_pairs": [
+                    {"descriptor": d, "explainer": e} for (d, e) in fin_pairs_sorted
+                ],
+                "occurrences": int(occ),
+            }
+        )
         for fid in finals:
             fdesc, fexp = id2pair[fid]
             totals[(fdesc, fexp)] += occ
@@ -285,21 +309,37 @@ def count_contributions(
 
     return dict(totals), dict(pair_breakdown), resolved_pairs_records, unresolved_pairs
 
+
 # -------------------- Writers --------------------
+
 
 def write_counts_csv(path: Path, counts: Dict[Tuple[str, str], int]) -> None:
     with path.open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["final_descriptor", "final_explainer", "count"]) 
-        for (desc, expl), c in sorted(counts.items(), key=lambda x: (-x[1], x[0][0], x[0][1])):
+        w.writerow(["final_descriptor", "final_explainer", "count"])
+        for (desc, expl), c in sorted(
+            counts.items(), key=lambda x: (-x[1], x[0][0], x[0][1])
+        ):
             w.writerow([desc, expl, c])
 
 
-def write_pair_breakdown_csv(path: Path, breakdown: Dict[Tuple[str, str, str, str], int]) -> None:
+def write_pair_breakdown_csv(
+    path: Path, breakdown: Dict[Tuple[str, str, str, str], int]
+) -> None:
     with path.open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["final_descriptor", "final_explainer", "original_descriptor", "original_explainer", "count"]) 
-        for (fdesc, fexp, od, oe), c in sorted(breakdown.items(), key=lambda x: (-x[1], x[0][0], x[0][1], x[0][2])):
+        w.writerow(
+            [
+                "final_descriptor",
+                "final_explainer",
+                "original_descriptor",
+                "original_explainer",
+                "count",
+            ]
+        )
+        for (fdesc, fexp, od, oe), c in sorted(
+            breakdown.items(), key=lambda x: (-x[1], x[0][0], x[0][1], x[0][2])
+        ):
             w.writerow([fdesc, fexp, od, oe, c])
 
 
@@ -314,26 +354,49 @@ def write_unresolved_txt(path: Path, pairs: List[Tuple[str, str]]) -> None:
         for d, e in pairs:
             f.write(f"{d}; {e}\n")
 
+
 # -------------------- CLI --------------------
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--source", type=Path, required=True, help="Path to all_descriptors_new.jsonl")
+    ap.add_argument(
+        "--source", type=Path, required=True, help="Path to all_descriptors_new.jsonl"
+    )
 
     lg = ap.add_mutually_exclusive_group(required=True)
-    lg.add_argument("--lineage-roots", nargs="+", type=Path, help="Directories/files to scan for full_lineage.jsonl")
-    lg.add_argument("--lineage", nargs="+", type=Path, help="Explicit lineage files (full_lineage.jsonl)")
+    lg.add_argument(
+        "--lineage-roots",
+        nargs="+",
+        type=Path,
+        help="Directories/files to scan for full_lineage.jsonl",
+    )
+    lg.add_argument(
+        "--lineage",
+        nargs="+",
+        type=Path,
+        help="Explicit lineage files (full_lineage.jsonl)",
+    )
 
     fg = ap.add_mutually_exclusive_group(required=True)
-    fg.add_argument("--finals-roots", nargs="+", type=Path, help="Directories/files to scan for disambig jsonl files")
-    fg.add_argument("--finals", nargs="+", type=Path, help="Explicit disambig jsonl files")
+    fg.add_argument(
+        "--finals-roots",
+        nargs="+",
+        type=Path,
+        help="Directories/files to scan for disambig jsonl files",
+    )
+    fg.add_argument(
+        "--finals", nargs="+", type=Path, help="Explicit disambig jsonl files"
+    )
 
     ap.add_argument("--out-dir", type=Path, required=True, help="Output directory")
 
     args = ap.parse_args()
 
     # Lineage
-    lineage_paths = iter_lineage_files(args.lineage if args.lineage else args.lineage_roots)
+    lineage_paths = iter_lineage_files(
+        args.lineage if args.lineage else args.lineage_roots
+    )
     if not lineage_paths:
         raise SystemExit("No full_lineage.jsonl files found.")
     adj = build_graph_from_lineage(lineage_paths)
@@ -355,7 +418,9 @@ def main() -> None:
     docs = load_jsonl(args.source)
 
     # Count
-    totals, breakdown, resolved_rows, unresolved = count_contributions(docs, adj, final_ids, id2pair)
+    totals, breakdown, resolved_rows, unresolved = count_contributions(
+        docs, adj, final_ids, id2pair
+    )
 
     # Output
     out_dir = args.out_dir
@@ -366,6 +431,7 @@ def main() -> None:
     write_unresolved_txt(out_dir / "unresolved_pairs.txt", unresolved)
 
     print(f"Wrote outputs to {out_dir}")
+
 
 if __name__ == "__main__":
     main()

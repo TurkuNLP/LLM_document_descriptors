@@ -21,7 +21,7 @@ from vllm import LLM, SamplingParams  # type: ignore
 from vllm.sampling_params import GuidedDecodingParams  # type: ignore
 
 # -- local imports --
-import disambiguation_prompt # type: ignore
+import disambiguation_prompt  # type: ignore
 from input_processing import normalize_descriptor  # type: ignore
 
 # ----------------------- Logging setup -----------------------
@@ -37,12 +37,12 @@ def configure_logging(log_file: Path) -> None:
         logging.root.removeHandler(h)
 
     file_h = logging.FileHandler(log_file)
-    file_h.setFormatter(logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(message)s"))
+    file_h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 
     stream_h = logging.StreamHandler()
-    stream_h.setFormatter(logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(message)s"))
+    stream_h.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
 
     logging.root.setLevel(logging.INFO)
     logging.root.addHandler(file_h)
@@ -55,6 +55,7 @@ def configure_logging(log_file: Path) -> None:
 
 def log_execution_time(func):
     """Decorator that logs the execution time of a function."""
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         start_time = time.time()
@@ -66,6 +67,7 @@ def log_execution_time(func):
             f"{time.strftime('%H:%M:%S', time.gmtime(execution_time))}."
         )
         return result
+
     return wrapper
 
 
@@ -74,11 +76,14 @@ def generate_uuid_id() -> str:
     """Random UUID4-based ID. This will ensure uniqueness across runs.
     However, IDs will not be stable across runs
     (identical descriptor-exlainer pairs will get different IDs each time).
-    This is not an issue as long as we make sure we never lose the ID to pair mappings."""
+    This is not an issue as long as we make sure we never lose the ID to pair mappings.
+    """
     return str(uuid.uuid4())
 
 
-def read_grouped_descriptors_file(path_to_file: Path, test_size: int = 0) -> List[Tuple[str, List[Dict[str, str]]]]:
+def read_grouped_descriptors_file(
+    path_to_file: Path, test_size: int = 0
+) -> List[Tuple[str, List[Dict[str, str]]]]:
     """Read groups from JSONL. Each line: {descriptor: str, explainers: [{id, explainer}, ...]}.
     Returns list of (descriptor, explainers[ {id, explainer}, ... ]).
     """
@@ -99,16 +104,20 @@ def read_grouped_descriptors_file(path_to_file: Path, test_size: int = 0) -> Lis
                 # Raise errors if data is malformed.
                 # We really should not have empty explainers or missing IDs here.
                 if not txt:
-                    raise ValueError(f"Missing explainer text for descriptor={desc!r} in pairs.")
+                    raise ValueError(
+                        f"Missing explainer text for descriptor={desc!r} in pairs."
+                    )
                 if not pid:
-                    raise ValueError(f"Missing ID for descriptor={desc!r}, explainer={txt!r} in pairs.")
+                    raise ValueError(
+                        f"Missing ID for descriptor={desc!r}, explainer={txt!r} in pairs."
+                    )
                 expls.append({"id": pid, "explainer": txt})
             if expls:
                 groups.append((desc, expls))
 
             if test_size > 0 and len(groups) >= test_size:
                 break
-            
+
     # Validate that each input ID is unique across the entire input set
     all_ids: Set[str] = set()
     for desc, expls in groups:
@@ -139,7 +148,6 @@ def load_original_input_ids(path: Path, test: bool) -> Set[str]:
     return ids
 
 
-
 def save_results(save_path: Path, pairs: List[Dict[str, Any]]) -> None:
     """Write final singletons with stable IDs and lineage.
     Each line: {"id": <pair_id>, "descriptor": str, "explainer": str, "source_pair_ids": [..]}
@@ -150,13 +158,15 @@ def save_results(save_path: Path, pairs: List[Dict[str, Any]]) -> None:
             f.write(json.dumps(p, ensure_ascii=False) + "\n")
 
 
-def save_checkpoint_full(checkpoint_dir: Path,
-                         step_idx: int,
-                         final_groups: List[Dict[str, Any]],
-                         pending_groups: List[Dict[str, Any]],
-                         lineage_events: List[Dict[str, Any]],
-                         processed_ids: Set[str] | None = None,
-                         final: bool = False) -> None:
+def save_checkpoint_full(
+    checkpoint_dir: Path,
+    step_idx: int,
+    final_groups: List[Dict[str, Any]],
+    pending_groups: List[Dict[str, Any]],
+    lineage_events: List[Dict[str, Any]],
+    processed_ids: Set[str] | None = None,
+    final: bool = False,
+) -> None:
     """Save a checkpoint with:
     - final singletons (descriptor/explainer *objects* with IDs)
     - pending multi groups (explainers as {id, explainer})
@@ -171,12 +181,20 @@ def save_checkpoint_full(checkpoint_dir: Path,
 
     if not final:
         # Skip saving these in the final saving pass
-        logging.info("[CHKPT %08d] Saving %d final groups -> %s",
-                    step_idx, len(final_groups), final_path.name)
+        logging.info(
+            "[CHKPT %08d] Saving %d final groups -> %s",
+            step_idx,
+            len(final_groups),
+            final_path.name,
+        )
         with final_path.open("w", encoding="utf-8") as f:
             for g in final_groups:
                 # singletons guaranteed to have one explainer object
-                expl_obj = g["explainers"][0] if g.get("explainers") else {"id": None, "explainer": ""}
+                expl_obj = (
+                    g["explainers"][0]
+                    if g.get("explainers")
+                    else {"id": None, "explainer": ""}
+                )
                 out = {
                     "id": expl_obj.get("id"),
                     "descriptor": g.get("descriptor"),
@@ -185,8 +203,12 @@ def save_checkpoint_full(checkpoint_dir: Path,
                 }
                 f.write(json.dumps(out, ensure_ascii=False) + "\n")
 
-        logging.info("[CHKPT %08d] Saving %d pending groups -> %s",
-                    step_idx, len(pending_groups), pending_path.name)
+        logging.info(
+            "[CHKPT %08d] Saving %d pending groups -> %s",
+            step_idx,
+            len(pending_groups),
+            pending_path.name,
+        )
         with pending_path.open("w", encoding="utf-8") as f:
             for g in pending_groups:
                 out = {
@@ -194,14 +216,20 @@ def save_checkpoint_full(checkpoint_dir: Path,
                     "explainers": g.get("explainers", []),  # list of {id, explainer}
                 }
                 f.write(json.dumps(out, ensure_ascii=False) + "\n")
-    
+
         if processed_ids:
-            processed_ids_path = checkpoint_dir / f"iter_{step_idx:08d}_processed_ids.json"
+            processed_ids_path = (
+                checkpoint_dir / f"iter_{step_idx:08d}_processed_ids.json"
+            )
             with processed_ids_path.open("w") as f:
                 json.dump(list(processed_ids), f)
 
-    logging.info("[CHKPT %08d] Saving %d lineage events -> %s",
-                 step_idx, len(lineage_events), lineage_path.name)
+    logging.info(
+        "[CHKPT %08d] Saving %d lineage events -> %s",
+        step_idx,
+        len(lineage_events),
+        lineage_path.name,
+    )
     with lineage_path.open("w", encoding="utf-8") as f:
         for ev in lineage_events:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
@@ -239,10 +267,18 @@ def load_final_groups(path: Path) -> List[Dict[str, Any]]:
                 raise ValueError("Missing descriptor in final groups.")
             if not pid:
                 raise ValueError(f"Missing ID for descriptor={desc!r} in final groups.")
-            groups.append({
-                "descriptor": desc,
-                "explainers": [{"id": pid, "explainer": expl, "source_pair_ids": obj.get("source_pair_ids", [])}],
-            })
+            groups.append(
+                {
+                    "descriptor": desc,
+                    "explainers": [
+                        {
+                            "id": pid,
+                            "explainer": expl,
+                            "source_pair_ids": obj.get("source_pair_ids", []),
+                        }
+                    ],
+                }
+            )
     return groups
 
 
@@ -262,9 +298,13 @@ def load_pending_groups(path: Path) -> List[Dict[str, Any]]:
                 exp = (e.get("explainer") or "").strip()
                 spi = e.get("source_pair_ids", [])
                 if not exp:
-                    raise ValueError(f"Missing explainer text for descriptor={desc!r} in pending groups.")
+                    raise ValueError(
+                        f"Missing explainer text for descriptor={desc!r} in pending groups."
+                    )
                 if not pid:
-                    raise ValueError(f"Missing ID for descriptor={desc!r}, explainer={exp!r} in pending groups.")
+                    raise ValueError(
+                        f"Missing ID for descriptor={desc!r}, explainer={exp!r} in pending groups."
+                    )
                 fixed.append({"id": pid, "explainer": exp, "source_pair_ids": spi})
             groups.append({"descriptor": desc, "explainers": fixed})
     return groups
@@ -282,10 +322,12 @@ def load_lineage_events(path: Path) -> List[Dict[str, Any]]:
 
 # -------------------Descriptor Merger-------------------------
 
+
 class DescriptorMerger:
     def __init__(self, args: argparse.Namespace) -> None:
         self.cache_dir: str = os.path.expanduser(
-            args.cache_dir or os.environ.get("HF_HOME", "~/.cache"))
+            args.cache_dir or os.environ.get("HF_HOME", "~/.cache")
+        )
         self.model_name: str = args.model
         self.temperature: float = args.temperature
         self.llm = None
@@ -296,7 +338,7 @@ class DescriptorMerger:
         if self.use_mock:
             logging.info("Using mock LLM for debugging (no model loaded)")
             return None
-        
+
         n_gpus = torch.cuda.device_count()
         if n_gpus == 0:
             raise RuntimeError("No GPU available.")
@@ -316,7 +358,7 @@ class DescriptorMerger:
     def generate(self, prompts: List[str]) -> List[Dict]:
         if self.use_mock:
             return mock_llm_generator(prompts)
-        
+
         params = SamplingParams(
             temperature=self.temperature,
             top_p=0.5,
@@ -327,8 +369,7 @@ class DescriptorMerger:
             seed=42,
         )
         start = time.perf_counter()
-        outputs = self.llm.generate(
-            prompts, sampling_params=params, use_tqdm=False)
+        outputs = self.llm.generate(prompts, sampling_params=params, use_tqdm=False)
         elapsed = time.perf_counter() - start if start else 0.0
 
         response_texts: List[str] = []
@@ -358,13 +399,14 @@ class DescriptorMerger:
                 elapsed,
             )
 
-        parsed_responses = [self.validate_json(
-            text) for text in response_texts]
+        parsed_responses = [self.validate_json(text) for text in response_texts]
 
         return parsed_responses
 
     @staticmethod
-    def validate_completeness(outputs: List[Dict[str, Any]], batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def validate_completeness(
+        outputs: List[Dict[str, Any]], batch: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Validate that each *input explainer ID* is present exactly once in the output groups.
         If missing, inject it into the closest group by lexical overlap of explainer text.
         """
@@ -395,7 +437,9 @@ class DescriptorMerger:
                         seen.add(pid)
                 g["original_explainer_ids_in_this_group"] = dedup
             # Remove empty groups
-            out_groups = [g for g in out_groups if g.get("original_explainer_ids_in_this_group")]
+            out_groups = [
+                g for g in out_groups if g.get("original_explainer_ids_in_this_group")
+            ]
             output["groups"] = out_groups
 
             # Inject missing IDs
@@ -412,20 +456,28 @@ class DescriptorMerger:
                         if ov > best_ov:
                             best_idx, best_ov = i, ov
                     if not out_groups:
-                        out_groups = [{
-                            "group_descriptor": in_group["descriptor"],
-                            "group_explainer": id2text.get(pid) or "",
-                            "original_explainer_ids_in_this_group": [],
-                        }]
+                        out_groups = [
+                            {
+                                "group_descriptor": in_group["descriptor"],
+                                "group_explainer": id2text.get(pid) or "",
+                                "original_explainer_ids_in_this_group": [],
+                            }
+                        ]
                         output["groups"] = out_groups
                         best_idx = 0
-                    out_groups[best_idx].setdefault("original_explainer_ids_in_this_group", []).append(pid)
-        
+                    out_groups[best_idx].setdefault(
+                        "original_explainer_ids_in_this_group", []
+                    ).append(pid)
+
             # Check that output is now complete
-            assert len(output.get("groups", [])) > 0, "Output must have at least one group."
+            assert (
+                len(output.get("groups", [])) > 0
+            ), "Output must have at least one group."
             assert all(
-                len(g.get("original_explainer_ids_in_this_group", [])) > 0 for g in output.get("groups", [])), "All groups must have at least one explainer ID."
-            
+                len(g.get("original_explainer_ids_in_this_group", [])) > 0
+                for g in output.get("groups", [])
+            ), "All groups must have at least one explainer ID."
+
             # Gather all IDs in output again after duplicate removal and injection
             ids_in_output: List[str] = []
             for g in out_groups:
@@ -433,13 +485,19 @@ class DescriptorMerger:
             # Each input ID must be present exactly once in output
             if sorted(input_ids) != sorted(ids_in_output):
                 missing = set(input_ids) - set(ids_in_output)
-                extra   = set(ids_in_output) - set(input_ids)
+                extra = set(ids_in_output) - set(input_ids)
                 if missing and extra:
-                    raise ValueError(f"Output validation failed! Missing and extra explainer IDs in output. Missing: {missing}, Extra: {extra}")
+                    raise ValueError(
+                        f"Output validation failed! Missing and extra explainer IDs in output. Missing: {missing}, Extra: {extra}"
+                    )
                 if missing:
-                    raise ValueError(f"Output validation failed! Missing explainer IDs in output: {missing}")
+                    raise ValueError(
+                        f"Output validation failed! Missing explainer IDs in output: {missing}"
+                    )
                 if extra:
-                    raise ValueError(f"Output validation failed! Extra explainer IDs in output: {extra}")
+                    raise ValueError(
+                        f"Output validation failed! Extra explainer IDs in output: {extra}"
+                    )
 
             new_outputs.append(output)
         return new_outputs
@@ -466,77 +524,81 @@ class DescriptorMerger:
             groups: List[G]
 
         return GuidedDecodingParams(json=R.model_json_schema())
-    
-    
+
+
 # ------------------- Mock LLM for debugging -------------------------
 def mock_llm_generator(prompts: List[str]) -> List[Dict]:
     """
     Simulates LLM output for debugging without loading a real model.
     Returns valid JSON responses with random but valid groupings.
-    
+
     Args:
         prompts: List of prompt strings
-        
+
     Returns:
         List of dictionaries mimicking LLM JSON output
     """
     import random
     import re
-    
+
     responses = []
-    
+
     for prompt in prompts:
         # Extract the descriptor from the prompt
-        descriptor_match = re.search(r"Descriptor: (.+?)\nExplainers", prompt, re.DOTALL)
-        descriptor = descriptor_match.group(1).strip() if descriptor_match else "Unknown"
-        
+        descriptor_match = re.search(
+            r"Descriptor: (.+?)\nExplainers", prompt, re.DOTALL
+        )
+        descriptor = (
+            descriptor_match.group(1).strip() if descriptor_match else "Unknown"
+        )
+
         # Count how many explainer indices are in the prompt
         explainer_indices = re.findall(r"\[(\d+)\]", prompt)
         indices = [int(idx) for idx in explainer_indices]
-        
+
         if not indices:
             # Fallback if we can't find indices
             indices = list(range(5))
-            
+
         # Decide how many groups to create (between 1 and 3, or fewer if we have few indices)
         num_groups = min(max(1, len(indices) // 4), 3)
-        
+
         # Randomly assign indices to groups
         random.shuffle(indices)
         groups_indices = [[] for _ in range(num_groups)]
-        
+
         # Distribute indices among groups
         for i, idx in enumerate(indices):
             group_num = i % num_groups
             groups_indices[group_num].append(idx)
-        
+
         # Generate a response with these groups
         groups = []
         for i, group_indices in enumerate(groups_indices):
             if not group_indices:  # Skip empty groups
                 continue
-                
+
             group = {
                 "group_descriptor": f"Category {chr(65+i)}",  # A, B, C, etc.
                 "group_explainer": f"This is an automatically generated explainer for group {chr(65+i)} of descriptor '{descriptor}'.",
-                "original_explainer_indices_in_this_group": sorted(group_indices)
+                "original_explainer_indices_in_this_group": sorted(group_indices),
             }
             groups.append(group)
-        
+
         # Create the complete response
-        response = {
-            "original_descriptor": descriptor,
-            "groups": groups
-        }
-        
+        response = {"original_descriptor": descriptor, "groups": groups}
+
         responses.append(response)
-    
+
     return responses
 
 
 # ------------------- Helper functions -------------------------
 
-def map_indices_to_ids(output: Dict[str, Any], in_group: Dict[str, Any]) -> Dict[str, Any]:
+
+def map_indices_to_ids(
+    output: Dict[str, Any], in_group: Dict[str, Any]
+) -> Dict[str, Any]:
     """Translate model-produced indices to trusted IDs for a single output object.
     Robust to empty/malformed JSON and out-of-range indices."""
     total = len(in_group["explainers"])
@@ -545,18 +607,24 @@ def map_indices_to_ids(output: Dict[str, Any], in_group: Dict[str, Any]) -> Dict
     groups = output.get("groups")
     if not isinstance(groups, list) or not groups:
         # Auto-repair: one group containing all indices, with a safe explainer
-        logging.warning("LLM output missing/empty 'groups'; auto-repairing to a single all-indices group.")
-        groups = [{
-            "group_descriptor": in_group["descriptor"],
-            "group_explainer": in_group["explainers"][0]["explainer"],
-            "original_explainer_indices_in_this_group": list(range(total)),
-        }]
+        logging.warning(
+            "LLM output missing/empty 'groups'; auto-repairing to a single all-indices group."
+        )
+        groups = [
+            {
+                "group_descriptor": in_group["descriptor"],
+                "group_explainer": in_group["explainers"][0]["explainer"],
+                "original_explainer_indices_in_this_group": list(range(total)),
+            }
+        ]
 
     for g in groups:
         idxs = g.get("original_explainer_indices_in_this_group", [])
         invalid = [i for i in idxs if i not in idx2id]
         if invalid:
-            logging.error("LLM returned invalid indices %s; they will be ignored.", invalid)
+            logging.error(
+                "LLM returned invalid indices %s; they will be ignored.", invalid
+            )
         ids = [idx2id[i] for i in idxs if i in idx2id]
         g["original_explainer_ids_in_this_group"] = ids
         g.pop("original_explainer_indices_in_this_group", None)
@@ -565,16 +633,20 @@ def map_indices_to_ids(output: Dict[str, Any], in_group: Dict[str, Any]) -> Dict
     return output
 
 
-def group_pairs_with_ids(pairs: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+def group_pairs_with_ids(
+    pairs: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
     """Aggregate a list of {descriptor, explainer, id, source_pair_ids} by descriptor."""
     d: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for p in pairs:
         desc = p["descriptor"]
-        d[desc].append({
-            "id": p["id"],
-            "explainer": p["explainer"],
-            "source_pair_ids": p.get("source_pair_ids", []),
-        })
+        d[desc].append(
+            {
+                "id": p["id"],
+                "explainer": p["explainer"],
+                "source_pair_ids": p.get("source_pair_ids", []),
+            }
+        )
     return d
 
 
@@ -587,19 +659,23 @@ def flatten_and_id_output(merged_groups: List[Dict[str, Any]]) -> List[Dict[str,
         orig_desc = normalize_descriptor(output.get("original_descriptor"))
         if not orig_desc:
             raise ValueError("Missing original descriptor in merge output.")
-        for g in (output.get("groups")):
+        for g in output.get("groups"):
             gd = normalize_descriptor(g.get("group_descriptor"))
             ge = (g.get("group_explainer") or "").strip()
             if not gd or not ge:
                 raise ValueError("Invalid group in merge events.")
             canonical_id = generate_uuid_id()
-            source_ids = [sid for sid in (g.get("original_explainer_ids_in_this_group"))]
-            out.append({
-                "id": canonical_id,
-                "descriptor": gd,
-                "explainer": ge,
-                "source_pair_ids": source_ids,
-            })
+            source_ids = [
+                sid for sid in (g.get("original_explainer_ids_in_this_group"))
+            ]
+            out.append(
+                {
+                    "id": canonical_id,
+                    "descriptor": gd,
+                    "explainer": ge,
+                    "source_pair_ids": source_ids,
+                }
+            )
     return out
 
 
@@ -607,20 +683,21 @@ def make_prompts(batch: List[Dict[str, Any]]) -> List[str]:
     prompts: List[str] = []
     for group in batch:
         descriptor = group["descriptor"]
-        explainers = group["explainers"]      # list of {id, explainer}
-        prompt = disambiguation_prompt.merge_descriptors_prompt(
-            descriptor, explainers)
+        explainers = group["explainers"]  # list of {id, explainer}
+        prompt = disambiguation_prompt.merge_descriptors_prompt(descriptor, explainers)
         prompts.append(prompt)
     return prompts
 
-        
-def batch_and_process(pending_groups: List[Dict[str, Any]],
-                      llm_processor: callable,
-                      output_validator: callable,
-                      processed_ids: Set[str],
-                      max_explainers_per_prompt=20,
-                      max_prompts_per_call=512,
-                      max_chars_per_call=2_000_000):
+
+def batch_and_process(
+    pending_groups: List[Dict[str, Any]],
+    llm_processor: callable,
+    output_validator: callable,
+    processed_ids: Set[str],
+    max_explainers_per_prompt=20,
+    max_prompts_per_call=512,
+    max_chars_per_call=2_000_000,
+):
     """
     Process all pending groups through the LLM with efficient batching.
     Results are aligned by index to pending_groups.
@@ -634,24 +711,33 @@ def batch_and_process(pending_groups: List[Dict[str, Any]],
         descriptor = group["descriptor"]
 
         # Filter out already-processed originals
-        filtered_ids = [e["id"] for e in group["explainers"] if e["id"] in processed_ids]
+        filtered_ids = [
+            e["id"] for e in group["explainers"] if e["id"] in processed_ids
+        ]
         if filtered_ids:
-            logging.info(f"Filtered out {len(filtered_ids)} already processed IDs from cohort index {cohort_idx}")
+            logging.info(
+                f"Filtered out {len(filtered_ids)} already processed IDs from cohort index {cohort_idx}"
+            )
 
-        remaining_explainers = [e for e in group["explainers"] if e["id"] not in processed_ids]
-
+        remaining_explainers = [
+            e for e in group["explainers"] if e["id"] not in processed_ids
+        ]
 
         # Split large groups into chunks
         for i in range(0, len(remaining_explainers), max_explainers_per_prompt):
-            chunk = remaining_explainers[i:i + max_explainers_per_prompt]
-            prompt_text = disambiguation_prompt.merge_descriptors_prompt(descriptor, chunk)
-            all_prompts.append({
-                "prompt": prompt_text,
-                "chars": len(prompt_text),
-                "cohort_idx": cohort_idx,
-                "explainers": chunk,
-                "descriptor": descriptor
-            })
+            chunk = remaining_explainers[i : i + max_explainers_per_prompt]
+            prompt_text = disambiguation_prompt.merge_descriptors_prompt(
+                descriptor, chunk
+            )
+            all_prompts.append(
+                {
+                    "prompt": prompt_text,
+                    "chars": len(prompt_text),
+                    "cohort_idx": cohort_idx,
+                    "explainers": chunk,
+                    "descriptor": descriptor,
+                }
+            )
 
     # STEP 2: Pack prompts into batches
     prompt_batches = []
@@ -659,8 +745,8 @@ def batch_and_process(pending_groups: List[Dict[str, Any]],
     all_prompts.sort(key=lambda p: p["chars"])
     for item in all_prompts:
         if current_batch and (
-            len(current_batch) + 1 > max_prompts_per_call or
-            current_chars + item["chars"] > max_chars_per_call
+            len(current_batch) + 1 > max_prompts_per_call
+            or current_chars + item["chars"] > max_chars_per_call
         ):
             prompt_batches.append(current_batch)
             current_batch, current_chars = [], 0
@@ -671,7 +757,9 @@ def batch_and_process(pending_groups: List[Dict[str, Any]],
 
     # STEP 3: Process each batch
     for batch_idx, batch in enumerate(prompt_batches):
-        logging.info(f"Processing batch {batch_idx + 1}/{len(prompt_batches)} with {len(batch)} prompts")
+        logging.info(
+            f"Processing batch {batch_idx + 1}/{len(prompt_batches)} with {len(batch)} prompts"
+        )
         prompt_texts = [it["prompt"] for it in batch]
         outputs = llm_processor(prompt_texts)
 
@@ -700,32 +788,43 @@ def batch_and_process(pending_groups: List[Dict[str, Any]],
     return results_by_group
 
 
-
-def make_descriptor_explainer_groups(pairs: List[Tuple[str, List[Dict[str, str]]]]) -> List[Dict[str, Any]]:
+def make_descriptor_explainer_groups(
+    pairs: List[Tuple[str, List[Dict[str, str]]]],
+) -> List[Dict[str, Any]]:
     return [{"descriptor": desc, "explainers": expls} for desc, expls in pairs]
 
 
 # ------------------- Trace helpers -------------------------
 
+
 def build_merge_events(
     merged_groups: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Produce structured merge events mapping source_pair_ids -> new_pair_id."""    
+    """Produce structured merge events mapping source_pair_ids -> new_pair_id."""
     events: List[Dict[str, Any]] = []
     for group in merged_groups:
         id = group.get("id")
         desc = group.get("descriptor")
         expl = group.get("explainer")
         source_ids = group.get("source_pair_ids") or []
-        if not id or not desc or not expl or not isinstance(source_ids, list) or not source_ids:
+        if (
+            not id
+            or not desc
+            or not expl
+            or not isinstance(source_ids, list)
+            or not source_ids
+        ):
             raise ValueError("Invalid group in merge events.")
-        events.append({
-            "new_descriptor": desc,
-            "new_explainer": expl,
-            "new_pair_id": id,
-            "source_pair_ids": source_ids,
-        })
+        events.append(
+            {
+                "new_descriptor": desc,
+                "new_explainer": expl,
+                "new_pair_id": id,
+                "source_pair_ids": source_ids,
+            }
+        )
     return events
+
 
 def audit_results_completeness(
     path_to_input: Path,
@@ -747,7 +846,7 @@ def audit_results_completeness(
             if not line.strip():
                 continue
             obj = json.loads(line)
-            for e in (obj.get("explainers") or []):
+            for e in obj.get("explainers") or []:
                 pid = e.get("id")
                 if not pid:
                     raise RuntimeError("Input contains an explainer without 'id'.")
@@ -787,11 +886,13 @@ def audit_results_completeness(
     src_set = set(sources_multiset)
 
     # --- compute graph roles ---
-    pass_through = input_set & output_set              # inputs that became outputs untouched
-    merged_inputs = input_set - pass_through           # inputs that must be consumed by lineage
-    leaves = src_set - new_set                         # sources that are not produced by earlier merges
-    sinks = new_set - src_set                          # produced IDs that never feed into later merges
-    expected_sinks = output_set - pass_through         # merges must account for all non-pass-through outputs
+    pass_through = input_set & output_set  # inputs that became outputs untouched
+    merged_inputs = input_set - pass_through  # inputs that must be consumed by lineage
+    leaves = src_set - new_set  # sources that are not produced by earlier merges
+    sinks = new_set - src_set  # produced IDs that never feed into later merges
+    expected_sinks = (
+        output_set - pass_through
+    )  # merges must account for all non-pass-through outputs
 
     problems: list[str] = []
 
@@ -799,56 +900,82 @@ def audit_results_completeness(
     if leaves != merged_inputs:
         missing = list(merged_inputs - leaves)
         unknown = list(leaves - merged_inputs)
-        problems.append(f"Leaf mismatch. Missing leaves={missing[:50]} (and {max(0,len(missing)-50)} more), "
-                        f"Unknown leaves={unknown[:50]} (and {max(0,len(unknown)-50)} more)")
+        problems.append(
+            f"Leaf mismatch. Missing leaves={missing[:50]} (and {max(0,len(missing)-50)} more), "
+            f"Unknown leaves={unknown[:50]} (and {max(0,len(unknown)-50)} more)"
+        )
 
     # 2) Multiplicity: merged inputs appear exactly once as sources; no input appears >1 time
     src_counts = Counter(sources_multiset)
-    wrong_mult = {pid: c for pid, c in src_counts.items() if pid in merged_inputs and c != 1}
+    wrong_mult = {
+        pid: c for pid, c in src_counts.items() if pid in merged_inputs and c != 1
+    }
     if wrong_mult:
-        problems.append(f"Merged inputs must appear exactly once as sources. Offenders={list(wrong_mult.items())[:50]}")
-    overused_inputs = {pid: c for pid, c in src_counts.items() if pid in input_set and c > 1}
+        problems.append(
+            f"Merged inputs must appear exactly once as sources. Offenders={list(wrong_mult.items())[:50]}"
+        )
+    overused_inputs = {
+        pid: c for pid, c in src_counts.items() if pid in input_set and c > 1
+    }
     if overused_inputs:
-        problems.append(f"Input IDs used more than once as sources: {list(overused_inputs.items())[:50]}")
+        problems.append(
+            f"Input IDs used more than once as sources: {list(overused_inputs.items())[:50]}"
+        )
 
     # 3) Sinks must match all non-pass-through outputs
     if sinks != expected_sinks:
         missing = list(expected_sinks - sinks)
         unknown = list(sinks - expected_sinks)
-        problems.append(f"Sink mismatch. Missing sinks={missing[:50]} ; Unknown sinks={unknown[:50]}")
+        problems.append(
+            f"Sink mismatch. Missing sinks={missing[:50]} ; Unknown sinks={unknown[:50]}"
+        )
 
     # 4) Every output is either a sink or a pass-through; nothing else
     stray_outputs = output_set - (sinks | pass_through)
     if stray_outputs:
-        problems.append(f"Stray outputs not accounted for by lineage or pass-through: {list(stray_outputs)[:50]}")
+        problems.append(
+            f"Stray outputs not accounted for by lineage or pass-through: {list(stray_outputs)[:50]}"
+        )
 
     # 5) No unknown sources (must be an input or a previously produced new id)
-    unknown_sources = [sid for sid in src_set if sid not in input_set and sid not in new_set]
+    unknown_sources = [
+        sid for sid in src_set if sid not in input_set and sid not in new_set
+    ]
     if unknown_sources:
-        problems.append(f"Unknown source IDs referenced in lineage: {unknown_sources[:50]}")
+        problems.append(
+            f"Unknown source IDs referenced in lineage: {unknown_sources[:50]}"
+        )
 
     # 6) No duplicate creation of new IDs
     dup_new = [nid for nid, c in Counter(new_ids).items() if c != 1]
     if dup_new:
-        problems.append(f"Each new_pair_id must be created exactly once. Duplicates={dup_new[:50]}")
+        problems.append(
+            f"Each new_pair_id must be created exactly once. Duplicates={dup_new[:50]}"
+        )
 
     # 7) Ensure merges don’t reuse input IDs as new IDs (policy: new IDs are UUIDs)
     reused = list(new_set & input_set)
     if reused:
-        problems.append(f"new_pair_id collided with an input ID (should be UUID-only): {reused[:50]}")
+        problems.append(
+            f"new_pair_id collided with an input ID (should be UUID-only): {reused[:50]}"
+        )
 
     if problems:
         for p in problems:
             logging.error(p)
             logging.error("-" * 20)
-            logging.error("AUDIT FAILED. There is something fishy in the results. See errors above.")
+            logging.error(
+                "AUDIT FAILED. There is something fishy in the results. See errors above."
+            )
             logging.error("-" * 20)
         return False
     else:
-        logging.info("Audit passed: pass-through + merged inputs fully accounted, sinks match outputs, no unknowns.")
+        logging.info(
+            "Audit passed: pass-through + merged inputs fully accounted, sinks match outputs, no unknowns."
+        )
         return True
-    
-    
+
+
 def debug_duplicate_ids(cohort, results_by_group):
     """Real duplicates only; results_by_group is a list aligned to cohort."""
     in_locs = defaultdict(set)
@@ -865,17 +992,20 @@ def debug_duplicate_ids(cohort, results_by_group):
                 for pid in g.get("original_explainer_ids_in_this_group", []):
                     out_locs[pid].add(f"Output cohort#{idx}-{o_idx}-{g_idx}")
 
-    dup_inputs  = {pid: sorted(locs) for pid, locs in in_locs.items()  if len(locs) > 1}
+    dup_inputs = {pid: sorted(locs) for pid, locs in in_locs.items() if len(locs) > 1}
     dup_outputs = {pid: sorted(locs) for pid, locs in out_locs.items() if len(locs) > 1}
 
     if dup_inputs or dup_outputs:
-        logging.error("Found real duplicates: %d in inputs, %d in outputs",
-                      len(dup_inputs), len(dup_outputs))
+        logging.error(
+            "Found real duplicates: %d in inputs, %d in outputs",
+            len(dup_inputs),
+            len(dup_outputs),
+        )
         for i, (pid, locs) in enumerate(list(dup_inputs.items())[:10]):
-            logging.error("Input-duplicate ID %d: %s", i+1, pid)
+            logging.error("Input-duplicate ID %d: %s", i + 1, pid)
             logging.error("  Appears in inputs: %s", locs)
         for i, (pid, locs) in enumerate(list(dup_outputs.items())[:10]):
-            logging.error("Output-duplicate ID %d: %s", i+1, pid)
+            logging.error("Output-duplicate ID %d: %s", i + 1, pid)
             logging.error("  Appears in outputs: %s", locs)
 
     return {"input": dup_inputs, "output": dup_outputs}
@@ -898,7 +1028,7 @@ def main(args):
             f.write(f"{k}: {v}\n")
 
     dm = DescriptorMerger(args)
-    
+
     if not args.mock_llm:
         logging.info("Loading LLM...")
         dm.llm_setup()
@@ -912,7 +1042,7 @@ def main(args):
     final_groups: List[Dict[str, Any]] = []
     pending: List[Dict[str, Any]] = []
     lineage_events: List[Dict[str, Any]] = []
-    
+
     # Get a set of all input IDs
     input_ids = load_original_input_ids(Path(args.data_path), args.test)
     # Keep track of all processed IDs globally to avoid duplicates
@@ -932,51 +1062,65 @@ def main(args):
         processed_from_lineage = set()
         for ev in lineage_events:
             for sid in ev.get("source_pair_ids", []):
-                if sid in input_ids:             # keep originals only
+                if sid in input_ids:  # keep originals only
                     processed_from_lineage.add(sid)
 
         # Prefer lineage; if a processed_ids JSON exists, intersect it
         if (checkpoint_dir / f"iter_{step_idx:08d}_processed_ids.json").exists():
-            with (checkpoint_dir / f"iter_{step_idx:08d}_processed_ids.json").open("r") as f:
+            with (checkpoint_dir / f"iter_{step_idx:08d}_processed_ids.json").open(
+                "r"
+            ) as f:
                 previously_saved = set(json.load(f))
             previously_saved &= input_ids
             global_processed_ids = processed_from_lineage | previously_saved
         else:
             global_processed_ids = processed_from_lineage
 
-        logging.info("Resuming from checkpoint #%d: %d final, %d pending.",
-                     step_idx, len(final_groups), len(pending))
-        logging.info("Resume: %d original input IDs already processed.", len(global_processed_ids))
+        logging.info(
+            "Resuming from checkpoint #%d: %d final, %d pending.",
+            step_idx,
+            len(final_groups),
+            len(pending),
+        )
+        logging.info(
+            "Resume: %d original input IDs already processed.",
+            len(global_processed_ids),
+        )
 
     else:
         descriptor_explainers = read_grouped_descriptors_file(
-            Path(args.data_path), test_size=10_000 if args.test else 0)
-        groups = make_descriptor_explainer_groups(
-            descriptor_explainers)
+            Path(args.data_path), test_size=10_000 if args.test else 0
+        )
+        groups = make_descriptor_explainer_groups(descriptor_explainers)
         final_groups = [g for g in groups if len(g["explainers"]) == 1]
         pending = [g for g in groups if len(g["explainers"]) > 1]
-        logging.info("Fresh start: %d singles, %d multis.",
-                     len(final_groups), len(pending))
+        logging.info(
+            "Fresh start: %d singles, %d multis.", len(final_groups), len(pending)
+        )
 
     if not pending:
         logging.info("No multi-explainer groups remaining.")
-        pairs = [{
-            "id": g["explainers"][0]["id"],
-            "descriptor": g["descriptor"],
-            "explainer": g["explainers"][0].get("explainer", ""),
-            "source_pair_ids": g["explainers"][0].get("source_pair_ids", []),
-        } for g in final_groups if g.get("explainers")]
+        pairs = [
+            {
+                "id": g["explainers"][0]["id"],
+                "descriptor": g["descriptor"],
+                "explainer": g["explainers"][0].get("explainer", ""),
+                "source_pair_ids": g["explainers"][0].get("source_pair_ids", []),
+            }
+            for g in final_groups
+            if g.get("explainers")
+        ]
         save_results(results_dir / f"{args.run_id}_disambig.jsonl", pairs)
         logging.info("Results saved.")
         return
-    
+
     CHECKPOINT_EVERY = args.checkpoint_every
 
     pass_num = 0
     while pending:
         pass_num += 1
         start_time = time.time()
-        
+
         # Take a cohort of groups to process this pass
         cohort = []
         if args.cohort_size > 0:
@@ -992,8 +1136,7 @@ def main(args):
             raise ValueError("Cohort size must be non-negative.")
 
         logging.info("=" * 40)
-        logging.info("Starting pass %d on cohort of %d groups.",
-                     pass_num, len(cohort))
+        logging.info("Starting pass %d on cohort of %d groups.", pass_num, len(cohort))
 
         # Process all groups in the cohort
         results_by_group = batch_and_process(
@@ -1003,12 +1146,12 @@ def main(args):
             processed_ids=global_processed_ids,
             max_explainers_per_prompt=20,
             max_prompts_per_call=args.max_prompts_per_call,
-            max_chars_per_call=args.max_chars_per_call
+            max_chars_per_call=args.max_chars_per_call,
         )
-        
+
         # Debugging: check for duplicate IDs in this cohort
         debug_duplicate_ids(cohort, results_by_group)
-                
+
         # Validate no duplicate processing of IDs across the cohort
         cohort_processed_ids = set()
         for i, group in enumerate(cohort):
@@ -1016,9 +1159,13 @@ def main(args):
             group_processed_ids = set()
             for output in results_by_group[i]:
                 for g in output.get("groups", []):
-                    group_processed_ids.update(g.get("original_explainer_ids_in_this_group", []))
-            
-            orig_ids_this_group = {pid for pid in group_processed_ids if pid in input_ids}
+                    group_processed_ids.update(
+                        g.get("original_explainer_ids_in_this_group", [])
+                    )
+
+            orig_ids_this_group = {
+                pid for pid in group_processed_ids if pid in input_ids
+            }
             # Ensure no ID duplication across groups
             if orig_ids_this_group & cohort_processed_ids:
                 duplicate_ids = orig_ids_this_group & cohort_processed_ids
@@ -1032,35 +1179,45 @@ def main(args):
             # Groups that went through LLM
             merged_groups = results_by_group[i]
             if not merged_groups:
-               logging.info(
-                   "Skipping cohort index %d: no outputs (all explainers for this group were already processed).", i
-                   )
-               continue
+                logging.info(
+                    "Skipping cohort index %d: no outputs (all explainers for this group were already processed).",
+                    i,
+                )
+                continue
 
             # Flatten -> canonical pairs with lineage
             # flat_pairs: [{id, descriptor, explainer, source_pair_ids}, ...]
             flat_pairs = flatten_and_id_output(merged_groups)
-            
+
             # Sanity check and dedup within this parent group
             seen = set()
             dedup = []
             for p in flat_pairs:
                 key = tuple(sorted(p["source_pair_ids"]))
                 if key in seen:
-                    logging.warning("Dedup: duplicate source set within one parent; dropping")
+                    logging.warning(
+                        "Dedup: duplicate source set within one parent; dropping"
+                    )
                     continue
                 seen.add(key)
                 dedup.append(p)
             flat_pairs = dedup
-            
+
             assert flat_pairs, "No pairs produced from merge."
             # Log lineage events
             lineage_events.extend(build_merge_events(flat_pairs))
 
             # Re-group by descriptor for the next pass
-            aggregated = group_pairs_with_ids(flat_pairs) # {descriptor: [{id, expl, sources},...], ...}
-            aggregated_pairs = list(aggregated.items())  # [(desc, [{id, expl, sources},...]), ...]
-            sub_groups = [{"descriptor": desc, "explainers": expls} for (desc, expls) in aggregated_pairs]
+            aggregated = group_pairs_with_ids(
+                flat_pairs
+            )  # {descriptor: [{id, expl, sources},...], ...}
+            aggregated_pairs = list(
+                aggregated.items()
+            )  # [(desc, [{id, expl, sources},...]), ...]
+            sub_groups = [
+                {"descriptor": desc, "explainers": expls}
+                for (desc, expls) in aggregated_pairs
+            ]
 
             # Partition and collect
             new_multis = [g for g in sub_groups if len(g["explainers"]) > 1]
@@ -1072,35 +1229,49 @@ def main(args):
 
         if CHECKPOINT_EVERY and (pass_num % CHECKPOINT_EVERY == 0) and pass_num > 0:
             step_idx = pass_num
-            save_checkpoint_full(checkpoint_dir, step_idx, final_groups, pending, lineage_events, global_processed_ids)
+            save_checkpoint_full(
+                checkpoint_dir,
+                step_idx,
+                final_groups,
+                pending,
+                lineage_events,
+                global_processed_ids,
+            )
 
         end_time = time.time()
         pass_time = end_time - start_time
-        logging.info(f"Pass with {len(cohort)} groups done in "
-                     f"{time.strftime('%H:%M:%S', time.gmtime(pass_time))}. "
-                     f"{len(pending)} pending remain.")
+        logging.info(
+            f"Pass with {len(cohort)} groups done in "
+            f"{time.strftime('%H:%M:%S', time.gmtime(pass_time))}. "
+            f"{len(pending)} pending remain."
+        )
 
     # --------------------------- Final save and sanity checks -----------------------------------
     # Sanity check: all final groups must be singletons
     bad = [g for g in final_groups if len(g.get("explainers", [])) != 1]
     if bad:
-        raise ValueError(f"Expected singleton groups only at final save; found {len(bad)} non-singletons.")
-    
+        raise ValueError(
+            f"Expected singleton groups only at final save; found {len(bad)} non-singletons."
+        )
+
     pairs = []
     for g in final_groups:
         ex = g["explainers"][0]
-        pairs.append({
-            "id": ex["id"],
-            "descriptor": g["descriptor"],
-            "explainer": ex.get("explainer", ""),
-            "source_pair_ids": ex.get("source_pair_ids", []),
-        })
+        pairs.append(
+            {
+                "id": ex["id"],
+                "descriptor": g["descriptor"],
+                "explainer": ex.get("explainer", ""),
+                "source_pair_ids": ex.get("source_pair_ids", []),
+            }
+        )
     out_path = results_dir / f"{args.run_id}_disambig.jsonl"
     save_results(out_path, pairs)
     # Save final checkpoint in results_dir
-    save_checkpoint_full(results_dir, pass_num,
-                        final_groups, pending, lineage_events, final=True)
-    
+    save_checkpoint_full(
+        results_dir, pass_num, final_groups, pending, lineage_events, final=True
+    )
+
     # End-to-end audit
     audit_passed = audit_results_completeness(
         Path(args.data_path),
@@ -1113,8 +1284,10 @@ def main(args):
             f.write("Audit FAILED. See log for details.\n")
 
     exec_time = time.time() - iter_start
-    logging.info(f"Disambiguation done in {time.strftime('%H:%M:%S', time.gmtime(exec_time))}. "
-                 f"Saved {len(pairs)} final pairs.")
+    logging.info(
+        f"Disambiguation done in {time.strftime('%H:%M:%S', time.gmtime(exec_time))}. "
+        f"Saved {len(pairs)} final pairs."
+    )
 
 
 if __name__ == "__main__":
@@ -1122,34 +1295,74 @@ if __name__ == "__main__":
 
     # Required parameters
     p.add_argument("--run-id", required=True)
-    p.add_argument("--data-path", required=True, type=Path,
-                   help="Path to JSONL file with objects {descriptor, pairs:[{id, explainer}]} or legacy {descriptor, explainers}.")
+    p.add_argument(
+        "--data-path",
+        required=True,
+        type=Path,
+        help="Path to JSONL file with objects {descriptor, pairs:[{id, explainer}]} or legacy {descriptor, explainers}.",
+    )
 
     # Batching parameters
-    p.add_argument("--cohort-size", dest="cohort_size", type=int, default=100,
-               help="How many groups to process together at once. Set to 0 to process all in one pass (might cause OOMs).")
-    p.add_argument("--max-prompts-per-call", dest="max_prompts_per_call", type=int, default=512,
-                help="Cap on prompts per vLLM.generate call.")
-    p.add_argument("--max-chars-per-call", dest="max_chars_per_call", type=int, default=2_000_000,
-                help="Cap on total characters across all prompts in one call.")
+    p.add_argument(
+        "--cohort-size",
+        dest="cohort_size",
+        type=int,
+        default=100,
+        help="How many groups to process together at once. Set to 0 to process all in one pass (might cause OOMs).",
+    )
+    p.add_argument(
+        "--max-prompts-per-call",
+        dest="max_prompts_per_call",
+        type=int,
+        default=512,
+        help="Cap on prompts per vLLM.generate call.",
+    )
+    p.add_argument(
+        "--max-chars-per-call",
+        dest="max_chars_per_call",
+        type=int,
+        default=2_000_000,
+        help="Cap on total characters across all prompts in one call.",
+    )
 
     # LLM parameters
     p.add_argument(
-        "--model", default="meta-llama/Llama-3.3-70B-Instruct", help="Model name")
-    p.add_argument("--cache-dir", default=os.environ.get("HF_HOME",
-                   "~/.cache"), help="Cache directory for model files")
-    p.add_argument("--temperature", type=float, default=0.1,
-                   help="LLM temperature. Default 0.1. Between 0 and 1.")
-    p.add_argument("--mock-llm", action="store_true",
-               help="Use a mock LLM for debugging (no model loading)")
+        "--model", default="meta-llama/Llama-3.3-70B-Instruct", help="Model name"
+    )
+    p.add_argument(
+        "--cache-dir",
+        default=os.environ.get("HF_HOME", "~/.cache"),
+        help="Cache directory for model files",
+    )
+    p.add_argument(
+        "--temperature",
+        type=float,
+        default=0.1,
+        help="LLM temperature. Default 0.1. Between 0 and 1.",
+    )
+    p.add_argument(
+        "--mock-llm",
+        action="store_true",
+        help="Use a mock LLM for debugging (no model loading)",
+    )
 
     # Control parameters
-    p.add_argument("--resume", action="store_true",
-                   help="Resume from latest checkpoint in run directory.")
-    p.add_argument("--checkpoint-every", type=int, default=20,
-                   help="Save a full checkpoint after every N passes(cohorts). 0 disables.")
-    p.add_argument("--test", action="store_true",
-                   help="Test mode: limit to 10,000 descriptors for quick test runs.")
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from latest checkpoint in run directory.",
+    )
+    p.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=20,
+        help="Save a full checkpoint after every N passes(cohorts). 0 disables.",
+    )
+    p.add_argument(
+        "--test",
+        action="store_true",
+        help="Test mode: limit to 10,000 descriptors for quick test runs.",
+    )
     args = p.parse_args()
 
     main(args)

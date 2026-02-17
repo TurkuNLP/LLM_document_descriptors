@@ -47,6 +47,7 @@ import numpy as np  # type: ignore
 
 # -------------------------- ID & normalization ---------------------------
 
+
 def _normalize_descriptor(s: str) -> str:
     return re.sub(r"[_\s]+", " ", (s or "")).strip().lower()
 
@@ -57,6 +58,7 @@ def pair_id(descriptor: str, explainer: str, *, length: int = 12) -> str:
 
 
 # -------------------------- Load originals ------------------------------
+
 
 def _split_pair_raw(text: str) -> Tuple[str, str]:
     """Split raw 'descriptor;explainer' string (matches extractor logic)."""
@@ -101,6 +103,7 @@ def load_original_counts_from_file(path: Path) -> Dict[str, int]:
 
 
 # -------------------------- Run artifacts -------------------------------
+
 
 def read_jsonl(path: Path) -> Iterable[dict]:
     if not path.exists():
@@ -169,6 +172,7 @@ def load_final_pairs(run_dir: Path, run_id: str = "") -> Dict[str, Tuple[str, st
 
 
 # -------------------------- Backward tracer ------------------------------
+
 
 def compute_contributions_by_backtrace(
     original_counts: Dict[str, int],
@@ -281,6 +285,7 @@ def compute_contributions_by_backtrace(
 
 # -------------------------- Validation ----------------------------------
 
+
 def validate_coverage(
     original_counts: Dict[str, int],
     run_dirs: List[Path],
@@ -324,7 +329,9 @@ def validate_coverage(
             f"originals_not_in_run1_(sources∪outputs): {only_in_originals}"
         )
     else:
-        print("[validate] originals: 0 (no originals loaded) — check --original-input path and format)")
+        print(
+            "[validate] originals: 0 (no originals loaded) — check --original-input path and format)"
+        )
 
     finals_total = len(id_to_pair)
     finals_set = set(id_to_pair.keys())
@@ -341,7 +348,9 @@ def validate_coverage(
 
     # Dead-end stats (if provided)
     if dead_stats is not None:
-        print(f"[validate] dead-end branches (unique): {dead_stats.get('unique_dead_ends', 0)}")
+        print(
+            f"[validate] dead-end branches (unique): {dead_stats.get('unique_dead_ends', 0)}"
+        )
         per_round = dead_stats.get("per_round", {})
         if per_round:
             parts = [f"r{r}={per_round[r]}" for r in sorted(per_round)]
@@ -367,6 +376,7 @@ def validate_coverage(
 
 # -------------------------- Main CLI ------------------------------------
 
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Backwards tracer: from final pairs to originals (depth-first, mass-conserving) with dead-end diagnostics."
@@ -383,7 +393,9 @@ def main() -> None:
         type=Path,
         nargs="+",
         required=True,
-        help=("One or more run dirs, oldest->newest (e.g., .../round_1/results ... /round_5/results)"),
+        help=(
+            "One or more run dirs, oldest->newest (e.g., .../round_1/results ... /round_5/results)"
+        ),
     )
     ap.add_argument(
         "--out",
@@ -422,7 +434,13 @@ def main() -> None:
 
     # 4) optional validation
     if args.validate:
-        validate_coverage(original_counts, list(args.runs), final_counts, id_to_pair, dead_stats=dead_stats)
+        validate_coverage(
+            original_counts,
+            list(args.runs),
+            final_counts,
+            id_to_pair,
+            dead_stats=dead_stats,
+        )
 
     # 5) write output (sorted by descending contribution_count, then id)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -437,7 +455,9 @@ def main() -> None:
             "contribution_count": total,
         }
         if args.include_breakdown and ancestry is not None and fid in ancestry:
-            row["original_counts"] = {k: int(v) for k, v in sorted(ancestry[fid].items())}
+            row["original_counts"] = {
+                k: int(v) for k, v in sorted(ancestry[fid].items())
+            }
         rows.append(row)
 
     rows.sort(key=lambda r: (-r["contribution_count"], r["id"]))
@@ -448,8 +468,12 @@ def main() -> None:
 
     # Diagnostics
     print(f"Wrote {args.out}")
-    print(f"[info] finals: {len(id_to_pair)}  counted: {sum(1 for fid in id_to_pair if final_counts.get(fid, 0) > 0)}")
-    print(f"[info] finals with zero contribution: {sum(1 for fid in id_to_pair if final_counts.get(fid, 0) == 0)}")
+    print(
+        f"[info] finals: {len(id_to_pair)}  counted: {sum(1 for fid in id_to_pair if final_counts.get(fid, 0) > 0)}"
+    )
+    print(
+        f"[info] finals with zero contribution: {sum(1 for fid in id_to_pair if final_counts.get(fid, 0) == 0)}"
+    )
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ def load_descriptors(file_path: Path) -> Tuple[List[Tuple[str, str]], List[str],
             format = "processed"
         else:
             raise ValueError("Invalid data. Cannot determine format.")
-    
+
     if format == "raw":
         with open(file_path, "r", encoding="utf-8") as file:
             for line in file:
@@ -51,15 +51,15 @@ def load_descriptors(file_path: Path) -> Tuple[List[Tuple[str, str]], List[str],
                         # We don't mind duplicate IDs at this stage, as deduplication will happen later
                         id = generate_stable_id(d, e)
                         descriptor_list.append(
-                            {"descriptor": d,
-                             "explainer": e,
-                             "id": id}
+                            {"descriptor": d, "explainer": e, "id": id}
                         )
                     else:
                         malformed_entries.append(desc_exp)
         if malformed_entries:
-            print(f"Warning: {len(malformed_entries)} malformed entries were found and skipped.")
-    
+            print(
+                f"Warning: {len(malformed_entries)} malformed entries were found and skipped."
+            )
+
     elif format == "processed":
         with open(file_path, "r", encoding="utf-8") as file:
             for line in file:
@@ -71,24 +71,26 @@ def load_descriptors(file_path: Path) -> Tuple[List[Tuple[str, str]], List[str],
                 # There really should be no such entries at this point.
                 # They indicate a bug upstream.
                 if not d or not e or not id:
-                    raise ValueError("Malformed entry (descriptor/explainer/id missing).")
+                    raise ValueError(
+                        "Malformed entry (descriptor/explainer/id missing)."
+                    )
                 else:
                     d = normalize_descriptor(d)
                     e = e.strip()
-                    descriptor_list.append(
-                        {"descriptor": d,
-                         "explainer": e,
-                         "id": id}
-                        )    
+                    descriptor_list.append({"descriptor": d, "explainer": e, "id": id})
     else:
-        raise ValueError(f"Unknown format: {format}. Supported formats are 'raw' and 'processed'.")
-    
+        raise ValueError(
+            f"Unknown format: {format}. Supported formats are 'raw' and 'processed'."
+        )
+
     return descriptor_list, malformed_entries, format
 
 
-def make_groups(descriptor_list: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
+def make_groups(
+    descriptor_list: List[Dict[str, str]],
+) -> Dict[str, List[Dict[str, str]]]:
     # Group explainers by descriptor
-    
+
     grouped: Dict[str, List[Dict[str, str]]] = {}
     for obj in descriptor_list:
         d = obj["descriptor"]
@@ -96,16 +98,15 @@ def make_groups(descriptor_list: List[Dict[str, str]]) -> Dict[str, List[Dict[st
         id = obj["id"]
         if d not in grouped:
             grouped[d] = []
-        
-        grouped[d].append(
-            {"explainer": e,
-            "id": id}
-            )
-            
+
+        grouped[d].append({"explainer": e, "id": id})
+
     return grouped
 
 
-def deduplicate_groups(grouped: Dict[str, List[Dict[str, str]]]) -> Dict[str, List[Dict[str, str]]]:
+def deduplicate_groups(
+    grouped: Dict[str, List[Dict[str, str]]],
+) -> Dict[str, List[Dict[str, str]]]:
     # Keep explainers unique per descriptor, stable-ish order (by appearance)
     deduped: Dict[str, List[Dict[str, str]]] = {}
     for d, explainers in grouped.items():
@@ -117,24 +118,21 @@ def deduplicate_groups(grouped: Dict[str, List[Dict[str, str]]]) -> Dict[str, Li
             id = e["id"]
             if exp not in seen:
                 seen.add(exp)
-                ordered_unique.append(
-                    {"explainer": exp,
-                     "id": id}
-                )
+                ordered_unique.append({"explainer": exp, "id": id})
         deduped[d] = ordered_unique
     return deduped
+
 
 def generate_uuid_id() -> str:
     """Random UUID4-based ID. This will ensure uniqueness across runs.
     However, IDs will not be stable across runs
     (identical descriptor-exlainer pairs will get different IDs each time).
-    This is not an issue as long as we make sure we never lose the ID to pair mappings."""
+    This is not an issue as long as we make sure we never lose the ID to pair mappings.
+    """
     return str(uuid.uuid4())
 
 
-def ensure_unique_ids(
-    grouped: Dict[str, List[Dict[str, str]]]
-) -> None:
+def ensure_unique_ids(grouped: Dict[str, List[Dict[str, str]]]) -> None:
     """Ensure all descriptor-explainer pairs have unique IDs.
     If duplicate IDs are found, raise ValueError because it indicates but upstream.
     We cannot simply generate new IDs here, because that would break the lineage mappings.
@@ -144,7 +142,9 @@ def ensure_unique_ids(
         for e in explainers:
             id = e["id"]
             if id in seen_ids:
-                raise ValueError(f"Duplicate ID found: {id}. IDs should be unique across all pairs.")
+                raise ValueError(
+                    f"Duplicate ID found: {id}. IDs should be unique across all pairs."
+                )
             else:
                 seen_ids.add(id)
     print(f"All {len(seen_ids)} descriptor-explainer pairs have unique IDs.")
@@ -177,18 +177,25 @@ def write_descriptors_with_ids(
             out_file.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
-def write_grouped_with_ids(file_path: Path, grouped_with_ids: Dict[str, List[Dict[str, str]]]) -> None:
+def write_grouped_with_ids(
+    file_path: Path, grouped_with_ids: Dict[str, List[Dict[str, str]]]
+) -> None:
     """Write one JSON line per descriptor with its explainer objects including IDs.
     Example line: {"descriptor": "foo", "explainers": [{"id": "abc123", "explainer": "..."}, ...]}
     """
     with file_path.open("w", encoding="utf-8") as out_file:
         for descriptor, expl in grouped_with_ids.items():
             out_file.write(
-                json.dumps({"descriptor": descriptor, "explainers": expl}, ensure_ascii=False) + "\n"
+                json.dumps(
+                    {"descriptor": descriptor, "explainers": expl}, ensure_ascii=False
+                )
+                + "\n"
             )
 
 
-def write_flat_pairs(file_path: Path, grouped_with_ids: Dict[str, List[Dict[str, str]]]) -> None:
+def write_flat_pairs(
+    file_path: Path, grouped_with_ids: Dict[str, List[Dict[str, str]]]
+) -> None:
     """Optional: write a flat file with one line per unique pair for easy joins.
     Example line: {"id": "abc123", "descriptor": "foo", "explainer": "..."}
     """
@@ -197,21 +204,27 @@ def write_flat_pairs(file_path: Path, grouped_with_ids: Dict[str, List[Dict[str,
             for p in pairs:
                 out_file.write(
                     json.dumps(
-                        {"id": p["id"], "descriptor": descriptor, "explainer": p["explainer"]},
+                        {
+                            "id": p["id"],
+                            "descriptor": descriptor,
+                            "explainer": p["explainer"],
+                        },
                         ensure_ascii=False,
                     )
                     + "\n"
                 )
-                
+
+
 def write_malformed_entries(file_path: Path, malformed_entries: List[str]) -> None:
     """Write malformed entries to a separate file for examination."""
     with file_path.open("w", encoding="utf-8") as out_file:
         for entry in malformed_entries:
             out_file.write(entry + "\n")
-                
+
+
 def group_descriptors(input_path: Path, out_dir: Path, num_splits: int) -> None:
     # Main function to group descriptors and write outputs
-    
+
     out_dir.mkdir(parents=True, exist_ok=True)
     descriptors_with_ids_path = Path(out_dir / "descriptors_with_ids.jsonl")
     grouped_out_path = Path(out_dir / "grouped_descriptors_with_ids.jsonl")
@@ -227,7 +240,7 @@ def group_descriptors(input_path: Path, out_dir: Path, num_splits: int) -> None:
         # We do not want ot deduplicate anymore with processed data
         # That would lead to data loss
         final_groups = grouped
-        
+
     # Ensure unique IDs across all pairs
     # If input data waw "raw", there should be no duplicates, because of deduplication above
     # If input data was "processed", duplicates also should not exist because of UUID
@@ -240,7 +253,7 @@ def group_descriptors(input_path: Path, out_dir: Path, num_splits: int) -> None:
     write_flat_pairs(flat_out_path, final_groups)
     if malformed:
         write_malformed_entries(malformed_out_path, malformed)
-    
+
     if not isinstance(num_splits, int):
         print(f"Invalid num_splits value: {num_splits}. Must be an integer.")
         print("Skipping splitting step.")
@@ -255,21 +268,32 @@ def group_descriptors(input_path: Path, out_dir: Path, num_splits: int) -> None:
                 output_dir=splits_out_dir,
                 split_count=num_splits,
                 shuffle=True,
-                seed=42
-                )
+                seed=42,
+            )
+
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Extract and group descriptor-explainer pairs with IDs.")
-    p.add_argument("--input", type=Path, required=True,
-                   help="Path to input JSONL file with descriptors.")
-    p.add_argument("--out-dir", type=Path, required=True,
-                   help="Directory where results will be stored.")
-    p.add_argument("--num-splits", type=int, default=1,
-                   help="Number of splits to create for the output files.")
+    p = argparse.ArgumentParser(
+        description="Extract and group descriptor-explainer pairs with IDs."
+    )
+    p.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Path to input JSONL file with descriptors.",
+    )
+    p.add_argument(
+        "--out-dir",
+        type=Path,
+        required=True,
+        help="Directory where results will be stored.",
+    )
+    p.add_argument(
+        "--num-splits",
+        type=int,
+        default=1,
+        help="Number of splits to create for the output files.",
+    )
     args = p.parse_args()
-    
+
     group_descriptors(args.input, args.out_dir, args.num_splits)
-    
-    
-
-

@@ -1,9 +1,14 @@
 def merge_descriptors_prompt(descriptor, explainers):
-    roster_lines = [f"[{i}] {str(e.get('explainer')).strip()}" for i, e in enumerate(explainers)]
-    assert len(roster_lines) == len(explainers), "Explainer indexing mismatch in prompt buider."
+    roster_lines = [
+        f"[{i}] {str(e.get('explainer')).strip()}" for i, e in enumerate(explainers)
+    ]
+    assert len(roster_lines) == len(
+        explainers
+    ), "Explainer indexing mismatch in prompt buider."
     roster = "\n".join(roster_lines)
 
-    return """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+    return (
+        """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 You will be given a descriptor and its list of explainers. The descriptor describes a document and the explainers provide additional context to the descriptor.
 Each explainer line is prefixed with its INDEX in square brackets, like: [0] text...
 
@@ -38,8 +43,10 @@ Return a single valid JSON object with this exact structure (no extra text or co
     }
   ]
 }
-<|eot_id|><|start_header_id|>user<|end_header_id|>""" + f"""
+<|eot_id|><|start_header_id|>user<|end_header_id|>"""
+        + f"""
 
 Descriptor: {descriptor}
 Explainers (each prefixed by its INDEX):
 {roster}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"""
+    )

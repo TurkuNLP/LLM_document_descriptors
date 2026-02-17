@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=syn_find
+#SBATCH --job-name=trace_disambig
 #SBATCH --account=project_462000963
 #SBATCH --partition=debug
 #SBATCH --time=00:29:00
@@ -20,7 +20,7 @@ merge_res_base="../results/disambiguate_merges/final_results"
 
 srun python3 trace_disambiguation_lineages.py \
   --original "../results/new_descriptors/all_descriptors_new.jsonl" \
-  --final "$merge_res_base/all_disambig.jsonl" \
-  --lineage "$merge_res_base/lineage_concat.jsonl"\
-  --out "../results/disambiguate_merges/traced_lineages/round_3_trace.jsonl" \
+  --final "$merge_res_base/final_disambig.jsonl" \
+  --lineage "$merge_res_base/final_lineage.jsonl"\
+  --out "../results/disambiguate_merges/traced_lineages/final_trace.jsonl" \
   
