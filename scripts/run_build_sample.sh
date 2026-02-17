@@ -16,7 +16,9 @@ module load pytorch/2.5
 
 source ../.venv_pt2.5/bin/activate
 
-srun python3 build_sample.py --input "../data/HPLT4/global-dedup/ita_Latn" \
-                             --output "../data/HPLT4/global-dedup/ita_Latn_sample.jsonl" \
+base_dir="/scratch/project_462000963/datasets/hplt/4.0/global-dedup"
+
+srun python3 build_sample.py --input "$base_dir/por_Latn" \
+                             --output "$base_dir/samples/por_Latn/por_Latn_1M_sample.jsonl" \
                              -n 1000000 \
                              --initial-keep-prob 0.005

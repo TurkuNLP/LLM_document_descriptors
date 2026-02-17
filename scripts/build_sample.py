@@ -68,6 +68,7 @@ def sample_data(
     sample_size: int,
     initial_keep_prob: float,
     checkpoint_interval: int,
+    no_cleanup: bool = False,
 ) -> None:
     """Take a sample of documents from JSONL files using reservoir sampling with an initial random sampling step.
     To preserve memory, we keep only a fraction of the documents in the initial sample and then perform a final random sample to get the desired number of samples.
@@ -84,7 +85,9 @@ def sample_data(
 
     line_counter = 0
     num_sampled = 0
-
+    
+    print(f"Loading files from {input_path}...", flush=True)
+    
     if (
         Path(f"{output_path}.checkpoint").exists()
         and Path(f"{output_path}.checkpoint.idx").exists()
@@ -155,9 +158,10 @@ def sample_data(
         for example in final_sample:
             f.write(example if example.endswith("\n") else example + "\n")
 
-    # Remove checkpoint files after successful sampling
-    Path(f"{output_path}.checkpoint").unlink(missing_ok=True)
-    Path(f"{output_path}.checkpoint.idx").unlink(missing_ok=True)
+    if not no_cleanup:
+        # Remove checkpoint files after successful sampling
+        Path(f"{output_path}.checkpoint").unlink(missing_ok=True)
+        Path(f"{output_path}.checkpoint.idx").unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
@@ -182,6 +186,11 @@ if __name__ == "__main__":
         default=10,
         help="Save intermediate checkpoint every N documents (default: 10)",
     )
+    parser.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Do not remove checkpoint files after successful sampling",
+    )
 
     args = parser.parse_args()
     sample_data(
@@ -190,6 +199,7 @@ if __name__ == "__main__":
         args.n,
         args.initial_keep_prob,
         args.checkpoint_interval,
+        no_cleanup=args.no_cleanup,
     )
 
     print(
