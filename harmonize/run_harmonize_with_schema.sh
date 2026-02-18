@@ -10,7 +10,8 @@
 #SBATCH --mem=128G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
-#SBATCH --array=4,6
+#SBATCH --array=0-39
+#SBATCH --exclusive
 
 module purge
 module use /appl/local/csc/modulefiles
@@ -20,12 +21,12 @@ source ../.venv_pt2.5/bin/activate
 
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
-benchmark_name="$1"
+data_name="$1"
 
 BASEDIR="${SLURM_SUBMIT_DIR}"
-INPUT_DIR="${BASEDIR}/../results/benchmarks/${benchmark_name}/splits"
+INPUT_DIR="${BASEDIR}/../results/HPLT4/${data_name}"
 SCHEMA_FILE="${BASEDIR}/../results/final_schema/descriptor_schema.jsonl"
-RUN_ID_BASE="descriptors_${benchmark_name}"
+RUN_ID_BASE="descriptors_${data_name}"
 
 echo "SLURM_ARRAY_TASK_ID: " $SLURM_ARRAY_TASK_ID
 echo "================================"
@@ -33,7 +34,7 @@ echo "Reading data from $INPUT_DIR"
 echo "================================"
 
 # Get a sorted list of .jsonl files into an array
-mapfile -t FILES < <(find "$INPUT_DIR" -maxdepth 1 -type f -name '*.jsonl' | sort -V)
+mapfile -t FILES < <(find "$INPUT_DIR" -maxdepth 2 -type f -name '*.jsonl' | sort -V)
 echo "Found ${#FILES[@]} .jsonl files"
 for f in "${FILES[@]}"; do echo "  - $f"; done
 

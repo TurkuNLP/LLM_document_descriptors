@@ -24,16 +24,18 @@ export PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_thresh
 
 gpu-energy --save
 
-run_id_base="ita_Latn"
+lang="por_Latn"
+run_id_base="${lang}_sample"
 run_id="${run_id_base}_${SLURM_ARRAY_TASK_ID}"
 
 BATCH_SIZE=500
 NUM_BATCHES=50
 CHUNK_SIZE=$((BATCH_SIZE * NUM_BATCHES))
 
-DATASET_PATH="../data/HPLT4/global-dedup/ita_Latn_decompressed/batch_1.jsonl"
+DATASET_PATH_BASE="/scratch/project_462000963/datasets/hplt/4.0/global-dedup/samples/${lang}"
+DATASET_PATH="$DATASET_PATH_BASE/1M_sample.jsonl"
 DATASET_BASENAME="$(basename "$DATASET_PATH" .jsonl)"
-SHARD_DIR="../data/HPLT4/global-dedup/ita_Latn_decompressed/dataset_shards"
+SHARD_DIR="$DATASET_PATH_BASE/shards"
 
 mkdir -p "$SHARD_DIR"
 
@@ -46,12 +48,15 @@ echo "Processing chunk size: $CHUNK_SIZE"
 if [ "$SLURM_ARRAY_TASK_ID" -eq 0 ]; then
     echo "Splitting dataset into shards of $CHUNK_SIZE lines..."
 
+    [ -f "$DATASET_PATH" ] || { echo "Error: Dataset file not found: $DATASET_PATH"; exit 1; }
+    
     split -l "$CHUNK_SIZE" -d --additional-suffix=.jsonl \
         "$DATASET_PATH" "$SHARD_DIR/${DATASET_BASENAME}_"
 
     # Rename to dataset_name_0.jsonl, dataset_name_1.jsonl, ...
     i=0
     for f in "$SHARD_DIR/${DATASET_BASENAME}_"*.jsonl; do
+        [ -e "$f" ] || { echo "Error: No shard files found"; exit 1; }
         mv "$f" "$SHARD_DIR/${DATASET_BASENAME}_${i}.jsonl"
         i=$((i+1))
     done
@@ -65,9 +70,10 @@ fi
 SHARD_PATH="$SHARD_DIR/${DATASET_BASENAME}_${SLURM_ARRAY_TASK_ID}.jsonl"
 
 echo "Waiting for shard: $SHARD_PATH"
-while [ ! -f "$SHARD_PATH" ]; do
-    sleep 5
-done
+timeout 120 bash -c 'while [ ! -f "$1" ]; do sleep 5; done' _ "$SHARD_PATH" || {
+    echo "Error: Shard file not found after 120 seconds"
+    exit 1
+}
 
 echo "Using shard: $SHARD_PATH"
 

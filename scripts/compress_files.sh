@@ -11,14 +11,14 @@
 #SBATCH -e ../logs/%j.err
 
 ###############################################################################
-# Compress every file in multiple directories with zstd, skipping anything that
-# already ends in .zst. Removes originals only after a successful compression.
+# Compress every file in a directory with zstd, skipping anything that already
+# ends in .zst.  Removes originals only after a successful compression.
 #
-#   sbatch compress_zstd.sbatch  "/path/to/dir1 /path/to/dir2 ..." [compression-level]
+#   sbatch compress_files.sh  /path/to/dir  [compression-level]
 #
 # Arguments
-#   $1...$n-1  Directories to process (required, can use wildcards like dir_*)
-#   $n         Optional zstd level (1–22, default 19)
+#   $1  Directory to walk (required)
+#   $2  Optional zstd level (1–22, default 19)
 #
 # Notes
 #   • Each file is compressed **independently** so failures affect only
@@ -30,45 +30,29 @@
 set -euo pipefail
 
 # ---- Parse and validate user input -----------------------------------------
-# Check if at least one argument is provided
-if [[ $# -lt 1 ]]; then
-  echo "Usage: sbatch $0 dir1 [dir2 dir3 ...] [compression-level]" >&2
+DIR=${1:-}
+if [[ -z "$DIR" ]]; then
+  echo "Usage: sbatch $0 /path/to/dir [compression-level]" >&2
   exit 1
 fi
 
-# Check if the last argument is numeric (compression level)
-if [[ $# -gt 1 ]] && [[ "${!#}" =~ ^[0-9]+$ ]]; then
-  LEVEL="${!#}"  # Use the last argument as compression level
-  DIRS=("${@:1:$#-1}")  # All arguments except the last one are directories
-else
-  LEVEL=19  # Default compression level
-  DIRS=("$@")  # All arguments are directories
-fi
-
+LEVEL=${2:-19}                      # Default to a high compression level
 THREADS=${SLURM_CPUS_PER_TASK:-1}   # Use all cores Slurm gives us
 
 # ---- Environment for multithreaded zstd ------------------------------------
 export ZSTD_NBTHREADS="$THREADS"    # Honour -T0 (auto) inside zstd
 
-echo "Compressing files in '${DIRS[*]}' with zstd -${LEVEL} using ${THREADS} threads."
+echo "Compressing files in '$DIR' with zstd -${LEVEL} using ${THREADS} threads."
 
 # ---- Main compression loop --------------------------------------------------
-# Process each directory
-for DIR in "${DIRS[@]}"; do
-  if [[ ! -d "$DIR" ]]; then
-    echo "Warning: '$DIR' is not a directory, skipping." >&2
-    continue
-  fi
+# • find:   locate regular files that do **not** already end in .zst
+# • xargs:  run zstd in parallel, one process per file, up to $THREADS at once
+# • zstd:   -T0  = use all threads per process
+#           --rm = delete the source file only if compression succeeds
 
-  echo "Processing directory: $DIR"
-  
-  # • zstd -r: recursive compression of directory
-  #   --rm = delete the source file only if compression succeeds
-  zstd -r --rm -T0 -"$LEVEL" --exclude-compressed --quiet "$DIR"
-  
-  # Alternative method with find/xargs (uncomment if needed):
-  # find "$DIR" -type f ! -name '*.zst' -print0 |
-  #   xargs -0 -n1 -P "$THREADS" zstd -"$LEVEL" -T0 --rm --quiet
-done
+zstd -r --rm -T0 --fast=4 --exclude-compressed --quiet "$DIR"
+
+#find "$DIR" -type f ! -name '*.zst' -print0 |
+#  xargs -0 -n1 -P "$THREADS" zstd -$LEVEL -T0 --rm --quiet
 
 echo "Done."
