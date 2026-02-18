@@ -14,4 +14,4 @@ module purge
 module use /appl/local/csc/modulefiles
 module load pytorch
 
-srun python3 calculate_watt_hours.py
+srun python3 calculate_resource_use.py --log-dir ../logs/ --prefix 16099664
