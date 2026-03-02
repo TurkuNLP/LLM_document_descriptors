@@ -16,10 +16,13 @@ module load pytorch/2.5
 
 source ../.venv_pt2.5/bin/activate
 
+set -eou pipefail
+
+lang="${1:-}"
 base_dir="/scratch/project_462000963/datasets/hplt/4.0/global-dedup"
-lang="por_Latn"
+
 
 srun python3 build_sample.py --input "$base_dir/$lang" \
                              --output "$base_dir/samples/$lang/1M_sample.jsonl" \
                              -n 1000000 \
-                             --initial-keep-prob 0.005
+                             --initial-keep-prob 0.01

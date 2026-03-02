@@ -102,6 +102,7 @@ def sample_data(
     # Input can be a directory containing multiple JSONL files or a single JSONL file
     # If compressed files are present, they should have .zst extension and will be decompressed on the fly
     files_to_process = get_jsonl_files(input_path)
+    print(f"Found {len(files_to_process):,} files to process.", flush=True)
     for i, file_path in enumerate(files_to_process):
         if i < doc_counter:
             continue  # Skip files that have already been processed in previous runs
@@ -122,11 +123,24 @@ def sample_data(
         )
 
         if doc_counter % checkpoint_interval == 0:
+            expected_sample_size = int(len(files_to_process) * (num_sampled/doc_counter))
             print(
                 f"Processed {doc_counter}/{len(files_to_process)} files."
-                f" Expected initial sample size: {int(len(files_to_process) * (num_sampled/doc_counter)):,} documents",
+                f" Expected initial sample size: {expected_sample_size:,} documents",
                 flush=True,
             )
+            if expected_sample_size < sample_size:
+                print(
+                    f"Warning: Expected initial sample size ({expected_sample_size:,}) is less than the desired final sample size ({sample_size:,})."
+                    " Consider increasing the initial_keep_prob to ensure a sufficiently large initial sample.",
+                    flush=True,
+                )
+            elif expected_sample_size > sample_size * 5:
+                print(
+                    f"Warning: Expected initial sample size ({expected_sample_size:,}) is much larger than the desired final sample size ({sample_size:,})."
+                    " Consider decreasing the initial_keep_prob to reduce memory usage.",
+                    flush=True,
+                )
             print("Saving checkpoint...", flush=True)
             save_checkpoint(sampled, f"{output_path}.checkpoint")
             save_checkpoint_idx(doc_counter, f"{output_path}.checkpoint.idx")
@@ -153,6 +167,11 @@ def sample_data(
     )
 
     print(f"{len(final_sample):,} documents in the final sample", flush=True)
+    if len(sampled) < sample_size:
+        print(
+            f"Warning: Sample is smaller than desired sample size ({sample_size:,}) due to insufficient initial sample size.",
+            flush=True
+            )
 
     with open(output_path, "w") as f:
         for example in final_sample:
@@ -160,6 +179,7 @@ def sample_data(
 
     if not no_cleanup:
         # Remove checkpoint files after successful sampling
+        print("Cleaning up checkpoint files...", flush=True)
         Path(f"{output_path}.checkpoint").unlink(missing_ok=True)
         Path(f"{output_path}.checkpoint.idx").unlink(missing_ok=True)
 
@@ -193,6 +213,11 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    
+    # Create output directory if it doesn't exist
+    output_dir = Path(args.output).parent    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     sample_data(
         args.input,
         args.output,
