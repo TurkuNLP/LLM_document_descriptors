@@ -1,7 +1,17 @@
+from pyexpat import model
+
 import torch  # type: ignore
 from transformers import AutoModel, AutoTokenizer  # type: ignore
 import numpy as np  # type: ignore
 from sklearn.preprocessing import normalize  # type: ignore
+import sys
+import os
+from sentence_transformers import SentenceTransformer  # type: ignore
+
+# Script to embed text and calculate similarity scores for STS tasks.
+# Use either Stella for English or Qwen for multilingual applications.
+# Used as part of the descriptor generation process to evaluate the semantic similarity of rewrites against original text.
+# Can also be used standalone in small scale to compute similarity scores  by providing texts as command-line arguments.
 
 
 class StellaEmbedder:
@@ -62,10 +72,13 @@ class StellaEmbedder:
 
             return normalize(vectors.cpu().numpy())
 
-    def calculate_similarity(self, original, rewrites):
+    def calculate_similarity(self, original, rewrites, use_prompt=False):
         sts_prompt = "Instruct: Retrieve semantically similar text.\nQuery: "
 
-        original = [sts_prompt + original]
+        if use_prompt:
+            original = [sts_prompt + original]
+        else:
+            original = [original]
         rewrites = [rewrites] if isinstance(rewrites, str) else rewrites
 
         # Embed original with prompt
@@ -79,3 +92,47 @@ class StellaEmbedder:
         similarities = (original_embeddings @ rewrite_embeddings.T).astype(np.float32)
 
         return [round(float(sim), 4) for sim in similarities[0]]
+
+
+class QwenEmbedder:
+    def __init__(self, cache_dir, batch_size=16):
+        self.model = SentenceTransformer(
+            "Qwen/Qwen3-Embedding-0.6B", cache_folder=cache_dir
+        ).cuda().eval().half()
+        self.batch_size = batch_size
+
+    def calculate_similarity(self, original, rewrites):
+        if isinstance(original, str):
+            original = [original]
+        if isinstance(rewrites, str):
+            rewrites = [rewrites]
+
+        query_embeddings = self.model.encode(original)
+        document_embeddings = self.model.encode(rewrites)
+
+        # Compute the (cosine) similarity between the query and document embeddings
+        similarities = self.model.similarity(query_embeddings, document_embeddings)
+        # Cosine similarity output is a tensor, convert to numpy and ensure it's a list of floats
+        similarities = similarities.cpu().numpy().tolist()
+
+        return [round(float(sim), 4) for sim in similarities[0]]
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print(
+            "Usage: python embed.py <original_text> <semi-colon_separated_rewrite_texts>"
+        )
+        sys.exit(1)
+
+    original_text = sys.argv[1]
+    rewrites_str = sys.argv[2]
+    rewrites = rewrites_str.split(";")
+
+    # embedder = StellaEmbedder(cache_dir=os.environ["HF_HUB_CACHE"])
+    embedder = QwenEmbedder(cache_dir=os.environ["HF_HUB_CACHE"])
+
+    # Print results
+    print("Original Text:", original_text)
+    for rewrite, sim in zip(rewrites, similarities):
+        print(f"Rewrite: {rewrite}\nSimilarity: {sim}\n")
