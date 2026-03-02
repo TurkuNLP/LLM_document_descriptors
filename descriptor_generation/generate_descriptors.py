@@ -1,42 +1,53 @@
 # Standard libraries
 import argparse
-from collections import Counter, defaultdict
+from collections import Counter
 import json
 import logging
 import math
-import numpy as np  # type: ignore
 import os
 from pathlib import Path
-from random import shuffle
 import shutil
 import time
 import warnings
 
+# Silence annoying user warning
+warnings.filterwarnings(
+    "ignore",
+    message="To copy construct from a tensor",
+    category=UserWarning,
+)
+
 # Third party imports
 import json_repair  # type: ignore
 import pandas as pd  # type: ignore
-from pydantic import BaseModel, RootModel  # type: ignore
-from scipy.spatial.distance import cdist  # type: ignore
-from sklearn.cluster import AgglomerativeClustering  # type: ignore
+from pydantic import BaseModel  # type: ignore
 import torch  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
-from vllm.sampling_params import GuidedDecodingParams  # type: ignore
+
+# Legacy "pytorch" setup uses guided decoding, while the newer setup uses structured outputs.
+if os.environ.get("LAUNCH_SETUP") == "pytorch":
+    from vllm.sampling_params import GuidedDecodingParams  # type: ignore
+else:
+    from vllm.sampling_params import StructuredOutputsParams  # type: ignore
 
 # Local imports
-from embed import StellaEmbedder
+from embed import StellaEmbedder, QwenEmbedder
 import descriptor_prompts
 from utils import (
     load_documents,
     save_descriptors,
-    initialise_descriptor_vocab,
     init_results,
     save_results,
-    save_synonym_dict,
     log_execution_time,
-    get_best_results,
-    get_best_descriptors,
 )
 
+os.environ["VLLM_CONFIGURE_LOGGING"] = "0"
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+# Use CK attention instead of Triton attention. For example SWA
+# attention used by Mistral models does not properly with Triton
+# attention and AMD GPUs.
+# os.environ["VLLM_USE_TRITON_FLASH_ATTN"] = "0"
 
 # Configure logging
 logging.basicConfig(
@@ -76,7 +87,7 @@ def configure_logging(log_file: Path) -> None:
 
 class DescriptorGenerator:
     def __init__(self, args):
-        self.cache_dir = args.cache_dir or os.environ["HF_HOME"]
+        self.cache_dir = args.cache_dir or os.environ["HF_HUB_CACHE"]
         self.model = args.model
         self.start_index = args.start_index
         self.num_batches = args.num_batches
@@ -87,20 +98,48 @@ class DescriptorGenerator:
         self.temperature = args.temperature
         self.checkpoint_interval = args.checkpoint_interval
         self.base_dir = Path("..") / "results" / self.run_id
-        self.embedder = StellaEmbedder(self.cache_dir)
+        self.embedder = (
+            QwenEmbedder(self.cache_dir)
+            if args.embedder_model == "qwen"
+            else StellaEmbedder(self.cache_dir)
+        )
         self.text_column = args.text_column
+        self.prompt_format = args.prompt_format
+        self.log_similarity = args.log_similarity
 
     @log_execution_time
     def LLM_setup(self):
-        return LLM(
-            model=self.model,
-            download_dir=self.cache_dir,
-            dtype="bfloat16",
-            max_model_len=128_000,
-            tensor_parallel_size=torch.cuda.device_count(),
-            enforce_eager=False,
-            gpu_memory_utilization=0.8,
-        )
+        # Common LLM kwargs
+        LLM_kwargs = {
+            "model": self.model,
+            "download_dir": self.cache_dir,
+            "dtype": "bfloat16",
+            "max_model_len": 64_000,  # changed from 128_000
+            "tensor_parallel_size": torch.cuda.device_count(),
+            "enforce_eager": False,
+            "gpu_memory_utilization": 0.8,
+        }
+
+        # Model specific kwargs
+        if self.model == "deepseek-ai/DeepSeek-V3.2":
+            LLM_kwargs["block_size"] = 1  # block_size has to be 1 for deepseek on ROCM
+
+        if self.model == "moonshotai/Kimi-K2.5":
+            LLM_kwargs["trust_remote_code"] = True
+
+        return LLM(**LLM_kwargs)
+
+    def remove_thinking_tokens(self, text):
+        """Remove thinking tokens from the model output.
+        gpt-oss models start their output with 'analysis' and
+        end the thinking with 'assistantfinal'."""
+
+        end_marker = "assistantfinal"
+        end = text.lower().find(end_marker.lower())
+        if end == -1:
+            return text
+
+        return text[end + len(end_marker) :].lstrip()
 
     def generate(self, input, stage):
         response_schema = self.get_response_format(stage)
@@ -109,18 +148,34 @@ class DescriptorGenerator:
             "rewrite": 4000,
             "revise": 5000,
         }
-        sampling_params = SamplingParams(
-            temperature=self.temperature,
-            top_p=0.5,
-            repetition_penalty=1,  # 1 = no penalty, >1 penalty
-            max_tokens=max_tokens.get(stage, 5000),  # max tokens to generate
-            guided_decoding=response_schema,
-        )
+
+        # Sampling parameters
+        common_params = {
+            "temperature": self.temperature,
+            "top_p": 0.5,
+            "repetition_penalty": 1,  # 1 = no penalty, >1 penalty
+            "max_tokens": max_tokens.get(stage, 5000),  # max tokens to generate
+        }
+
+        # Legacy "pytorch" setup uses guided decoding, while the newer setup uses structured outputs.
+        if os.environ.get("LAUNCH_SETUP") == "pytorch":
+            common_params["guided_decoding"] = response_schema
+        else:
+            common_params["structured_outputs"] = StructuredOutputsParams(
+                json=response_schema
+            )
+
+        sampling_params = SamplingParams(**common_params)
 
         start = time.perf_counter()
-        outputs = self.llm.generate(
-            input, sampling_params=sampling_params, use_tqdm=False
-        )
+        if self.prompt_format == "chat":
+            outputs = self.llm.chat(
+                input, sampling_params=sampling_params, use_tqdm=False
+            )
+        else:
+            outputs = self.llm.generate(
+                input, sampling_params=sampling_params, use_tqdm=False
+            )
         elapsed = time.perf_counter() - start if start else 0.0
 
         response_texts = []
@@ -136,7 +191,7 @@ class DescriptorGenerator:
                 if getattr(cand, "token_ids", None):
                     gen_tok += len(cand.token_ids)
                 txt = getattr(cand, "text", "") or ""
-                response_texts.append(txt.strip(" `\n").removeprefix("json"))
+                response_texts.append(self.remove_thinking_tokens(txt))
             else:
                 response_texts.append("{}")
 
@@ -152,10 +207,33 @@ class DescriptorGenerator:
 
         return response_texts
 
-    @staticmethod
-    def validate_output(output):
+    def validate_output(self, output, stage):
+        "Validate and reformat the model output to ensure it is in the expected format."
+        
+        # First, check that output is valid JSON. If not, try to repair it.
+        # If it still cannot be repaired, replace with empty dict.
         validated = json_repair.loads(output)
-        return validated if isinstance(validated, dict) else {}
+        if not isinstance(validated, dict):
+            logging.warning(f"Failed to validate output: {validated}. Replacing with empty dict.")
+            validated = {}
+        
+        # Next, check if there are empty fields in output
+        # If there are, log a warning.
+        for key, value in validated.items():
+            if not value:
+                logging.warning(f"Output has empty field '{key}'.")
+
+        # Finally, check that all required keys are present.
+        # If not, add them with empty values and log a warning.
+        response_format = self.get_response_format(stage)
+        for output_key in response_format["properties"].keys():
+            if output_key not in validated:
+                logging.warning(
+                    f"Output is missing required key '{output_key}'. Adding empty value."
+                )
+                validated[output_key] = [] if response_format["properties"][output_key]["type"] == "array" else ""
+                
+        return validated
 
     def determine_start_index(self, start_index: str, data: list) -> int:
         if start_index == "auto":
@@ -204,7 +282,7 @@ class DescriptorGenerator:
             self.format_prompt(stage=stage, original=document) for document in documents
         ]
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [self.validate_output(output) for output in batched_output]
+        validated_outputs = [self.validate_output(output, stage) for output in batched_output]
 
         return validated_outputs
 
@@ -227,7 +305,7 @@ class DescriptorGenerator:
         for g, s in zip(general, specific):
             prompts.append(self.format_prompt(stage=stage, descriptors=g, specifics=s))
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [self.validate_output(output) for output in batched_output]
+        validated_outputs = [self.validate_output(output, stage) for output in batched_output]
 
         return validated_outputs
 
@@ -260,7 +338,7 @@ class DescriptorGenerator:
                 )
             )
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [self.validate_output(output) for output in batched_output]
+        validated_outputs = [self.validate_output(output, stage) for output in batched_output]
 
         return validated_outputs
 
@@ -294,18 +372,28 @@ class DescriptorGenerator:
     ):
         # Truncate original document to max length
         if original:
-            original = self.tokenize_and_truncate(original, 100_000)
-
+            original = self.tokenize_and_truncate(original)
         if stage == "initial":
-            return descriptor_prompts.initial_prompt_one_descriptor_type(original)
+            if self.prompt_format == "chat":
+                prompt = descriptor_prompts.initial_chat_prompt(original)
+            else:
+                prompt = descriptor_prompts.initial_prompt(original)
         elif stage == "rewrite":
-            return descriptor_prompts.rewrite_prompt_one_descriptor_type(
-                descriptors, specifics
-            )
+            if self.prompt_format == "chat":
+                prompt = descriptor_prompts.rewrite_chat_prompt(descriptors, specifics)
+            else:
+                prompt = descriptor_prompts.rewrite_prompt(descriptors, specifics)
         elif stage == "revise":
-            return descriptor_prompts.revise_keyphrases_prompt_one_descriptor_type(
-                original, rewritten, descriptors, specifics
-            )
+            if self.prompt_format == "chat":
+                prompt = descriptor_prompts.revise_chat_prompt(
+                    original, rewritten, descriptors, specifics
+                )
+            else:
+                prompt = descriptor_prompts.revise_prompt(
+                    original, rewritten, descriptors, specifics
+                )
+
+        return prompt
 
     @staticmethod
     def get_response_format(stage):
@@ -328,12 +416,20 @@ class DescriptorGenerator:
                 specifics: list[str]
 
         json_schema = ResponseFormat.model_json_schema()
-        return GuidedDecodingParams(json=json_schema)
 
-    def tokenize_and_truncate(self, document, max_input_len):
+        # return json_schema
+        if os.environ.get("LAUNCH_SETUP") == "pytorch":
+            return GuidedDecodingParams(json=json_schema)
+        else:
+            return json_schema
+
+    def tokenize_and_truncate(self, document):
+        max_input_len = (
+            self.llm.llm_engine.model_config.max_model_len - 5000
+        )  # leave room for generation
         tokenizer = self.llm.get_tokenizer()
         prompt_token_ids = tokenizer.encode(document)
-        if len(prompt_token_ids) > max_input_len:
+        if len(prompt_token_ids) > max_input_len:  # leave room for generation
             logging.warning(
                 f"Document is too long: ({len(prompt_token_ids)} tokens). Truncating..."
             )
@@ -351,66 +447,6 @@ class DescriptorGenerator:
                 results[index]["specifics"].append(specific[index])
             if rewrites:
                 results[index]["rewrite"].append(rewrites[index])
-
-    def generate_final_rewrites(self):
-        filepath = self.base_dir / f"descriptors_{self.run_id}_syn_replaced.jsonl"
-
-        # Calculate the number of docs we have processed for logging purpses
-        with open(filepath, "rb") as f:
-            num_docs = sum(
-                buf.count(b"\n") for buf in iter(lambda: f.read(1024 * 1024), b"")
-            )
-
-        with open(filepath, "r") as f:
-            batch_num = 0
-            results = {}
-            idx = 0
-            for line in f:
-                doc = json.loads(line.strip())
-                results[idx] = doc
-                idx += 1
-
-                # Process in batches of batch_size
-
-                # TO FIX: if document do not neatly divide into batch_size
-                # last documents will not be processed!
-                if idx == self.batch_size:
-                    batch_num += 1
-                    logging.info(
-                        f"Processing batch {batch_num} out of "
-                        f"{math.ceil(num_docs/self.batch_size)}."
-                    )
-                    general_descriptors = []
-                    specific_descriptors = []
-                    for index in results:
-                        general_descriptors.append(results[index]["descriptors"])
-                        specific_descriptors.append(results[index]["specifics"])
-
-                    model_outputs = self.rewrite_stage(
-                        general_descriptors, specific_descriptors
-                    )
-                    rewrites = [
-                        output.get("text", "Generation failed.")
-                        for output in model_outputs
-                    ]
-                    for i, index in enumerate(results):
-                        results[index]["rewrite"].append(rewrites[i])
-
-                    for index in results:
-                        similarities = self.embedder.calculate_similarity(
-                            results[index]["text"], results[index]["rewrite"]
-                        )
-                        results[index]["similarity"].extend(similarities)
-
-                    with open(
-                        self.base_dir / f"descriptors_{self.run_id}_final.jsonl", "a"
-                    ) as f:
-                        for doc in results.values():
-                            json_line = json.dumps(doc, ensure_ascii=False)
-                            f.write(json_line + "\n")
-
-                    idx = 0
-                    results = {}
 
     def make_checkpoint(self):
         # Calculate how many documents we have processed so far
@@ -436,6 +472,25 @@ class DescriptorGenerator:
             descriptor.split(";")[0] if ";" in descriptor else descriptor
             for descriptor in list_of_descriptors
         ]
+
+    def log_avg_similarity(self):
+        similarities = []
+        with open(self.base_dir / f"descriptors_{self.run_id}.jsonl", "r") as f:
+            for line in f:
+                doc = json.loads(line.strip())
+                similarities.append(doc["similarity"])
+        if not similarities:
+            logging.info("No similarities found in the results.")
+
+        for i in range(self.num_rewrites):
+            round_similarities = [sim[i] for sim in similarities if len(sim) > i]
+            if round_similarities:
+                avg_similarity = sum(round_similarities) / len(round_similarities)
+                logging.info(
+                    f"Average similarity for rewrite round {i+1}: {avg_similarity:.4f}"
+                )
+            else:
+                logging.info(f"No similarities found for rewrite round {i+1}.")
 
     def pipeline(self):
 
@@ -559,6 +614,8 @@ class DescriptorGenerator:
             if self.num_batches == -1:
                 continue
             elif batch_num + 1 >= self.num_batches:
+                if self.log_similarity:
+                    self.log_avg_similarity()
                 break
 
 
@@ -588,6 +645,13 @@ if __name__ == "__main__":
         help="Name of model to use.",
     )
     parser.add_argument(
+        "--embedder-model",
+        type=str,
+        choices=["stella", "qwen"],
+        default="qwen",
+        help="Name of embedding model to use for similarity evaluation.",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=str,
         help="Path to cache directory, where model is or will be saved.",
@@ -600,6 +664,12 @@ if __name__ == "__main__":
         type=int,
         default=200,
         help="Number of documents given to the model at one time.",
+    )
+    parser.add_argument(
+        "--prompt-format",
+        choices=["generate", "chat"],
+        default="chat",
+        help="Whether to use generate or chat format for prompts.",
     )
 
     # Data processing arguments
@@ -627,6 +697,11 @@ if __name__ == "__main__":
         default=0,
         help="Number of batches after which all results so far will be saved into a checkpoint. "
         "If 0, no checkpoints are created. Default: 0 (no checkpoints).",
+    )
+    parser.add_argument(
+        "--log-similarity",
+        action="store_true",
+        help="Whether to log average similarity between rewrites and original documents at the end of run.",
     )
 
     # Data arguments
