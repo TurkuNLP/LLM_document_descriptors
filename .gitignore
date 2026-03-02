@@ -9,6 +9,7 @@ venv/
 .venv/
 venv2.7/
 .venv*
+*venv
 __pycache__
 __pycache__/
 *.pyc
