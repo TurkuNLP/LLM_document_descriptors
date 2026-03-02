@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=watt_hours
-#SBATCH --account=project_462000353
+#SBATCH --account=project_462000963
 #SBATCH --partition=small
 #SBATCH --time=00:15:00
 #SBATCH --nodes=1
@@ -14,4 +14,7 @@ module purge
 module use /appl/local/csc/modulefiles
 module load pytorch
 
-srun python3 calculate_resource_use.py --log-dir ../logs/ --prefix 16099664
+# Prints the energy usage in watt-hours for the specified log files
+# Results are printed in <jobid>.out
+
+srun python3 calculate_resource_use.py --log-dir ../logs/ --prefix 16147799,16147917,16168533,16168735

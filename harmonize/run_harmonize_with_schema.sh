@@ -6,11 +6,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
-#SBATCH --cpus-per-task=15
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
-#SBATCH -o ../logs/%j.out
-#SBATCH -e ../logs/%j.err
-#SBATCH --array=0-39
+#SBATCH -o ../logs/%A_%a.out
+#SBATCH -e ../logs/%A_%a.err
+#SBATCH --array=14,27
 #SBATCH --exclusive
 
 module purge

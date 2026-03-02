@@ -14,7 +14,7 @@ module purge
 module use /appl/local/csc/modulefiles
 module load pytorch/2.5
 
-source .venv_pt2.5_merge/bin/activate
+source ../.venv_pt2.5/bin/activate
 
 merge_res_base="../results/disambiguate_merges/final_results"
 
