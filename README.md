@@ -2,7 +2,7 @@ Repo for the GreenNLP/OpenEuroLLM document descriptor research project.
 This research project aims to use LLMs to create a dynamic taxonomy of descriptive labels ("descriptors") for web documents. Descriptors can be used to filter, subsample and retrive relevant documents from a much larger collection.
 
 Made to run on the LUMI supercomputer: https://lumi-supercomputer.eu/.
-Runs vLLM 0.6.6.
+Runs vLLM 0.15.1.
 
 ### Generating a new schema
 The basic steps for generating a new descriptor schema from scratch are:
