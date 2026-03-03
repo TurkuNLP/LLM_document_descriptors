@@ -23,12 +23,7 @@ import pandas as pd  # type: ignore
 from pydantic import BaseModel  # type: ignore
 import torch  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
-
-# Legacy "pytorch" setup uses guided decoding, while the newer setup uses structured outputs.
-if os.environ.get("LAUNCH_SETUP") == "pytorch":
-    from vllm.sampling_params import GuidedDecodingParams  # type: ignore
-else:
-    from vllm.sampling_params import StructuredOutputsParams  # type: ignore
+from vllm.sampling_params import StructuredOutputsParams  # type: ignore
 
 # Local imports
 from embed import StellaEmbedder, QwenEmbedder
@@ -158,12 +153,10 @@ class DescriptorGenerator:
         }
 
         # Legacy "pytorch" setup uses guided decoding, while the newer setup uses structured outputs.
-        if os.environ.get("LAUNCH_SETUP") == "pytorch":
-            common_params["guided_decoding"] = response_schema
-        else:
-            common_params["structured_outputs"] = StructuredOutputsParams(
-                json=response_schema
-            )
+
+        common_params["structured_outputs"] = StructuredOutputsParams(
+            json=response_schema
+        )
 
         sampling_params = SamplingParams(**common_params)
 
@@ -398,30 +391,21 @@ class DescriptorGenerator:
     @staticmethod
     def get_response_format(stage):
         if stage == "initial":
-
             class ResponseFormat(BaseModel):
                 descriptors: list[str]
                 specifics: list[str]
 
         elif stage == "rewrite":
-
             class ResponseFormat(BaseModel):
                 text: str
 
         elif stage == "revise":
-
             class ResponseFormat(BaseModel):
                 differences: str
                 descriptors: list[str]
                 specifics: list[str]
 
-        json_schema = ResponseFormat.model_json_schema()
-
-        # return json_schema
-        if os.environ.get("LAUNCH_SETUP") == "pytorch":
-            return GuidedDecodingParams(json=json_schema)
-        else:
-            return json_schema
+        return ResponseFormat.model_json_schema()
 
     def tokenize_and_truncate(self, document):
         max_input_len = (
