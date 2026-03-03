@@ -101,7 +101,7 @@ class QwenEmbedder:
         ).cuda().eval().half()
         self.batch_size = batch_size
 
-    def calculate_similarity(self, original, rewrites):
+    def calculate_similarity(self, original, rewrites, use_prompt=False):
         if isinstance(original, str):
             original = [original]
         if isinstance(rewrites, str):
@@ -131,6 +131,8 @@ if __name__ == "__main__":
 
     # embedder = StellaEmbedder(cache_dir=os.environ["HF_HUB_CACHE"])
     embedder = QwenEmbedder(cache_dir=os.environ["HF_HUB_CACHE"])
+    
+    similarities = embedder.calculate_similarity(original_text, rewrites)
 
     # Print results
     print("Original Text:", original_text)

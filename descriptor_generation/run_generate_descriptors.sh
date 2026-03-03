@@ -50,8 +50,8 @@ srun singularity run --rocm --bind /scratch/project_462000963 \
                                 --run-id=$run_id \
                                 --model=$model_name \
                                 --temperature=0.1 \
-                                --batch-size=5 \
-                                --num-batches=5 \
+                                --batch-size=200 \
+                                --num-batches=50 \
                                 --num-rewrites=1 \
                                 --start-index=0 \
                                 --data-source=$data_source \
