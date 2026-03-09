@@ -2,7 +2,7 @@
 #SBATCH --job-name=gen_descriptors
 #SBATCH --account=project_462000963
 #SBATCH --partition=standard-g
-#SBATCH --time=12:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
@@ -15,19 +15,15 @@ set -eou pipefail
 
 lang=$1
 
-if [[ "$lang" == "eng_Latn" ]]; then
-    data_source="fineweb"
-else
-    data_source="/scratch/project_462000963/datasets/hplt/4.0/global-dedup/samples/${lang}/1M_sample.jsonl"
-fi
+data_source="/scratch/project_462000963/datasets/hplt/4.0/global-dedup/samples/${lang}/1M_sample.jsonl"
 
 # possible models:
 # 'Qwen/Qwen3-Next-80B-A3B-Instruct'
 # 'openai/gpt-oss-120b'
 # 'mistralai/Mistral-Small-3.2-24B-Instruct-2506'
 
-run_id="llama3.3-70b_${lang}-eval"
-model_name='meta-llama/Llama-3.3-70B-Instruct'
+run_id="qwen3-${lang}"
+model_name='Qwen/Qwen3-Next-80B-A3B-Instruct'
 data_source=$data_source
 
 module purge
@@ -50,10 +46,10 @@ srun singularity run --rocm --bind /scratch/project_462000963 \
                                 --run-id=$run_id \
                                 --model=$model_name \
                                 --temperature=0.1 \
-                                --batch-size=200 \
+                                --batch-size=500 \
                                 --num-batches=50 \
                                 --num-rewrites=1 \
-                                --start-index=0 \
+                                --start-index='auto' \
                                 --data-source=$data_source \
                                 --log-similarity"
 

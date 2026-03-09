@@ -82,7 +82,7 @@ def configure_logging(log_file: Path) -> None:
 
 class DescriptorGenerator:
     def __init__(self, args):
-        self.cache_dir = args.cache_dir or os.environ["HF_HUB_CACHE"]
+        self.cache_dir = args.cache_dir
         self.model = args.model
         self.start_index = args.start_index
         self.num_batches = args.num_batches
@@ -91,6 +91,7 @@ class DescriptorGenerator:
         self.batch_size = args.batch_size
         self.data_source = args.data_source
         self.temperature = args.temperature
+        self.max_model_len = args.max_model_len
         self.checkpoint_interval = args.checkpoint_interval
         self.base_dir = Path("..") / "results" / self.run_id
         self.embedder = (
@@ -107,13 +108,16 @@ class DescriptorGenerator:
         # Common LLM kwargs
         LLM_kwargs = {
             "model": self.model,
-            "download_dir": self.cache_dir,
             "dtype": "bfloat16",
-            "max_model_len": 64_000,  # changed from 128_000
+            "max_model_len": self.max_model_len,
             "tensor_parallel_size": torch.cuda.device_count(),
             "enforce_eager": False,
             "gpu_memory_utilization": 0.8,
         }
+
+        # Set cache dir if given
+        if self.cache_dir:
+            LLM_kwargs["download_dir"] = self.cache_dir
 
         # Model specific kwargs
         if self.model == "deepseek-ai/DeepSeek-V3.2":
@@ -150,13 +154,10 @@ class DescriptorGenerator:
             "top_p": 0.5,
             "repetition_penalty": 1,  # 1 = no penalty, >1 penalty
             "max_tokens": max_tokens.get(stage, 5000),  # max tokens to generate
+            "structured_outputs": StructuredOutputsParams(
+                json=response_schema
+            )
         }
-
-        # Legacy "pytorch" setup uses guided decoding, while the newer setup uses structured outputs.
-
-        common_params["structured_outputs"] = StructuredOutputsParams(
-            json=response_schema
-        )
 
         sampling_params = SamplingParams(**common_params)
 
@@ -202,21 +203,23 @@ class DescriptorGenerator:
 
     def validate_output(self, output, stage):
         "Validate and reformat the model output to ensure it is in the expected format."
-        
+
         # First, check that output is valid JSON. If not, try to repair it.
         # If it still cannot be repaired, replace with empty dict.
         validated = json_repair.loads(output)
         if not isinstance(validated, dict):
-            logging.warning(f"Failed to validate output: {validated}. Replacing with empty dict.")
+            logging.warning(
+                f"Failed to format output: {validated}. Replacing with empty dict."
+            )
             validated = {}
-        
+
         # Next, check if there are empty fields in output
         # If there are, log a warning.
         for key, value in validated.items():
             if not value:
                 logging.warning(f"Output has empty field '{key}'.")
 
-        # Finally, check that all required keys are present.
+        # Check that all required keys are present.
         # If not, add them with empty values and log a warning.
         response_format = self.get_response_format(stage)
         for output_key in response_format["properties"].keys():
@@ -224,8 +227,20 @@ class DescriptorGenerator:
                 logging.warning(
                     f"Output is missing required key '{output_key}'. Adding empty value."
                 )
-                validated[output_key] = [] if response_format["properties"][output_key]["type"] == "array" else ""
-                
+                validated[output_key] = (
+                    []
+                    if response_format["properties"][output_key]["type"] == "array"
+                    else ""
+                )
+
+        # Ensure all descriptors and specifics are strings (in case model returned numbers or other types).
+        for key in validated:
+            if key in ["descriptors", "specifics"]:
+                for i, item in enumerate(validated[key]):
+                    if not isinstance(item, str):
+                        item = str(item)
+                        validated[key][i] = item
+
         return validated
 
     def determine_start_index(self, start_index: str, data: list) -> int:
@@ -234,6 +249,8 @@ class DescriptorGenerator:
             if descriptor_file.exists():
                 with open(descriptor_file, "r") as f:
                     start_index = sum(1 for _ in f)
+            else:
+                start_index = 0
             logging.info(f"Start index determined as {start_index}.")
         elif start_index.isdigit():
             start_index = int(start_index)
@@ -275,7 +292,9 @@ class DescriptorGenerator:
             self.format_prompt(stage=stage, original=document) for document in documents
         ]
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [self.validate_output(output, stage) for output in batched_output]
+        validated_outputs = [
+            self.validate_output(output, stage) for output in batched_output
+        ]
 
         return validated_outputs
 
@@ -298,7 +317,9 @@ class DescriptorGenerator:
         for g, s in zip(general, specific):
             prompts.append(self.format_prompt(stage=stage, descriptors=g, specifics=s))
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [self.validate_output(output, stage) for output in batched_output]
+        validated_outputs = [
+            self.validate_output(output, stage) for output in batched_output
+        ]
 
         return validated_outputs
 
@@ -331,7 +352,9 @@ class DescriptorGenerator:
                 )
             )
         batched_output = self.generate(prompts, stage)
-        validated_outputs = [self.validate_output(output, stage) for output in batched_output]
+        validated_outputs = [
+            self.validate_output(output, stage) for output in batched_output
+        ]
 
         return validated_outputs
 
@@ -341,9 +364,10 @@ class DescriptorGenerator:
             for line in f.readlines():
                 doc = json.loads(line.strip())
                 for descriptor_list in doc["descriptors"]:
-                    descriptors_without_explanations = self.remove_explanations(
-                        descriptor_list
-                    )
+                    if descriptor_list:
+                        descriptors_without_explanations = self.remove_explanations(
+                            descriptor_list
+                        )
                     desc_counts.update(descriptors_without_explanations)
 
         save_descriptors(desc_counts, descriptor_path)
@@ -391,15 +415,18 @@ class DescriptorGenerator:
     @staticmethod
     def get_response_format(stage):
         if stage == "initial":
+
             class ResponseFormat(BaseModel):
                 descriptors: list[str]
                 specifics: list[str]
 
         elif stage == "rewrite":
+
             class ResponseFormat(BaseModel):
                 text: str
 
         elif stage == "revise":
+
             class ResponseFormat(BaseModel):
                 differences: str
                 descriptors: list[str]
@@ -452,10 +479,16 @@ class DescriptorGenerator:
 
     @staticmethod
     def remove_explanations(list_of_descriptors):
-        return [
-            descriptor.split(";")[0] if ";" in descriptor else descriptor
-            for descriptor in list_of_descriptors
-        ]
+        just_descriptors = []
+        for descriptor in list_of_descriptors:
+            if isinstance(descriptor, str) and ";" in descriptor:
+                just_descriptors.append(descriptor.split(";")[0].strip())
+            else:
+                just_descriptors.append(
+                    descriptor.strip() if isinstance(descriptor, str) else descriptor
+                )
+
+        return just_descriptors
 
     def log_avg_similarity(self):
         similarities = []
@@ -605,8 +638,14 @@ class DescriptorGenerator:
 
 def main(args):
 
+    start = time.time()
     dg = DescriptorGenerator(args)
     dg.pipeline()
+    end = time.time()
+    total_execution_time = end - start
+    logging.info(
+        f"Total execution time: {time.strftime('%H:%M:%S', time.gmtime(total_execution_time))}."
+    )
     logging.info("Done.")
 
 
@@ -638,10 +677,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cache-dir",
         type=str,
+        default=os.environ.get("HF_HUB_CACHE", ""),
         help="Path to cache directory, where model is or will be saved.",
     )
     parser.add_argument(
         "--temperature", type=float, default=0.1, help="Model temperature."
+    )
+    parser.add_argument(
+        "--max-model-len",
+        type=int,
+        default=64_000,
+        help="Maximum context length for the model.",
     )
     parser.add_argument(
         "--batch-size",

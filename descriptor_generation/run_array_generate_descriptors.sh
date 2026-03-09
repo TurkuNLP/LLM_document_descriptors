@@ -2,34 +2,26 @@
 #SBATCH --job-name=gen_descriptors
 #SBATCH --account=project_462000963
 #SBATCH --partition=standard-g
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=120G
 #SBATCH --gpus-per-task=8
-#SBATCH --array=0-39
+#SBATCH --array=6
 #SBATCH -o ../logs/%A_%a.out
 #SBATCH -e ../logs/%A_%a.err
 #SBATCH --exclusive
 
-module purge
-module use /appl/local/csc/modulefiles
-module load pytorch/2.5
+set -euo pipefail
 
-source ../.venv_pt2.5/bin/activate
-
-# Memory management
-export PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
-
-gpu-energy --save
-
-lang="por_Latn"
+lang=$1
 run_id_base="${lang}_sample"
 run_id="${run_id_base}_${SLURM_ARRAY_TASK_ID}"
+model_name='Qwen/Qwen3-Next-80B-A3B-Instruct'
 
 BATCH_SIZE=500
-NUM_BATCHES=50
+NUM_BATCHES=100
 CHUNK_SIZE=$((BATCH_SIZE * NUM_BATCHES))
 
 DATASET_PATH_BASE="/scratch/project_462000963/datasets/hplt/4.0/global-dedup/samples/${lang}"
@@ -42,10 +34,11 @@ mkdir -p "$SHARD_DIR"
 echo "Array task ID: $SLURM_ARRAY_TASK_ID"
 echo "Processing chunk size: $CHUNK_SIZE"
 
+do_split=0
 # -----------------------
 # Split dataset (only once)
 # -----------------------
-if [ "$SLURM_ARRAY_TASK_ID" -eq 0 ]; then
+if [ "$SLURM_ARRAY_TASK_ID" -eq 0 ] && [ $do_split -eq 1 ]; then
     echo "Splitting dataset into shards of $CHUNK_SIZE lines..."
 
     [ -f "$DATASET_PATH" ] || { echo "Error: Dataset file not found: $DATASET_PATH"; exit 1; }
@@ -77,15 +70,42 @@ timeout 120 bash -c 'while [ ! -f "$1" ]; do sleep 5; done' _ "$SHARD_PATH" || {
 
 echo "Using shard: $SHARD_PATH"
 
+module purge
+module use /appl/local/laifs/modules
+module load lumi-aif-singularity-bindings
 
-srun python3 generate_descriptors.py \
-    --run-id="$run_id" \
-    --temperature=0.1 \
-    --batch-size="$BATCH_SIZE" \
-    --num-batches="$NUM_BATCHES" \
-    --num-rewrites=0 \
-    --start-index=0 \
-    --data-source="$SHARD_PATH"
-    # --text-column="comment_text"
+export SIF=/scratch/project_462000963/users/tarkkaot/containers/lumi-multitorch-full-u24r64f21m43t29-20260216_093549.sif
 
-gpu-energy --diff
+# This fixes RuntimeError: Please use HIP_VISIBLE_DEVICES instead of ROCR_VISIBLE_DEVICES
+export HIP_VISIBLE_DEVICES=$ROCR_VISIBLE_DEVICES
+
+# Set this to avoid errors.
+export TORCH_COMPILE_DISABLE=1
+
+# Memory management
+PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
+
+srun singularity run --rocm --bind /scratch/project_462000963 \
+    $SIF bash -c "source ../.aif-venv/bin/activate && python generate_descriptors.py \
+                                --run-id=$run_id \
+                                --model=$model_name \
+                                --temperature=0.1 \
+                                --batch-size=$BATCH_SIZE \
+                                --num-batches=$NUM_BATCHES \
+                                --num-rewrites=0 \
+                                --start-index=auto \
+                                --data-source=$SHARD_PATH \
+                                --log-similarity"
+
+PYTHON_EXIT_CODE=$?
+
+# Check the exit code
+# If the Python script succeeded, we can safely remove the shard file. If it failed, we keep the shard for reruns.
+if [ $PYTHON_EXIT_CODE -eq 0 ]; then
+    echo "Python script completed successfully (exit code: $PYTHON_EXIT_CODE). Removing shard file..."
+    rm -f "$SHARD_PATH"
+    echo "Shard file removed."
+else
+    echo "Python script failed with exit code: $PYTHON_EXIT_CODE. Keeping shard file."
+    exit $PYTHON_EXIT_CODE
+fi
