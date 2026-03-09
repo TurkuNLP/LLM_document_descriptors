@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=harmonize
 #SBATCH --account=project_462000963
-#SBATCH --partition=standard-g
-#SBATCH --time=2-00:00:00
+#SBATCH --partition=dev-g
+#SBATCH --time=00:55:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
@@ -10,21 +10,13 @@
 #SBATCH --mem=128G
 #SBATCH -o ../logs/%A_%a.out
 #SBATCH -e ../logs/%A_%a.err
-#SBATCH --array=14,27
+#SBATCH --array=1
 #SBATCH --exclusive
-
-module purge
-module use /appl/local/csc/modulefiles
-module load pytorch/2.5
-
-source ../.venv_pt2.5/bin/activate
-
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 data_name="$1"
 
 BASEDIR="${SLURM_SUBMIT_DIR}"
-INPUT_DIR="${BASEDIR}/../results/HPLT4/${data_name}"
+INPUT_DIR="${BASEDIR}/../results/HPLT4/Qwen3/${data_name}"
 SCHEMA_FILE="${BASEDIR}/../results/final_schema/descriptor_schema.jsonl"
 RUN_ID_BASE="descriptors_${data_name}"
 
@@ -51,13 +43,32 @@ RUN_ID="${RUN_ID_BASE}_${idx}"
 echo "Processing file: $INPUT_FILE"
 echo "Run ID: $RUN_ID"
 
-gpu-energy --save || true
+module purge
+module use /appl/local/laifs/modules
+module load lumi-aif-singularity-bindings
 
-srun python3 harmonize_with_schema.py --run-id=$RUN_ID \
-                                      --input="${INPUT_FILE}" \
-                                      --schema="${SCHEMA_FILE}" \
-                                      --cache-db="../results/harmonized/${RUN_ID}/decision_cache.db" \
-                                      --topk=10 \
-                                      --min-embed-score=0.5 \
+export SIF=/scratch/project_462000963/users/tarkkaot/containers/lumi-multitorch-full-u24r64f21m43t29-20260216_093549.sif
 
-gpu-energy --diff || true
+# This fixes RuntimeError: Please use HIP_VISIBLE_DEVICES instead of ROCR_VISIBLE_DEVICES
+export HIP_VISIBLE_DEVICES=$ROCR_VISIBLE_DEVICES
+echo HIP_VISIBLE_DEVICES: $HIP_VISIBLE_DEVICES
+
+# Set this to avoid errors.
+export TORCH_COMPILE_DISABLE=1
+
+# Memory management
+PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
+
+srun singularity run --rocm --bind /scratch/project_462000963 \
+    $SIF bash -c "source ../.aif-venv/bin/activate && python harmonize_with_schema.py \
+    --run-id=${RUN_ID}  \
+    --input=${INPUT_FILE} \
+    --schema=${SCHEMA_FILE} \
+    --cache-db=../results/harmonized/${RUN_ID}/decision_cache.db \
+    --topk=10 \
+    --min-embed-score=0.5 \
+    --min-rerank-score=0.5 \
+    --embedder=qwen \
+    --use-reranker \
+    --schema-embed-path=../results/final_schema/schema_embeddings_qwen.npz \
+    --reranker=Qwen/Qwen3-Reranker-8B"
