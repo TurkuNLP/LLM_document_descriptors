@@ -87,10 +87,12 @@ def sample_data(
     num_sampled = 0
     
     print(f"Loading files from {input_path}...", flush=True)
+    print(f"Initial keep probability: {initial_keep_prob}", flush=True)
     
     if (
         Path(f"{output_path}.checkpoint").exists()
         and Path(f"{output_path}.checkpoint.idx").exists()
+        and not args.ignore_checkpoints
     ):
         with open(f"{output_path}.checkpoint.idx", "r") as f:
             doc_counter = int(f.read().strip())
@@ -210,6 +212,11 @@ if __name__ == "__main__":
         "--no-cleanup",
         action="store_true",
         help="Do not remove checkpoint files after successful sampling",
+    )
+    parser.add_argument(
+        "--ignore-checkpoints",
+        action="store_true",
+        help="Ignore existing checkpoint files and start sampling from the beginning",
     )
 
     args = parser.parse_args()
