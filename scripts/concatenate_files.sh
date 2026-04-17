@@ -11,20 +11,24 @@ set -euo pipefail
 shopt -s nullglob
 
 # Main directory to look for files (default: current)
-main_dir="${1:-.}"
+path_to_dir="${1:-.}"
+
+# Get name of main directory
+main_dir_name="$(basename "$path_to_dir")"
+echo "Main directory: $path_to_dir"
 # File name pattern to match. E.g., "merge_array_ids_*.jsonl"
-pattern="merge_array_ids_*.jsonl"
+pattern="descriptors_*.jsonl"
 #pattern="full_lineage.jsonl"
 
 # Output file path
-out="${main_dir%/}/all_merges_disambig.jsonl"
-#out="${main_dir%/}/all_merges_full_lineage.jsonl"
+out="${path_to_dir%/}/../all/${main_dir_name}_harmonized.jsonl"
+#out="${path_to_dir%/}/all_merges_full_lineage.jsonl"
 
 # Create output file if it doesn't exist (do not truncate)
-touch "$out"
+# touch "$out"
 
 # Iterate immediate subdirectories of main_dir
-for dir in "$main_dir"/*/ ; do
+for dir in "$path_to_dir"/*/ ; do
   [[ -d "$dir" ]] || continue
 
   # For each file starting with $pattern in this subdirectory

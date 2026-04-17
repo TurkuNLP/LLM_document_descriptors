@@ -21,12 +21,13 @@ source ../.venv_pt2.5/bin/activate
 # Give split-count for how many files you want to split each file in input-dir
 # Resulting files will be named <original_file_name>_<split_number>.jsonl
 
-base_dir="/scratch/project_462000963/datasets/hplt/4.0/global-dedup"
-lang="por_Latn"
+base_dir="/scratch/project_462000963/datasets/fineweb-10BT-sample"
+#lang="por_Latn"
+num=$1
 
 srun python3 split_large_files.py \
-    --input "${base_dir}/samples/${lang}/1M_sample.jsonl" \
-    --output-dir "${base_dir}/samples/${lang}/splits" \
-    --split-count 20 \
-    --shuffle \
-    --seed 42
+    --input "${base_dir}/split_${num}.jsonl" \
+    --output-dir "${base_dir}/splits" \
+    --split-count 10 \
+    #--shuffle \
+    #--seed 42

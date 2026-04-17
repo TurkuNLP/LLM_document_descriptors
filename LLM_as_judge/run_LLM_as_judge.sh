@@ -33,8 +33,9 @@ data_type=$1
 # python LLM_as_judge.py [global options] <task> [task options]
 
 # possible tasks:
-# query_correspondence: Judge whether the retrieved documents for a given query are relevant to the query.
-# descriptor_accuracy: Evaluate descriptor accuracy on a sample of documents
+# QueryDescriptorMatch: Judge whether descriptors correspond to a query.
+# QueryDocMatch: Judge whether the retrieved documents for a given query are relevant to the query.
+# DescriptorAccuracy: Evaluate descriptor accuracy on a sample of documents
 
 #example use:
 #python LLM_as_judge.py \
@@ -45,6 +46,10 @@ data_type=$1
 srun singularity run --rocm --bind /scratch/project_462000963 \
     $SIF bash -c "source ../.aif-venv/bin/activate && python LLM_as_judge.py \
                             --model=Qwen/Qwen3-Next-80B-A3B-Instruct \
-                            query_correspondence \
+                            --data-path=../results/harmonized/fineweb-edu/concatenated/descriptors_fineweb-edu_harmonized.jsonl \
+                            --output-path=../results/LLM_as_judge/QueryDocMatch_${data_type}.jsonl \
+                            --detailed-output \
+                            QueryDocMatch \
                             --query='sarcasm; the document contains sarcastic humor and irony' \
-                            --doc-ids-path=../results/faiss/valid_sarcasm_docs_${data_type}.txt"
+                            --doc-ids-path=../results/faiss/valid_sarcasm_docs_${data_type}.txt \
+                            "

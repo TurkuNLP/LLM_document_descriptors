@@ -2,11 +2,11 @@
 #SBATCH --job-name=decompress
 #SBATCH --account=project_462000963
 #SBATCH --partition=debug
-#SBATCH --time=00:30:00
+#SBATCH --time=00:10:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=40G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=64G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 
