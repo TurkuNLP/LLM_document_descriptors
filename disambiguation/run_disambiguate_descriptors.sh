@@ -9,14 +9,14 @@
 #SBATCH --cpus-per-task=15
 #SBATCH --mem=80G
 #SBATCH -o ../logs/%j.out
-#SBATCH -e ../logs/%j.err
-###SBATCH --array=0-1
-
-module purge
+#SBAmodule purge
 module use /appl/local/csc/modulefiles
 module load pytorch/2.5
 
-source ../.venv_pt2.5/bin/activate
+source ../.venv_pt2.5/bin/activateTCH -e ../logs/%j.err
+###SBATCH --array=0-1
+
+
 
 # Use flag --resume to continue previous run
 # Use flag --test to do a test run on 10k descriptors
