@@ -89,6 +89,7 @@ def sample_data(
     print(f"Loading files from {input_path}...", flush=True)
     print(f"Initial keep probability: {initial_keep_prob}", flush=True)
     
+    # If checkpoint files exists, continue from where we were left
     if (
         Path(f"{output_path}.checkpoint").exists()
         and Path(f"{output_path}.checkpoint.idx").exists()
