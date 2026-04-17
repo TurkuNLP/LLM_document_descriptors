@@ -17,3 +17,5 @@ __pycache__/
 figures/
 mlruns/
 core
+wandb/
+finetuned_models/
