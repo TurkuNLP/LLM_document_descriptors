@@ -152,9 +152,84 @@ class BaseTask(ABC):
     ) -> None:
         raise NotImplementedError
 
+    def save_detailed_results(self, path, examples, responses) -> None:
+        if not path.endswith(".jsonl"):
+            path += "_detailed.jsonl"
+        with open(path, "w") as f:
+            for example, response in zip(examples, responses):
+                json.dump(
+                    {"example": example, "response": response}, f, ensure_ascii=False
+                )
+                f.write("\n")
 
-class QueryCorrespondenceTask(BaseTask):
-    name = "query_correspondence"
+    def save_results(self, path, parsed_responses) -> None:
+        if not path.endswith(".jsonl"):
+            path += ".jsonl"
+        with open(path, "w") as f:
+            for response in parsed_responses:
+                json.dump({"response": response}, f, ensure_ascii=False)
+                f.write("\n")
+
+
+class QueryDescriptorMatchTask(BaseTask):
+    """Evaluates whether a descriptor corresponds to a query."""
+
+    name = "QueryDescriptorMatch"
+
+    def setup(self, args: argparse.Namespace) -> dict[str, Any]:
+        return {"query": args.query}
+
+    def include_row(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> bool:
+        return True
+
+    def build_examples(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> list[dict[str, Any]]:
+        descriptor = row.get("descriptor", "")
+
+        return [{"descriptor": descriptor, "query": args.query}]
+
+    def build_prompt(self, example: dict[str, Any]) -> str:
+        return prompts.get_descriptor_correspondence_prompt(
+            example["query"],
+            example["descriptor"],
+        )
+
+    def parse_response(self, response: str) -> str:
+        return parse_label_response(response, {"yes", "no"})
+
+    def print_results(
+        self, parsed_responses: list[str], args: argparse.Namespace
+    ) -> None:
+        counter = Counter(parsed_responses)
+        total = sum(counter.values())
+        yes_count = counter.get("yes", 0)
+        no_count = counter.get("no", 0)
+        invalid_count = counter.get("invalid", 0)
+
+        yes_percentage = (yes_count / total * 100) if total > 0 else 0
+        no_percentage = (no_count / total * 100) if total > 0 else 0
+        invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
+
+        print(f"Query Correspondence Evaluation Results (n={total}):")
+        print(f"QUERY: {args.query}")
+        print(f"ANSWER: Yes: {yes_count} ({yes_percentage:.2f}%)")
+        print(f"ANSWER: No: {no_count} ({no_percentage:.2f}%)")
+        print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
+
+
+class QueryDocMatchTask(BaseTask):
+    """Evaluates whether a document corresponds to a query."""
+
+    name = "QueryDocMatch"
 
     def setup(self, args: argparse.Namespace) -> dict[str, Any]:
         return {"doc_ids": load_doc_ids(args.doc_ids_path)}
@@ -176,7 +251,9 @@ class QueryCorrespondenceTask(BaseTask):
         return [{"document": row["document"], "query": args.query}]
 
     def build_prompt(self, example: dict[str, Any]) -> str:
-        return prompts.get_query_correspondence_prompt(example["document"], example["query"])
+        return prompts.get_query_correspondence_prompt(
+            example["document"], example["query"]
+        )
 
     def parse_response(self, response: str) -> str:
         return parse_label_response(response, {"yes", "no"})
@@ -188,17 +265,23 @@ class QueryCorrespondenceTask(BaseTask):
         total = sum(counter.values())
         yes_count = counter.get("yes", 0)
         no_count = counter.get("no", 0)
+        invalid_count = counter.get("invalid", 0)
+
         yes_percentage = (yes_count / total * 100) if total > 0 else 0
         no_percentage = (no_count / total * 100) if total > 0 else 0
+        invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
 
         print(f"Query Correspondence Evaluation Results (n={total}):")
         print(f"QUERY: {args.query}")
         print(f"ANSWER: Yes: {yes_count} ({yes_percentage:.2f}%)")
         print(f"ANSWER: No: {no_count} ({no_percentage:.2f}%)")
+        print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
 
 
 class DescriptorAccuracyTask(BaseTask):
-    name = "descriptor_accuracy"
+    """Evaluates the accuracy of descriptors for documents."""
+
+    name = "DescriptorAccuracy"
     VALID_CLASSES = [
         "Accurate",
         "Mostly accurate",
@@ -233,7 +316,7 @@ class DescriptorAccuracyTask(BaseTask):
                 descriptors = row.get("descriptors", [])
         else:
             raise ValueError(f"Invalid descriptor type: {args.descriptor_type}")
-            
+
         return [
             {
                 "document": document,
@@ -262,20 +345,17 @@ class DescriptorAccuracyTask(BaseTask):
             count = counter.get(label, 0)
             percentage = (count / total * 100) if total > 0 else 0
             print(f"{label}: {count} ({percentage:.2f}%)")
-            
-    def save_results(self, path, parsed_responses) -> None:
-        if not path.endswith(".jsonl"):
-            path += ".jsonl"
-        with open(path, "w") as f:
-            for response in parsed_responses:
-                json.dump({"response": response}, f)
-                f.write("\n")
 
+        if "invalid" in parsed_responses:
+            invalid_count = counter.get("invalid", 0)
+            invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
+            print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
 
 
 TASKS: dict[str, BaseTask] = {
-    "query_correspondence": QueryCorrespondenceTask(),
-    "descriptor_accuracy": DescriptorAccuracyTask(),
+    "QueryDocMatch": QueryDocMatchTask(),
+    "DescriptorAccuracy": DescriptorAccuracyTask(),
+    "QueryDescriptorMatch": QueryDescriptorMatchTask(),
 }
 
 
@@ -284,7 +364,7 @@ def extract_answer_text(response: str) -> str:
 
     if "answer:" in text:
         _, suffix = text.split("answer:", 1)
-        return suffix.strip()
+        return suffix.strip(" *:!?.-\n\r\t")  # remove common punctuation and whitespace
 
     # returns the whole response if "answer:" is not found
     return text
@@ -322,6 +402,9 @@ def load_examples(path: str, task: BaseTask, args) -> list[dict]:
     for row in iter_jsonl(path):
         if task.include_row(row, context, args):
             examples.extend(task.build_examples(row, context, args))
+            
+    if not examples:
+        raise ValueError("No examples were included for evaluation. Please check your data and filtering criteria.")
 
     return examples
 
@@ -360,6 +443,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the JSONL evaluation data.",
     )
     parser.add_argument(
+        "--output-path",
+        type=str,
+        help="Path to save the evaluation results (JSONL format). If not specified, results will not be saved, only printed to stdout.",
+    )
+    parser.add_argument(
+        "--detailed-output",
+        action="store_true",
+        help="Whether to save detailed results including prompts and raw responses. Requires --output-path to be specified.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -368,14 +461,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="task", required=True)
 
+    # Subparser for query correspondence task
     query_parser = subparsers.add_parser(
-        "query_correspondence",
+        "QueryDocMatch",
         help="Evaluate query correspondence prompts on a selected set of doc IDs.",
     )
     query_parser.add_argument(
-        "--query",
-        type=str,
-        help="The query to evaluate correspondence for."
+        "--query", type=str, help="The query to evaluate correspondence for."
     )
     query_parser.add_argument(
         "--doc-ids-path",
@@ -384,8 +476,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the file containing document IDs to evaluate.",
     )
 
+    # Subparser for descriptor accuracy task
     descriptor_parser = subparsers.add_parser(
-        "descriptor_accuracy",
+        "DescriptorAccuracy",
         help="Evaluate descriptor accuracy on a random sample of documents.",
     )
     descriptor_parser.add_argument(
@@ -401,6 +494,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Type of descriptors to evaluate (harmonized or raw).",
     )
 
+    # Subparser for descriptor correspondence task
+    descriptor_query_parser = subparsers.add_parser(
+        "QueryDescriptorMatch",
+        help="Evaluate descriptor correspondence to query.",
+    )
+    descriptor_query_parser.add_argument(
+        "--query", type=str, help="The query to evaluate correspondence for."
+    )
+
     return parser
 
 
@@ -410,13 +512,14 @@ def main() -> None:
 
     random.seed(args.seed)
 
-    judge = LLMJudge(args)
-
-    print("LLM initialized. Loading documents and preparing prompts...")
-    task = TASKS[args.task]
     
     print("Selected task:", args.task)
+    print("Loading model and preparing prompts...")
+    task = TASKS[args.task]    
     examples = load_examples(args.data_path, task, args)
+    
+    judge = LLMJudge(args)
+    
     examples = [task.preprocess_example(judge, example) for example in examples]
     input_prompts = [task.build_prompt(example) for example in examples]
 
@@ -424,6 +527,10 @@ def main() -> None:
     responses = judge.generate(sampling_params, input_prompts)
     parsed_responses = [task.parse_response(response) for response in responses]
     task.print_results(parsed_responses, args)
+    if args.output_path:
+        task.save_results(args.output_path, parsed_responses)
+        if args.detailed_output:
+            task.save_detailed_results(args.output_path, examples, responses)
 
 
 if __name__ == "__main__":
