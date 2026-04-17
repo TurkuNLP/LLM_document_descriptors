@@ -6,25 +6,21 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=80G
+#SBATCH --mem=120G
 #SBATCH --gpus-per-node=8
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 
 set -eou pipefail
 
-lang=$1
-
-data_source="/scratch/project_462000963/datasets/hplt/4.0/global-dedup/samples/${lang}/1M_sample.jsonl"
-
 # possible models:
 # 'Qwen/Qwen3-Next-80B-A3B-Instruct'
 # 'openai/gpt-oss-120b'
 # 'mistralai/Mistral-Small-3.2-24B-Instruct-2506'
 
-run_id="qwen3-${lang}"
+run_id="qwen3-fw-10BT"
 model_name='Qwen/Qwen3-Next-80B-A3B-Instruct'
-data_source=$data_source
+data_source="fineweb"
 
 module purge
 module use /appl/local/laifs/modules
@@ -47,17 +43,8 @@ srun singularity run --rocm --bind /scratch/project_462000963 \
                                 --model=$model_name \
                                 --temperature=0.1 \
                                 --batch-size=500 \
-                                --num-batches=50 \
-                                --num-rewrites=1 \
+                                --num-batches=500 \
+                                --num-rewrites=0 \
                                 --start-index='auto' \
                                 --data-source=$data_source \
                                 --log-similarity"
-
-
-# discarded models:
-# 'Qwen/Qwen3-235B-A22B-Instruct-2507' works, but too big
-# 'openai/gpt-oss-20b' work, but is bad
-# 'allenai/Olmo-3.1-32B-Instruct' doesnt work
-# 'deepseek-ai/DeepSeek-V3.2' doesnt work
-# 'meta-llama/Llama-3.3-70B-Instruct' works but bad language coverage
-# 'moonshotai/Kimi-K2.5' too big, doesnt work

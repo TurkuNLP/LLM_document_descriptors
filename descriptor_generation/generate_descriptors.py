@@ -368,8 +368,8 @@ class DescriptorGenerator:
                         descriptors_without_explanations = self.remove_explanations(
                             descriptor_list
                         )
-                    desc_counts.update(descriptors_without_explanations)
-
+                        desc_counts.update(descriptors_without_explanations)
+                        
         save_descriptors(desc_counts, descriptor_path)
         self.log_descriptor_growth(desc_counts)
 
@@ -643,9 +643,12 @@ def main(args):
     dg.pipeline()
     end = time.time()
     total_execution_time = end - start
-    logging.info(
-        f"Total execution time: {time.strftime('%H:%M:%S', time.gmtime(total_execution_time))}."
-    )
+    
+    # Calculate total execution time in hours, minutes, and seconds
+    hours, remainder = divmod(total_execution_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    logging.info(f"Total execution time: {int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}.")
+
     logging.info("Done.")
 
 
@@ -671,7 +674,7 @@ if __name__ == "__main__":
         "--embedder-model",
         type=str,
         choices=["stella", "qwen"],
-        default="qwen",
+        default="stella",
         help="Name of embedding model to use for similarity evaluation.",
     )
     parser.add_argument(
