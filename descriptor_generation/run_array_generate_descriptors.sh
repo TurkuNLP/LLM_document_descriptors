@@ -8,12 +8,10 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=120G
 #SBATCH --gpus-per-task=8
-#SBATCH --array=6
+#SBATCH --array=0-19
 #SBATCH -o ../logs/%A_%a.out
 #SBATCH -e ../logs/%A_%a.err
 #SBATCH --exclusive
-
-set -euo pipefail
 
 lang=$1
 run_id_base="${lang}_sample"
@@ -34,7 +32,9 @@ mkdir -p "$SHARD_DIR"
 echo "Array task ID: $SLURM_ARRAY_TASK_ID"
 echo "Processing chunk size: $CHUNK_SIZE"
 
-do_split=0
+do_split=1
+
+echo "do_split set to $do_split"
 # -----------------------
 # Split dataset (only once)
 # -----------------------
@@ -67,6 +67,11 @@ timeout 120 bash -c 'while [ ! -f "$1" ]; do sleep 5; done' _ "$SHARD_PATH" || {
     echo "Error: Shard file not found after 120 seconds"
     exit 1
 }
+
+# Wait a bit to avoid all jobs requesting model from HF at once.
+wait_time=$((SLURM_ARRAY_TASK_ID * 30))
+echo "Sleeping for $wait_time seconds to stagger model loading..."
+sleep $wait_time
 
 echo "Using shard: $SHARD_PATH"
 
@@ -105,7 +110,13 @@ if [ $PYTHON_EXIT_CODE -eq 0 ]; then
     echo "Python script completed successfully (exit code: $PYTHON_EXIT_CODE). Removing shard file..."
     rm -f "$SHARD_PATH"
     echo "Shard file removed."
+
+    # On success, move results to final location
+    echo Moving results to final location...
+    mkdir -p ../results/HPLT4/Qwen3/${run_id_base}
+    mv "../results/${run_id}" ../results/HPLT4/Qwen3/${run_id_base}/
 else
     echo "Python script failed with exit code: $PYTHON_EXIT_CODE. Keeping shard file."
     exit $PYTHON_EXIT_CODE
 fi
+
