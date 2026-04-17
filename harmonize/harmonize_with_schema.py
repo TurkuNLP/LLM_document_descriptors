@@ -38,6 +38,7 @@ from embed_and_rerank import (
 )
 from logging_utils import setup_logging, log_execution_time, log_gpu_memory_info  # type: ignore
 
+
 # -----------------------------------------------------------------------------
 # Data structures
 # -----------------------------------------------------------------------------
@@ -72,6 +73,7 @@ class Decision:
 # IO
 # -----------------------------------------------------------------------------
 def _split_descriptor_explainer(s: str) -> Tuple[str, str]:
+    s = str(s or "").strip()
     if ";" in s:
         left, right = s.split(";", 1)
         return left.strip(), right.strip()
@@ -133,6 +135,7 @@ def load_descriptors(path: Path, max_rows: Optional[int] = None) -> List[InputRo
                 break
 
     return rows
+
 
 # -----------------------------------------------------------------------------
 # vLLM selector
@@ -205,20 +208,20 @@ class Harmonizer:
         #     ],
         # }
         # return json.dumps(key, ensure_ascii=False, sort_keys=True)
-        
+
         # Use hashlib for faster hashing than JSON serialization
         key_parts = [
             query.id,
             query.descriptor,
             query.explainer,
-            *[f"{c.id}:{c.descriptor}:{c.explainer}" for c in candidates]
+            *[f"{c.id}:{c.descriptor}:{c.explainer}" for c in candidates],
         ]
-        return hashlib.sha256("|".join(key_parts).encode('utf-8')).hexdigest()
-    
+        return hashlib.sha256("|".join(key_parts).encode("utf-8")).hexdigest()
+
     def _check_cache(
         self, batch: List[Tuple[Pair, List[Pair]]], decisions: List[Optional[Decision]]
     ) -> List[Optional[Decision]]:
-        
+
         cache_hits = 0
         for i, (q, cands) in enumerate(batch):
             ck = self._cache_key(q, cands)
@@ -232,12 +235,15 @@ class Harmonizer:
                 except Exception as e:
                     logging.warning("Failed to parse cached decision: %s", e)
                 cache_hits += 1
-        
+
         if cache_hits > 0:
-            logging.info("Cache hits: %d/%d (%.1f%%)",
-                        cache_hits, len(batch),
-                        100.0 * cache_hits / len(batch))
-                
+            logging.info(
+                "Cache hits: %d/%d (%.1f%%)",
+                cache_hits,
+                len(batch),
+                100.0 * cache_hits / len(batch),
+            )
+
         return decisions
 
     @staticmethod
@@ -306,19 +312,24 @@ class RerankerChooser(Harmonizer):
                 else:
                     decisions[pos] = Decision(chosen_id=None)
                     num_non_synonyms += 1
-        
+
             logging.info(
                 "Reranker decisions: %d synonyms, %d non-synonyms, threshold: %f",
-                num_synonyms, num_non_synonyms, self.min_rerank_score
-                )
+                num_synonyms,
+                num_non_synonyms,
+                self.min_rerank_score,
+            )
             logging.info(
                 "Best rerank score stats: mean=%.4f, median=%.4f, min=%.4f, max=%.4f",
-                np.mean(best_scores), np.median(best_scores), np.min(best_scores), np.max(best_scores)
-                )
-            
+                np.mean(best_scores),
+                np.median(best_scores),
+                np.min(best_scores),
+                np.max(best_scores),
+            )
+
         else:
             logging.info("No queries to rerank, all decisions retrived from cache.")
-            
+
         return decisions
 
     @log_execution_time
@@ -414,7 +425,6 @@ class LLMChooser(Harmonizer):
             self._check_cache(batch, decisions)
 
         self.choose_with_llm(batch, decisions)
-
 
         if self._cache is not None:
             for pos, (q, cands) in enumerate(batch):
@@ -547,6 +557,7 @@ def run(args) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(results_dir / f"{args.run_id}.log", verbosity=args.verbosity)
 
+    logging.info("Input from %s, schema from %s", args.input, args.schema)
     logging.info("Loading input and schema JSONL ...")
     input_rows = load_descriptors(args.input, args.max_input_rows)
     # Flatten per-descriptor inputs for embed/search/LLM, keeping a map to regroup
@@ -672,7 +683,9 @@ def run(args) -> None:
             logging.info("Saved input embeddings to %s", input_embed_path)
 
     # We no longer need the embedder, and it may hold GPU memory, so we can delete it to free up memory.
-    logging.info("Freeing embedder from memory to maximize GPU availability for vLLM...")
+    logging.info(
+        "Freeing embedder from memory to maximize GPU availability for vLLM..."
+    )
     del embedder  # free memory
     # Clear cache for all available GPUs
     for i in range(torch.cuda.device_count()):
@@ -715,7 +728,7 @@ def run(args) -> None:
 
     llm_jobs: List[Tuple[Pair, List[Pair], Dict[str, float]]] = []
     below_threshold_count = 0
-    
+
     for qi, q in enumerate(flat_inputs):
         cand_ids = idxs[qi]
         cand_sims = sims[qi]
@@ -737,7 +750,7 @@ def run(args) -> None:
             cands = [p_best]
             score_map = {p_best.id: float(cand_sims[j_best])}
         llm_jobs.append((q, cands, score_map))
-    
+
     if below_threshold_count > 0:
         logging.warning(
             "%d input descriptors had no candidates above the similarity threshold %.3f; falling back to best candidate.",
@@ -844,7 +857,6 @@ def run(args) -> None:
             json.dump(out_obj, f, ensure_ascii=False)
             f.write("\n")
 
-
     # Final logs
     logging.info("Results saved to %s and %s.", decision_log_path, out_path)
     if dropped > 0:
@@ -854,9 +866,13 @@ def run(args) -> None:
             decision_log_path,
         )
     if args.drop_duplicates:
-        logging.info("Duplicate harmonized descriptor;explainer pairs were dropped, keeping only unique ones per document.")
+        logging.info(
+            "Duplicate harmonized descriptor;explainer pairs were dropped, keeping only unique ones per document."
+        )
     else:
-        logging.info("Duplicate harmonized descriptor;explainer pairs were NOT dropped; all chosen synonyms are included in the output.")
+        logging.info(
+            "Duplicate harmonized descriptor;explainer pairs were NOT dropped; all chosen synonyms are included in the output."
+        )
     logging.info("Done. Kept=%d, Dropped=%d", kept, dropped)
 
 

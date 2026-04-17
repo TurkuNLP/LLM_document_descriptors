@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=harmonize
 #SBATCH --account=project_462000963
-#SBATCH --partition=dev-g
-#SBATCH --time=00:55:00
+#SBATCH --partition=standard-g
+#SBATCH --time=10:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
@@ -10,7 +10,7 @@
 #SBATCH --mem=128G
 #SBATCH -o ../logs/%A_%a.out
 #SBATCH -e ../logs/%A_%a.err
-#SBATCH --array=1
+#SBATCH --array=6
 #SBATCH --exclusive
 
 data_name="$1"
@@ -59,6 +59,11 @@ export TORCH_COMPILE_DISABLE=1
 # Memory management
 PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
+# Wait a bit to avoid all jobs requesting model from HF at once.
+wait_time=$((SLURM_ARRAY_TASK_ID * 60))
+echo "Sleeping for $wait_time seconds to stagger model loading..."
+#sleep $wait_time
+
 srun singularity run --rocm --bind /scratch/project_462000963 \
     $SIF bash -c "source ../.aif-venv/bin/activate && python harmonize_with_schema.py \
     --run-id=${RUN_ID}  \
@@ -72,3 +77,17 @@ srun singularity run --rocm --bind /scratch/project_462000963 \
     --use-reranker \
     --schema-embed-path=../results/final_schema/schema_embeddings_qwen.npz \
     --reranker=Qwen/Qwen3-Reranker-8B"
+
+
+PYTHON_EXIT_CODE=$?
+
+# Check the exit code
+if [ $PYTHON_EXIT_CODE -eq 0 ]; then
+    # On success, move results to final location
+    echo Moving results to final location...
+    mkdir -p ../results/harmonized/HPLT4/Qwen3.5/${data_name}
+    mv "../results/harmonized/${RUN_ID}" ../results/harmonized/HPLT4/Qwen3.5/${data_name}/
+else
+    echo "Python script failed with exit code: $PYTHON_EXIT_CODE."
+    exit $PYTHON_EXIT_CODE
+fi
