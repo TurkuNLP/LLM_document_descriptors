@@ -24,6 +24,34 @@ def get_query_correspondence_prompt(document, query):
          },
      ]
 
+  
+def get_descriptor_correspondence_prompt(query, descriptor):
+    return [
+        {
+            "role": "system",
+            "content": f"""You are a helpful assistant.
+            
+            ### Instructions
+            You are a judge tasked with determining whether the given descriptor corresponds to the query.
+            The descriptor does not have to be explicitly stated in the query. It is enough if only part of the query corresponds to the descriptor.
+            
+            ### Output options
+            - Yes: The descriptor corresponds to the query.
+            - No: The descriptor does not correspond to the query.
+            
+            ### Output format       
+            First, read the query carefully and analyze its content. Then, justify your answer by explaining the reasoning behind it.
+            Finally, provide a clear and concise answer to the question.
+            Your answer should end with "ANSWER: Yes" if the descriptor corresponds to the query, and "ANSWER: No" if it does not.
+            """,
+        },
+        {
+            "role": "user",
+            "content": f"Query: {query}\nDescriptor: {descriptor}",
+        },
+    ]
+
+
 def get_descriptor_accuracy_prompt(document, descriptor):
     return [
         {
