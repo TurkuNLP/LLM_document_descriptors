@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --gpus-per-node=8
 #SBATCH -o logs/%j.out
 #SBATCH -e logs/%j.err
@@ -24,7 +24,7 @@ export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 run_id=${1:-"finetune_$SLURM_JOB_ID"}
 
-data_dir="/flash/project_462000963/users/tarkkaot/preprocessed/HPLT4pre-no-eng_16k/"
+data_dir="/flash/project_462000963/users/tarkkaot/preprocessed/HPLT4pre-no-eng_8k/"
 
 srun accelerate launch \
     --config_file accelerate/accelerate_config.yaml \
@@ -34,6 +34,6 @@ srun accelerate launch \
     --fast-holdout \
     --use-wandb \
     --group-by-length \
-    --debug-first-batch \
+    --add-length-column \
     --filter-by-length 8192 \
-    --add-length-column
+    

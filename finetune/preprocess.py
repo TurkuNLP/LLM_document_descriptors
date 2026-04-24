@@ -23,8 +23,6 @@ CHARS_PER_TOKEN = 3  # Rough heuristic for quick truncation
 
 HF_HUB_CACHE = os.getenv("HF_HUB_CACHE")
 
-documents_truncated = 0
-
 
 def parse_descriptor_list(raw_descriptors: list[str]) -> list[str]:
     cleaned: list[str] = []
@@ -37,25 +35,23 @@ def parse_descriptor_list(raw_descriptors: list[str]) -> list[str]:
     return cleaned
 
 
-def drop_long_document(document: str, max_tokens: int, tokenizer, quick: bool) -> str:
-    global documents_truncated
-
+def drop_long_or_short_document(
+    document: str, max_tokens: int, min_tokens: int, tokenizer, quick: bool
+) -> str:
     if quick:
-        char_limit = max_tokens * CHARS_PER_TOKEN
-        if len(document) <= char_limit:
+        max_char_limit = max_tokens * CHARS_PER_TOKEN
+        min_char_limit = min_tokens * CHARS_PER_TOKEN
+        if min_char_limit <= len(document) <= max_char_limit:
             return document
-        documents_truncated += 1
         return ""
     else:
         token_ids = tokenizer.encode(document, add_special_tokens=False)
-        if len(token_ids) <= max_tokens:
+        if min_tokens <= len(token_ids) <= max_tokens:
             return document
-        documents_truncated += 1
         return ""
 
 
 def truncate_document(document: str, max_tokens: int, tokenizer, quick: bool) -> str:
-    global documents_truncated
 
     if quick:
         # Quick truncation based on character count. ~20x faster than tokenization.
@@ -63,7 +59,6 @@ def truncate_document(document: str, max_tokens: int, tokenizer, quick: bool) ->
         char_limit = max_tokens * CHARS_PER_TOKEN
         if len(document) <= char_limit:
             return document
-        documents_truncated += 1
         return document[:char_limit] + "\n[TRUNCATED]"
 
     else:
@@ -77,7 +72,6 @@ def truncate_document(document: str, max_tokens: int, tokenizer, quick: bool) ->
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )
-        documents_truncated += 1
         return truncated + "\n[TRUNCATED]"
 
 
@@ -86,13 +80,14 @@ def build_messages(
     descriptors: list[str],
     tokenizer,
     max_doc_tokens: int,
+    min_doc_tokens: int,
     quick_truncation: bool,
     drop_long_docs: bool = True,
 ) -> list[dict[str, str]]:
 
     if drop_long_docs:
-        document = drop_long_document(
-            document, max_doc_tokens, tokenizer, quick=quick_truncation
+        document = drop_long_or_short_document(
+            document, max_doc_tokens, min_doc_tokens, tokenizer, quick=quick_truncation
         )
     else:
         document = truncate_document(
@@ -132,6 +127,7 @@ def example_generator(
     paths: list[str],
     tokenizer,
     max_doc_tokens: int,
+    min_doc_tokens: int,
     interleave_buffer_size: int,
     seed: int,
     shuffle_files: bool,
@@ -171,6 +167,7 @@ def example_generator(
                     descriptors=descriptors,
                     tokenizer=tokenizer,
                     max_doc_tokens=max_doc_tokens,
+                    min_doc_tokens=min_doc_tokens,
                     quick_truncation=quick_truncation,
                     drop_long_docs=drop_long_docs,
                 )
@@ -238,6 +235,24 @@ def tokenize_batch(batch: dict, tokenizer) -> dict:
     }
 
 
+def print_dataset_stats(dataset: Dataset):
+    print("Calculating dataset statistics... This may take a moment.")
+    total_examples = len(dataset)
+    if total_examples == 0:
+        print("Dataset is empty.")
+        return
+
+    length_stats = dataset["length"]
+    avg_length = sum(length_stats) / total_examples
+    max_length = max(length_stats)
+    min_length = min(length_stats)
+
+    print(f"Total examples: {total_examples}")
+    print(f"Average input length (tokens): {avg_length:.2f}")
+    print(f"Max input length (tokens): {max_length}")
+    print(f"Min input length (tokens): {min_length}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Preprocess JSONL files for chat LLM fine-tuning."
@@ -258,7 +273,30 @@ def parse_args():
     parser.add_argument("--model-name", type=str, default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--cache-dir", type=str, default=HF_HUB_CACHE)
-    parser.add_argument("--max-doc-tokens", type=int, default=60000)
+    parser.add_argument(
+        "--max-doc-tokens",
+        type=int,
+        default=7500,
+        help="Maximum number of tokens for the document content. Longer documents will be truncated or dropped based on other flags.",
+    )
+    parser.add_argument(
+        "--min-doc-tokens",
+        type=int,
+        default=0,
+        help="Minimum number of tokens for the document content. Shorter documents will be dropped.",
+    )
+    parser.add_argument(
+        "--max-input-tokens",
+        type=int,
+        default=8192,
+        help="Maximum number of tokens for the input content, including the prompt and generated text. Longer inputs will be dropped.",
+    )
+    parser.add_argument(
+        "--min-input-tokens",
+        type=int,
+        default=0,
+        help="Minimum number of tokens for the input content, including the prompt and generated text. Shorter inputs will be dropped.",
+    )
     parser.add_argument(
         "--quick-truncation",
         action="store_true",
@@ -320,8 +358,10 @@ def main():
         raise ValueError("--interleave-buffer-size must be greater than zero.")
 
     output_dir = (
-        args.output_dir + "/" + args.run_id
-    ) or f"./preprocessed/{args.run_id}"
+        os.path.join(args.output_dir, args.run_id)
+        if args.output_dir is not None
+        else f"./preprocessed/{args.run_id}"
+    )
     os.makedirs(output_dir, exist_ok=True)
 
     paths = expand_input_paths(path_spec)
@@ -347,6 +387,7 @@ def main():
             "paths": paths,
             "tokenizer": tokenizer,
             "max_doc_tokens": args.max_doc_tokens,
+            "min_doc_tokens": args.min_doc_tokens,
             "interleave_buffer_size": args.interleave_buffer_size,
             "seed": args.seed,
             "shuffle_files": args.shuffle_files,
@@ -355,34 +396,6 @@ def main():
         },
         cache_dir=args.cache_dir,
     )
-
-    # Filter out examples with empty messages
-    # This can happen if the original document was empty or if it was dropped/truncated to empty by our preprocessing
-    def debug_filter(ex):
-        if ex["messages"] is None:
-            print("Dropped: messages is None")
-            return False
-        if not isinstance(ex["messages"], list):
-            print(f"Dropped: messages is not a list: {type(ex['messages'])}")
-            return False
-        if len(ex["messages"]) != 3:
-            print(f"Dropped: messages does not have 3 elements: {len(ex['messages'])}")
-            return False
-        for i, msg in enumerate(ex["messages"]):
-            if not isinstance(msg, dict):
-                print(f"Dropped: messages[{i}] is not a dict: {type(msg)}")
-                return False
-            if not msg.get("content"):
-                print(f"Dropped: messages[{i}] has no 'content' key or it's empty")
-                return False
-        return True
-
-    docs_before = len(dataset)
-    print(f"Total documents before filtering: {docs_before}", flush=True)
-    dataset = dataset.filter(debug_filter, num_proc=os.cpu_count())
-    docs_after = len(dataset)
-    print(f"Total documents after filtering: {docs_after}", flush=True)
-    print(f"Total documents dropped by filter: {docs_before - docs_after}", flush=True)
 
     tokenized = dataset.map(
         tokenize_batch,
@@ -395,12 +408,16 @@ def main():
         desc="Applying chat template and tokenizing",
     )
 
+    # Filter out examples with input length greater than max_input_tokens or less than min_input_tokens.
+    tokenized = tokenized.filter(
+        lambda ex: args.min_input_tokens < ex["length"] <= args.max_input_tokens,
+        num_proc=os.cpu_count(),
+    )
+
+    print_dataset_stats(tokenized)
+
     tokenized.save_to_disk(output_dir)
     print(f"Saved tokenized dataset to: {output_dir}", flush=True)
-    if args.drop_long_docs:
-        print(f"Long documents dropped: {documents_truncated}", flush=True)
-    else:
-        print(f"Long documents truncated: {documents_truncated}", flush=True)
 
 
 if __name__ == "__main__":
