@@ -44,6 +44,11 @@ export TORCH_COMPILE_DISABLE=1
 # Memory management
 PYTORCH_HIP_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
 
+# Wait a bit to avoid all jobs requesting model from HF at once.
+wait_time=$((SLURM_ARRAY_TASK_ID * 60))
+echo "Sleeping for $wait_time seconds to stagger model loading..."
+sleep $wait_time
+
 srun singularity run --rocm --bind /scratch/project_462000963 \
     $SIF bash -c "source ../.aif-venv/bin/activate && python harmonize_with_schema.py \
     --run-id=${run_id}  \

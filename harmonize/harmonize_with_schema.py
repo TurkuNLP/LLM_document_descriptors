@@ -16,6 +16,7 @@ from pathlib import Path
 import time
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Any
 import hashlib
+import gc
 
 # Third‑party
 import json_repair  # type: ignore
@@ -451,10 +452,10 @@ class LLMChooser(Harmonizer):
                 model=self.model_name,
                 download_dir=self.cache_dir,
                 dtype="bfloat16",
-                max_model_len=16384,
+                max_model_len=8192,
                 tensor_parallel_size=n_gpus,
                 enforce_eager=False,
-                gpu_memory_utilization=0.90,
+                gpu_memory_utilization=0.75,
             )
         return self._llm
 
@@ -687,10 +688,12 @@ def run(args) -> None:
         "Freeing embedder from memory to maximize GPU availability for vLLM..."
     )
     del embedder  # free memory
+    gc.collect()
     # Clear cache for all available GPUs
     for i in range(torch.cuda.device_count()):
-        torch.cuda.set_device(i)  # Switch to GPU i
-        torch.cuda.empty_cache()
+        with torch.cuda.device(i):
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
     # Search for nearest K neighbors from schema
     logging.info(
@@ -714,9 +717,9 @@ def run(args) -> None:
                 min_rerank_score=args.min_rerank_score,
             )
         else:
-            logging.info("Using LLM (%s) for final selection.", args.llm_name)
+            logging.info("Using LLM (%s) for final selection.", args.llm)
             selector = LLMChooser(
-                model_name=args.llm_name,
+                model_name=args.llm,
                 cache_dir=args.cache_dir,
                 temperature=0.1,
                 batch_size=args.batch_size_llm,
@@ -843,7 +846,7 @@ def run(args) -> None:
                 out_obj = {"text": r.raw}
             harmonized_descriptors = harm_by_row.get(r.row_idx, [])
 
-            if args.drop_duplicates:
+            if not args.keep_duplicates:
                 # Deduplicate while preserving order
                 seen = set()
                 unique_harm = []
@@ -865,7 +868,7 @@ def run(args) -> None:
             dropped,
             decision_log_path,
         )
-    if args.drop_duplicates:
+    if not args.keep_duplicates:
         logging.info(
             "Duplicate harmonized descriptor;explainer pairs were dropped, keeping only unique ones per document."
         )
@@ -952,10 +955,10 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Minimum score for reranker to consider a candidate a match (only with --use-reranker)",
     )
     p.add_argument(
-        "--drop-duplicates",
+        "--keep-duplicates",
         action="store_true",
-        default=True,
-        help="If harmonization produce duplicate descriptor;explainer pairs for a document, keep only one.",
+        help="If harmonization produce duplicate descriptor;explainer pairs for a document, keep all. "
+        "By default, duplicates are removed to produce a cleaner output with unique harmonized descriptors per document.",
     )
 
     # Cache arguments
