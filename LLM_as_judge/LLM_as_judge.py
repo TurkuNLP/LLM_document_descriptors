@@ -7,7 +7,9 @@ import random
 from typing import Any, Iterator
 import re
 import numpy as np  # type: ignore
+from concurrent.futures import ThreadPoolExecutor
 
+from openai import OpenAI  # type: ignore
 import torch  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
 
@@ -22,15 +24,46 @@ class LLMJudge:
         self,
         args: argparse.Namespace,
     ) -> None:
-        cache_dir = args.cache_dir or os.getenv("HF_HUB_CACHE")
-        self.llm = self._setup_llm(args.model, args.max_model_len, cache_dir)
+        self.backend = args.backend
+        self.model = args.model
         self.max_tokens = args.max_tokens
+        self.max_model_len = args.max_model_len
+
+        if self.backend == "local":
+            cache_dir = args.cache_dir or os.getenv("HF_HUB_CACHE")
+            self.llm = self._setup_llm(args.model, args.max_model_len, cache_dir)
+            self.client = None
+
+        elif self.backend == "api":
+            self.llm = None
+            self.client = OpenAI(
+                api_key=args.api_key or os.getenv("OPENAI_API_KEY"),
+                base_url=args.api_base_url,
+            )
+
+        else:
+            raise ValueError(f"Unknown backend: {self.backend}")
 
     def generate(
+        self,
+        sampling_params: SamplingParams | dict[str, Any],
+        inputs: list[str],
+    ) -> list[str]:
+        if self.backend == "local":
+            return self._generate_local(sampling_params, inputs)
+
+        if self.backend == "api":
+            return self._generate_api(sampling_params, inputs)
+
+        raise ValueError(f"Unknown backend: {self.backend}")
+
+    def _generate_local(
         self,
         sampling_params: SamplingParams,
         inputs: list[str],
     ) -> list[str]:
+        assert self.llm is not None
+
         outputs = self.llm.chat(
             inputs,
             sampling_params=sampling_params,
@@ -47,9 +80,32 @@ class LLMJudge:
 
         return response_texts
 
-    def get_sampling_params(self, model_name: str) -> SamplingParams:
+    def _generate_api(
+        self,
+        sampling_params: dict[str, Any],
+        inputs: list[str],
+    ) -> list[str]:
+        assert self.client is not None
+
+        def call_api(prompt: str) -> str:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                input=prompt,
+                max_output_tokens=sampling_params["max_tokens"],
+                temperature=sampling_params.get("temperature"),
+                top_p=sampling_params.get("top_p"),
+            )
+
+            return response.choices[0].message.content or ""
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            return list(executor.map(call_api, inputs))
+
+    def get_sampling_params(
+        self,
+        model_name: str,
+    ) -> SamplingParams | dict[str, Any]:
         common_params = {
-            "repetition_penalty": 1.0,
             "max_tokens": self.max_tokens,
         }
 
@@ -66,21 +122,61 @@ class LLMJudge:
         }
 
         common_params.update(llama_params if "Llama" in model_name else qwen_params)
-        return SamplingParams(**common_params)
+
+        if self.backend == "local":
+            return SamplingParams(
+                repetition_penalty=1.0,
+                **common_params,
+            )
+
+        if self.backend == "api":
+            # Most APIs do not support vLLM-only params.
+            api_params = {
+                "max_tokens": common_params["max_tokens"],
+                "temperature": common_params.get("temperature"),
+                "top_p": common_params.get("top_p"),
+            }
+            return api_params
+
+        raise ValueError(f"Unknown backend: {self.backend}")
 
     def tokenize_and_truncate(self, text: str) -> str:
-        max_input_len = self.llm.llm_engine.model_config.max_model_len - self.max_tokens
-        if max_input_len <= 0:
-            raise ValueError(
-                f"max_tokens ({self.max_tokens}) must be less than the model's max_model_len ({self.llm.llm_engine.model_config.max_model_len})."
+        if self.backend == "local":
+            assert self.llm is not None
+
+            max_input_len = (
+                self.llm.llm_engine.model_config.max_model_len - self.max_tokens
             )
-        tokenizer = self.llm.get_tokenizer()
-        token_ids = tokenizer.encode(text)
 
-        if len(token_ids) > max_input_len:
-            token_ids = token_ids[:max_input_len]
+            if max_input_len <= 0:
+                raise ValueError(
+                    f"max_tokens ({self.max_tokens}) must be less than "
+                    f"the model's max_model_len "
+                    f"({self.llm.llm_engine.model_config.max_model_len})."
+                )
 
-        return tokenizer.decode(token_ids)
+            tokenizer = self.llm.get_tokenizer()
+            token_ids = tokenizer.encode(text)
+
+            if len(token_ids) > max_input_len:
+                token_ids = token_ids[:max_input_len]
+
+            return tokenizer.decode(token_ids)
+
+        if self.backend == "api":
+            max_input_len = self.max_model_len - self.max_tokens
+
+            if max_input_len <= 0:
+                raise ValueError(
+                    f"max_tokens ({self.max_tokens}) must be less than "
+                    f"max_model_len ({self.max_model_len})."
+                )
+
+            # Rough fallback.
+            max_chars = max_input_len * 4
+            return text[:max_chars]
+
+        raise ValueError(f"Unknown backend: {self.backend}")
 
     def _setup_llm(
         self,
@@ -193,9 +289,17 @@ class QueryDescriptorMatchTask(BaseTask):
         context: dict[str, Any],
         args: argparse.Namespace,
     ) -> list[dict[str, Any]]:
-        descriptor = row.get("descriptor", "")
+        query = row["query"]
+        results = row.get("results", [])
 
-        return [{"descriptor": descriptor, "query": args.query}]
+        return [
+            {
+                "query": query,
+                "descriptor": result["descriptor"],
+            }
+            for result in results
+            if "descriptor" in result
+        ]
 
     def build_prompt(self, example: dict[str, Any]) -> str:
         return prompts.get_descriptor_correspondence_prompt(
@@ -402,9 +506,11 @@ def load_examples(path: str, task: BaseTask, args) -> list[dict]:
     for row in iter_jsonl(path):
         if task.include_row(row, context, args):
             examples.extend(task.build_examples(row, context, args))
-            
+
     if not examples:
-        raise ValueError("No examples were included for evaluation. Please check your data and filtering criteria.")
+        raise ValueError(
+            "No examples were included for evaluation. Please check your data and filtering criteria."
+        )
 
     return examples
 
@@ -457,6 +563,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=42,
         help="Random seed used by tasks that sample rows.",
+    )
+
+    # API options
+    parser.add_argument(
+        "--backend",
+        choices=["local", "api"],
+        default="local",
+        help="Whether to run the judge with a local vLLM model or a remote API.",
+    )
+    parser.add_argument(
+        "--api-base-url",
+        default=None,
+        help="Optional OpenAI-compatible API base URL.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key. If omitted, OPENAI_API_KEY is used.",
     )
 
     subparsers = parser.add_subparsers(dest="task", required=True)
@@ -512,16 +636,20 @@ def main() -> None:
 
     random.seed(args.seed)
 
-    
-    print("Selected task:", args.task)
-    print("Loading model and preparing prompts...")
-    task = TASKS[args.task]    
+    print("Selected task:", args.task, flush=True)
+    print("Loading model and preparing prompts...", flush=True)
+    task = TASKS[args.task]
     examples = load_examples(args.data_path, task, args)
-    
+
     judge = LLMJudge(args)
-    
+
     examples = [task.preprocess_example(judge, example) for example in examples]
     input_prompts = [task.build_prompt(example) for example in examples]
+
+    print(f"Got {len(input_prompts)} prompts. Starting evaluation...", flush=True)
+    print("Sample prompt:", flush=True)
+    print(input_prompts[0], flush=True)
+    print("", flush=True)
 
     sampling_params = judge.get_sampling_params(args.model)
     responses = judge.generate(sampling_params, input_prompts)
@@ -534,4 +662,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    print("Starting LLM as Judge evaluation...", flush=True)
     main()
