@@ -281,7 +281,7 @@ def parse_arguments():
     parser.add_argument(
         "--query",
         type=str,
-        help="Query string to search in the index. Separate multiple queries with comma.",
+        help="Query string to search in the index. Separate multiple queries with | (e.g., --query \"query one|query two\").",
     )
     parser.add_argument(
         "--top-k",
@@ -473,7 +473,7 @@ def main(args):
 
     if args.query:
         print("Searching...")
-        queries = [query.strip() for query in args.query.split(",") if query.strip()]
+        queries = [query.strip() for query in args.query.split("|") if query.strip()]
         if args.max_distance is not None:
             print(
                 f"Maximum distance threshold is set. You might get more or fewer results than specified with --top-k ({args.top_k})",
