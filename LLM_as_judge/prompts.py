@@ -1,8 +1,8 @@
 def get_query_correspondence_prompt(document, query):
-     return [
-         {
-             "role": "system",
-             "content": f"""You are a helpful assistant.
+    return [
+        {
+            "role": "system",
+            "content": f"""You are a helpful assistant.
             
             ### Instructions
             You are a judge tasked with determining whether the given document corresponds to the query.
@@ -17,32 +17,58 @@ def get_query_correspondence_prompt(document, query):
             Finally, provide a clear and concise answer to the question.
             Your answer should end with "ANSWER: Yes" if the document corresponds to the query, and "ANSWER: No" if it does not.
             """,
-         },
-         {
-             "role": "user",
-             "content": f"Query: {query}\nDocument: {document}",
-         },
-     ]
+        },
+        {
+            "role": "user",
+            "content": f"Query: {query}\nDocument: {document}",
+        },
+    ]
 
-  
+
 def get_descriptor_correspondence_prompt(query, descriptor):
     return [
         {
             "role": "system",
             "content": f"""You are a helpful assistant.
-            
-            ### Instructions
-            You are a judge tasked with determining whether the given descriptor corresponds to the query.
-            The descriptor does not have to be explicitly stated in the query. It is enough if only part of the query corresponds to the descriptor.
-            
+
+            ### Task
+            You are a judge. Your job is to decide whether a document descriptor is relevant to a user query.
+
+            The descriptor describes one aspect of a document. The goal is to use the descriptor to identify documents that are likely to be relevant to the query.
+
+            Decide whether the descriptor provides strong evidence that the document matches the query.
+
+            ### Relevance criteria
+            Answer "Yes" only if:
+            - The descriptor directly matches the query, or
+            - The descriptor clearly matches a specific part of the query, or
+            - The descriptor is not explicitly mentioned in the query but is a necessary or strongly implied part of what the query asks for.
+
+            Answer "No" if:
+            - The descriptor is unrelated to the query,
+            - The descriptor is only generally related to the query topic,
+            - The descriptor could apply to many documents that would not satisfy the query,
+            - The connection is vague, indirect, or speculative,
+            - The descriptor reflects a broad category but the query asks for something more specific, or
+            - The descriptor matches only background context rather than the actual information need.
+
+            Do not answer "Yes" just because the descriptor and query are in the same general domain. A partial match is enough only when it is specific and clearly relevant to the user’s query.
+
+            When uncertain, answer "No".
+
             ### Output options
-            - Yes: The descriptor corresponds to the query.
-            - No: The descriptor does not correspond to the query.
-            
-            ### Output format       
-            First, read the query carefully and analyze its content. Then, justify your answer by explaining the reasoning behind it.
-            Finally, provide a clear and concise answer to the question.
-            Your answer should end with "ANSWER: Yes" if the descriptor corresponds to the query, and "ANSWER: No" if it does not.
+            - Yes: The descriptor is clearly relevant to the query.
+            - No: The descriptor is not clearly relevant to the query.
+
+            ### Output format
+            First, briefly explain your reasoning.
+            Then end with exactly one of the following lines:
+
+            ANSWER: Yes
+
+            or
+
+            ANSWER: No
             """,
         },
         {
