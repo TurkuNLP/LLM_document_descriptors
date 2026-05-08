@@ -2,8 +2,8 @@
 #SBATCH --job-name=finetune
 #SBATCH --account=project_462000963
 #SBATCH --partition=standard-g
-#SBATCH --time=1-00:00:00
-#SBATCH --nodes=32
+#SBATCH --time=2-00:00:00
+#SBATCH --nodes=16
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=256G
@@ -25,8 +25,6 @@ MASTER_PORT=29500
 
 # Memory management
 export PYTORCH_HIP_ALLOC_CONF=garbage_collection_threshold:0.8
-
-
 
 NUM_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | wc -l)
 NUM_GPUS=$((8 * NUM_NODES))
@@ -58,9 +56,12 @@ accelerate launch \
     --run-id '"$run_id"' \
     --data-dir '"$data_dir"' \
     --per-device-train-batch-size 2 \
-    --gradient-accumulation-steps 8 \
+    --gradient-accumulation-steps 16 \
     --group-by-length \
     --use-wandb \
     --fast-holdout \
     --dataloader-num-workers 0 \
+    --do-eval \
+    --save-dataset \
+    --learning-rate 5e-5 \
 '

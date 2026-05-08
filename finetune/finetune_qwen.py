@@ -474,6 +474,8 @@ def load_and_prepare_dataset(args, training_args: TrainingArguments) -> DatasetD
             raise ValueError(
                 f"DatasetDict found but missing required splits. Got: {list(dataset.keys())}"
             )
+        else:
+            log_main("Loaded DatasetDict with splits: %s", list(dataset.keys()))
     elif isinstance(data, Dataset):
         log_main("Loaded a single Dataset; creating splits.")
         if args.fast_holdout:
@@ -514,6 +516,18 @@ def load_and_prepare_dataset(args, training_args: TrainingArguments) -> DatasetD
         log_main("Example input length (in tokens): %d", len(ex["input_ids"]))
 
     log_dataset_stats(dataset)
+
+    if args.save_dataset:
+        save_path = os.path.join(args.output_dir, "prepared_dataset")
+        if save_path.exists():
+            log_main(
+                "Warning: Dataset save path %s already exists. Not saving prepared dataset.",
+                save_path,
+            )
+        else:
+            log_main("Saving prepared dataset to %s", save_path)
+            dataset.save_to_disk(save_path)
+
     return dataset
 
 
@@ -619,6 +633,7 @@ def parse_args():
         description="Fine-tune Qwen with LoRA on a tokenized dataset"
     )
 
+    # General options (paths, logging, etc.)
     parser.add_argument("--run-id", type=str, required=True)
     parser.add_argument("--model-name", type=str, default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--data-dir", type=str, required=True)
@@ -637,31 +652,33 @@ def parse_args():
         help="If set, resume training from a specific checkpoint directory instead of the last checkpoint in the output directory.",
     )
 
+    # WandB options
+    parser.add_argument("--use-wandb", action="store_true")
+    parser.add_argument(
+        "--wandb-project", type=str, default="descriptor-model-finetune"
+    )
+
+    # Model tuning options
+    parser.add_argument("--attn-implementation", type=str, default="flash_attention_2")
     parser.add_argument("--num-train-epochs", type=int, default=1)
     parser.add_argument("--per-device-train-batch-size", type=int, default=2)
     parser.add_argument("--per-device-eval-batch-size", type=int, default=2)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--weight-decay", type=float, default=0.0)
-
     parser.add_argument("--logging-steps", type=int, default=1)
-    parser.add_argument("--save-steps", type=int, default=100)
-    parser.add_argument("--eval-steps", type=int, default=100)
+    parser.add_argument("--save-steps", type=int, default=50)
+    parser.add_argument("--eval-steps", type=int, default=50)
     parser.add_argument("--do-eval", action="store_true")
     parser.add_argument("--dataloader-num-workers", type=int, default=0)
 
-    parser.add_argument("--use-wandb", action="store_true")
-    parser.add_argument(
-        "--wandb-project", type=str, default="descriptor-model-finetune"
-    )
-
-    parser.add_argument("--attn-implementation", type=str, default="flash_attention_2")
-
+    # LoRA options
     parser.add_argument("--lora-target-modules", type=str, default="q_proj,v_proj")
     parser.add_argument("--lora-r", type=int, default=8)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--lora-dropout", type=float, default=0.1)
 
+    # Dataset preparation options
     parser.add_argument("--group-by-length", action="store_true")
     parser.add_argument("--add-length-column", action="store_true")
     parser.add_argument(
@@ -670,18 +687,23 @@ def parse_args():
         default=None,
         help="If set, filter out training examples with length greater than this value",
     )
-
-    parser.add_argument("--debug-first-batch", action="store_true")
-
     parser.add_argument(
         "--fast-holdout",
         action="store_true",
         help="Use a fast holdout-based splitting strategy instead of a ratio-based one. Requires --val-size and --test-size.",
     )
+    parser.add_argument(
+        "--save-dataset",
+        action="store_true",
+        help="Whether to save the prepared dataset (after splitting and filtering) to the output directory for inspection/reuse.",
+    )
     parser.add_argument("--val-size", type=int, default=10_000)
     parser.add_argument("--test-size", type=int, default=50_000)
     parser.add_argument("--test-size-ratio", type=float, default=0.05)
     parser.add_argument("--eval-size-ratio", type=float, default=0.05)
+
+    # Debug options
+    parser.add_argument("--debug-first-batch", action="store_true")
 
     return parser.parse_args()
 
@@ -740,5 +762,8 @@ if __name__ == "__main__":
     log_main("RANK: %s", os.environ.get("RANK", "N/A"))
     log_main("WORLD_SIZE: %s", os.environ.get("WORLD_SIZE", "N/A"))
     log_main("SLURM_JOB_ID: %s", os.environ.get("SLURM_JOB_ID", "N/A"))
+
+    # Hardcode do_eval to True for now since we want to evaluate.
+    args.do_eval = True
 
     main(args)
