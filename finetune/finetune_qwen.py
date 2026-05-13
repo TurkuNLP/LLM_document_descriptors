@@ -518,15 +518,12 @@ def load_and_prepare_dataset(args, training_args: TrainingArguments) -> DatasetD
     log_dataset_stats(dataset)
 
     if args.save_dataset:
-        save_path = os.path.join(args.output_dir, "prepared_dataset")
-        if save_path.exists():
-            log_main(
-                "Warning: Dataset save path %s already exists. Not saving prepared dataset.",
-                save_path,
-            )
-        else:
-            log_main("Saving prepared dataset to %s", save_path)
-            dataset.save_to_disk(save_path)
+        save_path = (
+            f"/flash/project_462000963/users/tarkkaot/preprocessed/{args.run_id}"
+        )
+        os.makedirs(save_path, exist_ok=True)
+        log_main("Saving prepared dataset to %s", save_path)
+        dataset.save_to_disk(save_path)
 
     return dataset
 
@@ -635,7 +632,8 @@ def parse_args():
 
     # General options (paths, logging, etc.)
     parser.add_argument("--run-id", type=str, required=True)
-    parser.add_argument("--model-name", type=str, default="Qwen/Qwen3.5-0.8B")
+    # parser.add_argument("--model-name", type=str, default="Qwen/Qwen3.5-0.8B")
+    parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-0.6B")
     parser.add_argument("--data-dir", type=str, required=True)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--log-file", type=str, default=None)
@@ -698,7 +696,7 @@ def parse_args():
         help="Whether to save the prepared dataset (after splitting and filtering) to the output directory for inspection/reuse.",
     )
     parser.add_argument("--val-size", type=int, default=10_000)
-    parser.add_argument("--test-size", type=int, default=50_000)
+    parser.add_argument("--test-size", type=int, default=100_000)
     parser.add_argument("--test-size-ratio", type=float, default=0.05)
     parser.add_argument("--eval-size-ratio", type=float, default=0.05)
 

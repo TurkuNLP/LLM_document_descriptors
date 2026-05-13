@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=finetune
 #SBATCH --account=project_462000963
-#SBATCH --partition=standard-g
-#SBATCH --time=2-00:00:00
+#SBATCH --partition=dev-g
+#SBATCH --time=00:59:00
 #SBATCH --nodes=16
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
@@ -39,14 +39,14 @@ echo "----------------------------------------"
 
 run_id=${1:-"finetune_$SLURM_JOB_ID"}
 
-data_dir="/flash/project_462000963/users/tarkkaot/preprocessed/HPLT4pre-no-eng_4k/"
+data_dir="/flash/project_462000963/users/tarkkaot/preprocessed/train4/"
 
 srun --nodes="$NUM_NODES" --ntasks="$NUM_NODES" bash -c '
 NODE_RANK=$SLURM_NODEID
 echo "Starting node rank ${NODE_RANK} on $(hostname)"
 
 accelerate launch \
-  --config_file accelerate/accelerate_config.yaml \
+  --config_file accelerate/accelerate_config_deepspeed.yaml \
   --num_machines '"$SLURM_JOB_NUM_NODES"' \
   --num_processes '"$NUM_GPUS"' \
   --machine_rank ${NODE_RANK} \
@@ -62,6 +62,5 @@ accelerate launch \
     --fast-holdout \
     --dataloader-num-workers 0 \
     --do-eval \
-    --save-dataset \
     --learning-rate 5e-5 \
 '
