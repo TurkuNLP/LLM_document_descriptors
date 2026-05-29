@@ -270,7 +270,7 @@ def parse_args():
         default=None,
         help="Directory or file path containing JSONL inputs.",
     )
-    parser.add_argument("--model-name", type=str, default="Qwen/Qwen3.5-0.8B")
+    parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-0.6B")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--cache-dir", type=str, default=HF_HUB_CACHE)
     parser.add_argument(
