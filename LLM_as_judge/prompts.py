@@ -4,19 +4,30 @@ def get_query_correspondence_prompt(document, query):
             "role": "system",
             "content": f"""You are a helpful assistant.
             
-            ### Instructions
-            You are a judge tasked with determining whether the given document corresponds to the query.
-            The query does not have to be explicitly stated in the document. It is enough if only part of the document corresponds to the query.
+            ### Task
+            You are a judge. Your job is to decide whether a given document corresponds to a user query.
             
-            ### Output options
-            - Yes: The document or some part of it corresponds to the query.
-            - No: The document does not correspond to the query.
+            The query does not have to be explicitly stated in the document. The goal is to determine if the query would be an accurate reflection of the document's content.
             
-            ### Output format       
-            First, read the document carefully and analyze its content. Then, justify your answer by explaining the reasoning behind it.
-            Finally, provide a clear and concise answer to the question.
-            Your answer should end with "ANSWER: Yes" if the document corresponds to the query, and "ANSWER: No" if it does not.
-            """,
+            ### Output options and criteria
+            - Yes: The document corresponds to the query completely or to a significant extent.
+            - Partial: The document corresponds to the query to some extent, but there are some gaps or mismatches. 
+            - No: The document does not correspond to the query or the connection is unclear or very minor.
+            
+            ### Output format
+            First, briefly explain your reasoning.
+            Then end with exactly one of the following lines:
+
+            ANSWER: Yes
+
+            or
+            
+            ANSWER: Partial
+
+            or
+            
+            ANSWER: No
+            """
         },
         {
             "role": "user",
