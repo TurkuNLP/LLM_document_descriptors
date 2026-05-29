@@ -8,11 +8,10 @@ from typing import Any, Iterator
 import re
 import numpy as np  # type: ignore
 from concurrent.futures import ThreadPoolExecutor
-
 from openai import OpenAI  # type: ignore
+
 import torch  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
-
 import prompts
 
 os.environ["VLLM_CONFIGURE_LOGGING"] = "0"
@@ -90,7 +89,7 @@ class LLMJudge:
         def call_api(prompt: str) -> str:
             response = self.client.chat.completions.create(
                 model=self.model,
-                input=prompt,
+                messages=prompt,
                 max_output_tokens=sampling_params["max_tokens"],
                 temperature=sampling_params.get("temperature"),
                 top_p=sampling_params.get("top_p"),
@@ -271,6 +270,7 @@ class QueryDescriptorMatchTask(BaseTask):
     """Evaluates whether a descriptor corresponds to a query."""
 
     name = "QueryDescriptorMatch"
+    valid_labels = {"yes", "no"}
 
     def setup(self, args: argparse.Namespace) -> dict[str, Any]:
         return {"query": args.query}
@@ -308,7 +308,7 @@ class QueryDescriptorMatchTask(BaseTask):
         )
 
     def parse_response(self, response: str) -> str:
-        return parse_label_response(response, {"yes", "no"})
+        return parse_label_response(response, valid_labels=self.valid_labels)
 
     def print_results(
         self, parsed_responses: list[str], args: argparse.Namespace
@@ -334,9 +334,10 @@ class QueryDocMatchTask(BaseTask):
     """Evaluates whether a document corresponds to a query."""
 
     name = "QueryDocMatch"
+    valid_labels = {"yes", "no", "partial"}
 
     def setup(self, args: argparse.Namespace) -> dict[str, Any]:
-        return {"doc_ids": load_doc_ids(args.doc_ids_path)}
+        return {"query": args.query}
 
     def include_row(
         self,
@@ -344,7 +345,7 @@ class QueryDocMatchTask(BaseTask):
         context: dict[str, Any],
         args: argparse.Namespace,
     ) -> bool:
-        return row.get("doc_id") in context["doc_ids"]
+        return True
 
     def build_examples(
         self,
@@ -360,7 +361,7 @@ class QueryDocMatchTask(BaseTask):
         )
 
     def parse_response(self, response: str) -> str:
-        return parse_label_response(response, {"yes", "no"})
+        return parse_label_response(response, valid_labels=self.valid_labels)
 
     def print_results(
         self, parsed_responses: list[str], args: argparse.Namespace
@@ -368,16 +369,19 @@ class QueryDocMatchTask(BaseTask):
         counter = Counter(parsed_responses)
         total = sum(counter.values())
         yes_count = counter.get("yes", 0)
+        partial_count = counter.get("partial", 0)
         no_count = counter.get("no", 0)
         invalid_count = counter.get("invalid", 0)
 
         yes_percentage = (yes_count / total * 100) if total > 0 else 0
+        partial_percentage = (partial_count / total * 100) if total > 0 else 0
         no_percentage = (no_count / total * 100) if total > 0 else 0
         invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
 
         print(f"Query Correspondence Evaluation Results (n={total}):")
         print(f"QUERY: {args.query}")
         print(f"ANSWER: Yes: {yes_count} ({yes_percentage:.2f}%)")
+        print(f"ANSWER: Partial: {partial_count} ({partial_percentage:.2f}%)")
         print(f"ANSWER: No: {no_count} ({no_percentage:.2f}%)")
         print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
 
@@ -386,7 +390,7 @@ class DescriptorAccuracyTask(BaseTask):
     """Evaluates the accuracy of descriptors for documents."""
 
     name = "DescriptorAccuracy"
-    VALID_CLASSES = [
+    valid_labels = [
         "Accurate",
         "Mostly accurate",
         "Partially accurate",
@@ -436,7 +440,7 @@ class DescriptorAccuracyTask(BaseTask):
         )
 
     def parse_response(self, response: str) -> str:
-        return parse_label_response(response, self.VALID_CLASSES)
+        return parse_label_response(response, self.valid_labels)
 
     def print_results(
         self, parsed_responses: list[str], args: argparse.Namespace
@@ -593,12 +597,6 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument(
         "--query", type=str, help="The query to evaluate correspondence for."
     )
-    query_parser.add_argument(
-        "--doc-ids-path",
-        type=str,
-        required=True,
-        help="Path to the file containing document IDs to evaluate.",
-    )
 
     # Subparser for descriptor accuracy task
     descriptor_parser = subparsers.add_parser(
@@ -639,26 +637,38 @@ def main() -> None:
     print("Selected task:", args.task, flush=True)
     print("Loading model and preparing prompts...", flush=True)
     task = TASKS[args.task]
-    examples = load_examples(args.data_path, task, args)
 
-    judge = LLMJudge(args)
+    # If many data_paths are given, run once for each
+    data_paths = args.data_path.split(",")
+    output_paths = (
+        args.output_path.split(",") if args.output_path else [None] * len(data_paths)
+    )
+    if len(output_paths) < len(data_paths):
+        print("Warning: Fewer output paths than data paths. Some results will not be saved.", flush=True)
 
-    examples = [task.preprocess_example(judge, example) for example in examples]
-    input_prompts = [task.build_prompt(example) for example in examples]
+    for i, data_path in enumerate(data_paths):
+        examples = load_examples(data_path, task, args)
+        output_path = output_paths[i] if i < len(output_paths) else None
 
-    print(f"Got {len(input_prompts)} prompts. Starting evaluation...", flush=True)
-    print("Sample prompt:", flush=True)
-    print(input_prompts[0], flush=True)
-    print("", flush=True)
+        judge = LLMJudge(args)
 
-    sampling_params = judge.get_sampling_params(args.model)
-    responses = judge.generate(sampling_params, input_prompts)
-    parsed_responses = [task.parse_response(response) for response in responses]
-    task.print_results(parsed_responses, args)
-    if args.output_path:
-        task.save_results(args.output_path, parsed_responses)
-        if args.detailed_output:
-            task.save_detailed_results(args.output_path, examples, responses)
+        examples = [task.preprocess_example(judge, example) for example in examples]
+        input_prompts = [task.build_prompt(example) for example in examples]
+
+        print(f"Got {len(input_prompts)} prompts. Starting evaluation...", flush=True)
+        print("Sample prompt:", flush=True)
+        print(input_prompts[0], flush=True)
+        print("", flush=True)
+
+        sampling_params = judge.get_sampling_params(args.model)
+        responses = judge.generate(sampling_params, input_prompts)
+        parsed_responses = [task.parse_response(response) for response in responses]
+        task.print_results(parsed_responses, args)
+        if args.output_path:
+            if args.detailed_output:
+                task.save_detailed_results(output_path, examples, responses)
+            else:
+                task.save_results(output_path, parsed_responses)
 
 
 if __name__ == "__main__":
