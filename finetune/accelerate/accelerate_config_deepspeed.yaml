@@ -7,7 +7,7 @@ main_training_function: main
 mixed_precision: bf16
 num_machines: 1
 num_processes: 8
-rdzv_backend: static
+rdzv_backend: c10d # changed from static
 same_network: false
 use_cpu: false
 tpu_env: []

@@ -1,0 +1,23 @@
+compute_environment: LOCAL_MACHINE
+debug: false
+downcast_bf16: false
+enable_cpu_affinity: false
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 8
+rdzv_backend: static
+same_network: false
+use_cpu: false
+distributed_type: FSDP
+fsdp_config:
+  fsdp_sharding_strategy: FULL_SHARD
+  fsdp_auto_wrap_policy: TRANSFORMER_BASED_WRAP
+  fsdp_transformer_layer_cls_to_wrap: Qwen3_5DecoderLayer
+  fsdp_backward_prefetch: BACKWARD_PRE
+  fsdp_forward_prefetch: false
+  fsdp_state_dict_type: SHARDED_STATE_DICT
+  fsdp_use_orig_params: true
+  activation_checkpointing: false
+  fsdp_offload_params: true
