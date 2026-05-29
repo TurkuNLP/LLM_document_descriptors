@@ -1,14 +1,14 @@
-##!/bin/bash
-###SBATCH --job-name=compress
-###SBATCH --account=project_462000963
-###SBATCH --partition=small
-###SBATCH --time=00:20:00
-###SBATCH --nodes=1
-###SBATCH --ntasks-per-node=1
-###SBATCH --cpus-per-task=8
-###SBATCH --mem=40G
-###SBATCH -o ../logs/%j.out
-###SBATCH -e ../logs/%j.err
+#!/bin/bash
+#SBATCH --job-name=compress
+#SBATCH --account=project_462000964
+#SBATCH --partition=small
+#SBATCH --time=01:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=40G
+#SBATCH -o ../logs/%j.out
+#SBATCH -e ../logs/%j.err
 
 ###############################################################################
 # Compress every file in a directory with zstd, skipping anything that already

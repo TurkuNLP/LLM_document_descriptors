@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=decompress
-#SBATCH --account=project_462000963
+#SBATCH --account=project_462000964
 #SBATCH --partition=debug
-#SBATCH --time=00:10:00
+#SBATCH --time=00:20:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
@@ -14,7 +14,7 @@
 # Decompress all zstd-compressed files in multiple directories. Optionally
 # removes compressed files after successful decompression.
 #
-#   sbatch decompress_zstd.sh "/path/to/dir1 /path/to/dir2 ..." [--keep]
+#   sbatch decompress_files.sh "/path/to/dir1 /path/to/dir2 ..." [--keep]
 #
 # Arguments
 #   $1...$n  Directories to process (required, can use wildcards like dir_*)
