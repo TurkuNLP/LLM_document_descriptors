@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 from __future__ import annotations
 
 import argparse
@@ -367,6 +364,7 @@ def get_training_args(args) -> TrainingArguments:
         "gradient_checkpointing": False,
         "bf16": True,
         "fp16": False,
+        "ddp_backend": "nccl",
         "learning_rate": args.learning_rate,
         "weight_decay": args.weight_decay,
         "logging_steps": args.logging_steps,
@@ -632,8 +630,8 @@ def parse_args():
 
     # General options (paths, logging, etc.)
     parser.add_argument("--run-id", type=str, required=True)
-    # parser.add_argument("--model-name", type=str, default="Qwen/Qwen3.5-0.8B")
-    parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-0.6B")
+    parser.add_argument("--model-name", type=str, default="Qwen/Qwen3.5-0.8B")
+    # parser.add_argument("--model-name", type=str, default="Qwen/Qwen3-0.6B")
     parser.add_argument("--data-dir", type=str, required=True)
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--log-file", type=str, default=None)
