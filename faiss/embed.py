@@ -44,43 +44,4 @@ class StellaEmbedder:
                 )
                 all_embeddings.append(embeddings.cpu().numpy())
         return np.vstack(all_embeddings)
-
-    def embed_for_sts(self, docs):
-        with torch.no_grad():
-            input_data = self.tokenizer(
-                docs,
-                padding="longest",
-                truncation=True,
-                max_length=512,
-                return_tensors="pt",
-            )
-            input_data = {k: v.to(self.model.device) for k, v in input_data.items()}
-            attention_mask = input_data["attention_mask"]
-            last_hidden_state = self.model(**input_data)[0]
-            last_hidden = last_hidden_state.masked_fill(
-                ~attention_mask[..., None].bool(), 0.0
-            )
-            vectors = last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-
-            return normalize(vectors.cpu().numpy())
-
-    def calculate_similarity(self, original, rewrites, use_prompt=False):
-        sts_prompt = "Instruct: Retrieve semantically similar text.\nQuery: "
-
-        if use_prompt:
-            original = [sts_prompt + original]
-        else:
-            original = [original]
-        rewrites = [rewrites] if isinstance(rewrites, str) else rewrites
-
-        # Embed original with prompt
-        original_embeddings = self.embed_for_sts(original).reshape(
-            1, -1
-        )  # Ensure (1, D)
-        rewrite_embeddings = self.embed_for_sts(rewrites).reshape(
-            len(rewrites), -1
-        )  # Ensure (N, D)
-
-        similarities = (original_embeddings @ rewrite_embeddings.T).astype(np.float32)
-
-        return [round(float(sim), 4) for sim in similarities[0]]
+    
