@@ -16,16 +16,16 @@ module load pytorch
 
 data_dir_base="/flash/project_462000963/users/tarkkaot"
 
-run_id="HPLT4pre-no-eng_4k-8k"
+run_id="HPLT4pre-no-eng_4k_Qwen3"
 
 srun python preprocess.py \
     --run-id ${run_id} \
     --input-dir ${data_dir_base}/data \
     --output-dir ${data_dir_base}/preprocessed \
     --cache-dir ${data_dir_base}/cache \
-    --max-doc-tokens 7500 \
-    --min-input-tokens 4096 \
-    --max-input-tokens 8192 \
+    --max-doc-tokens 4000 \
+    --min-input-tokens 0 \
+    --max-input-tokens 4096 \
     --shuffle-files \
     --interleave-buffer-size 8 \
     --seed 42 \

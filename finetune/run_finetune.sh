@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=finetune
 #SBATCH --account=project_462000963
-#SBATCH --partition=standard-g
-#SBATCH --time=1-00:00:00
+#SBATCH --partition=dev-g
+#SBATCH --time=00:59:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
@@ -19,18 +19,16 @@ source .venv/bin/activate
 
 # Memory management
 export PYTORCH_HIP_ALLOC_CONF=garbage_collection_threshold:0.8
-export TORCH_CPP_LOG_LEVEL=INFO
-export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 run_id=${1:-"finetune_$SLURM_JOB_ID"}
 
-data_dir="/flash/project_462000963/users/tarkkaot/preprocessed/HPLT4pre-no-eng_8k/"
+data_dir="/flash/project_462000963/users/tarkkaot/preprocessed/train4/"
 
 srun accelerate launch \
-    --config_file accelerate/accelerate_config.yaml \
+    --config_file accelerate/accelerate_config_multigpu.yaml \
   finetune_qwen.py \
-    --run-id '"$run_id"' \
-    --data-dir '"$data_dir"' \
+    --run-id $run_id \
+    --data-dir $data_dir \
     --per-device-train-batch-size 2 \
     --gradient-accumulation-steps 16 \
     --group-by-length \
@@ -38,6 +36,6 @@ srun accelerate launch \
     --fast-holdout \
     --dataloader-num-workers 0 \
     --do-eval \
-    --save-dataset \
     --learning-rate 5e-5 \
+    --save-dataset \
     
