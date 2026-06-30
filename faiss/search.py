@@ -189,13 +189,33 @@ def search(
     return index.search(query_embedding, top_k=top_k, nprobe=nprobe)
 
 
-def save_results(
-    output_path: str,
+def filter_results_by_distance(
+    distances: np.ndarray, indices: np.ndarray, max_distance: float | None
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if max_distance is None:
+        return distances, indices
+
+    filtered_results = [
+        (d, idx)
+        for d, idx in zip(distances[0], indices[0])
+        if float(d) <= max_distance
+    ]
+    if not filtered_results:
+        return None
+
+    filtered_distances, filtered_indices = zip(*filtered_results)
+    return (
+        np.array([filtered_distances], dtype=np.float32),
+        np.array([filtered_indices], dtype=np.int64),
+    )
+
+
+def build_search_result(
     query: str,
     distances: np.ndarray,
     indices: np.ndarray,
     index: FaissIndex,
-) -> None:
+) -> dict[str, Any]:
     result = {"query": query, "results": []}
 
     for distance, idx in zip(distances[0], indices[0]):
@@ -215,6 +235,59 @@ def save_results(
             }
         )
 
+    return result
+
+
+def run_search_query(
+    index: FaissIndex,
+    embedder: StellaEmbedder,
+    query: str,
+    top_k: int = 5,
+    nprobe: int = 10,
+    max_distance: float | None = None,
+    max_attempts: int = 10,
+):
+    attempts = 0
+
+    while True:
+        current_top_k = top_k * (2**attempts)
+        distances, indices = search(
+            index,
+            embedder,
+            query,
+            top_k=current_top_k,
+            nprobe=nprobe,
+        )
+        attempts += 1
+
+        if (
+            max_distance is None
+            or (len(distances[0]) > 0 and float(distances[0][-1]) > max_distance)
+            or attempts >= max_attempts
+        ):
+            break
+
+        print(
+            f"All results below distance threshold {max_distance}. Expanding search and trying again...",
+            flush=True,
+        )
+
+    filtered = filter_results_by_distance(distances, indices, max_distance)
+    if filtered is None:
+        return None
+
+    return filtered
+
+
+def save_results(
+    output_path: str,
+    query: str,
+    distances: np.ndarray,
+    indices: np.ndarray,
+    index: FaissIndex,
+) -> None:
+    result = build_search_result(query, distances, indices, index)
+
     if not output_path.endswith(".jsonl"):
         output_path += ".jsonl"
     with open(output_path, "a", encoding="utf-8") as f:
@@ -228,17 +301,9 @@ def print_results(
     print(f"Query: {query}")
 
     found_any = False
-    for rank, (distance, idx) in enumerate(zip(distances[0], indices[0]), start=1):
-        idx = int(idx)
-        if idx == -1:
-            continue
-
-        hit = index.id_to_data.get(idx)
-        if hit is None:
-            continue
-
+    for rank, hit in enumerate(build_search_result(query, distances, indices, index)["results"], start=1):
         found_any = True
-        print(f"[{rank}] Distance: {float(distance):.6f}")
+        print(f"[{rank}] Distance: {float(hit['distance']):.6f}")
         print(f"Descriptor: {hit['descriptor']}")
         print("Documents:")
 
@@ -480,51 +545,21 @@ def main(args):
                 flush=True,
             )
         for query in queries:
-            attempts = 0
-            while True:
-                top_k = args.top_k * (
-                    2**attempts
-                )  # Exponentially increase top_k with each attempt
-                attempts += 1
-                distances, indices = search(
-                    index,
-                    embedder,
-                    query,
-                    top_k=top_k,
-                    nprobe=args.nprobe,
+            filtered = run_search_query(
+                index,
+                embedder,
+                query,
+                top_k=args.top_k,
+                nprobe=args.nprobe,
+                max_distance=args.max_distance,
+            )
+            if filtered is None:
+                print(
+                    f"No results found within the distance threshold of {args.max_distance} for query: {query}",
+                    flush=True,
                 )
-                max_distance = args.max_distance
-                # if greatest distance in results below the threshold, we increase top_k and try again to get more results
-                # we keep going until we have at least one result above the distance threshold, or we have tried 10 times
-                if (
-                    max_distance is None
-                    or (
-                        len(distances[0]) > 0 and float(distances[0][-1]) > max_distance
-                    )
-                    or attempts >= 10
-                ):
-                    break
-                else:
-                    print(
-                        f"All results below distance threshold {max_distance}. Expanding search and trying again...",
-                        flush=True,
-                    )
-            # Remove results that are above the distance threshold (if specified)
-            if max_distance is not None:
-                filtered_results = [
-                    (d, idx)
-                    for d, idx in zip(distances[0], indices[0])
-                    if float(d) <= max_distance
-                ]
-                if not filtered_results:
-                    print(
-                        f"No results found within the distance threshold of {max_distance} for query: {query}",
-                        flush=True,
-                    )
-                    continue
-                filtered_distances, filtered_indices = zip(*filtered_results)
-                distances = np.array([filtered_distances], dtype=np.float32)
-                indices = np.array([filtered_indices], dtype=np.int64)
+                continue
+            distances, indices = filtered
             # Print results to console
             print_results(query, distances, indices, index)
             # Also save results to output file if specified
