@@ -16,6 +16,19 @@ The basic steps for generating a new descriptor schema from scratch are:
 
 You schema is done!
 
+### Full descriptor retrieval pipeline
+To run the FAISS + judge pipeline end to end, use:
+
+```bash
+python faiss/run_full_pipeline.py \
+  --data-path /path/to/documents.jsonl \
+  --query "your search query" \
+  --cache-dir /path/to/hf-cache \
+  --output-dir /path/to/pipeline-output
+```
+
+The runner builds or loads the FAISS index, searches for descriptor matches, judges the descriptors, evaluates the surviving documents, and writes per-query JSONL/summary artifacts under the output directory.
+
 ### Generating new descriptor for existing schema
 Once you have a schema, you can generate descriptors for any dataset and then align those descriptors with the schema.
 
