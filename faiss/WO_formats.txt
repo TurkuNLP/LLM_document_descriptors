@@ -1,0 +1,24 @@
+About (Org.); The document is formatted as an organizational About page, typically containing a self-description or introduction by an organization such as a company, university, government agency, or non-profit, but the content is not necessarily verified and may contain self-promotion
+About (Personal); The document is formatted as a personal About page, typically containing a self-description, introduction, or profile information on a personal or hobby website
+Academic Writing; The document is formatted as academic writing, such as a research paper, paper abstract, thesis, or literature review
+Audio Transcript; The document is formatted as an audio transcript, providing a written record of spoken language, such as an interview, court hearing, movie, podcast, lecture, or speech
+Comment Section; The document is formatted as a comment section or discussion forum with multiple posts or comments, such as a Reddit thread or a comment section on a news article or blog
+Content Listing; The document is formatted as a content listing, providing an overview of content for navigation, such as a sitemap, product catalog, search results page, or news listing with short article snippets
+Creative Writing; The document is formatted as creative writing, such as a short story, novel chapter, poem, or song lyrics
+Documentation; The document is formatted as documentation, such as technical writing, API documentation, README files, or source code, intended for developers or experts rather than end-users
+FAQ; The document is formatted as a Frequently Asked Questions page
+Knowledge Article; The document is formatted as a knowledge article, written in an objective and neutral style and published on a moderated platform or by a reputable source
+Legal Notices; The document is formatted as legal notices, such as terms of service, legal disclaimers, privacy policies, or license agreements
+Listicle; The document is formatted as a listicle, presenting article or blog content in the form of a list, such as a “Top 10” list or “4 best places to visit in X”, but excluding navigational lists of site content
+News (Org.); The document is formatted as organizational news or announcements, such as a press release or blog post by a company, university, government agency, or non-profit organization
+News Article; The document is formatted as a news article, written by journalists about current events and published by a news organization, but excluding long reads, profiles, editorials, journalistic essays, and newspaper interviews
+Nonfiction Writing; The document is formatted as nonfiction writing, such as a long read, profile, editorial, essay, obituary, memoir, or other professional nonfiction text
+Personal Blog; The document is formatted as a personal blog, typically written by an individual and relating personal experiences or opinions
+Product Page; The document is formatted as a product page, typically containing descriptions or promotions for a product or service, including products in a wider sense such as university course descriptions
+Q&A Forum; The document is formatted as a Q&A forum, with an explicit question-and-answer structure, such as Quora or Stack Exchange
+Spam / Ads; The document is formatted as spam or advertising, consisting primarily of spam content, SEO keyword stuffing, short online ads, or content with no apparent purpose
+Structured Data; The document is formatted as structured data, containing multiple data entries with a common structure, such as a table, datasheet, movie database, glossary, dictionary, JSON file, CSV file, or XML file
+Customer Support; The document is formatted as customer support content, produced by an organization for a general audience, such as a troubleshooting guide
+Truncated; The document is formatted as truncated or incomplete content, such as a paywalled page, login-gated page, incomplete page, video description, or image gallery, but excluding pages with multiple snippets of truncated articles
+Tutorial; The document is formatted as a tutorial or how-to guide, such as a cooking recipe, DIY instructions, WikiHow page, or Khan Academy course, and must contain the actual tutorial content
+User Review; The document is formatted as a user review, such as a review posted by users on Yelp, TripAdvisor, or similar platforms

@@ -1,0 +1,24 @@
+Adult; The document's topic is adult content, including porn and other explicit content
+Art & Design; The document's topic is art and design, including architecture
+Crime & Law; The document's topic is crime and law, including law enforcement (excluding financial crime, litigation, social issues and the legislative process)
+Education & Jobs; The document's topic is education and jobs, including pedagogy, training & certification, and academia
+Entertainment; The document's topic is entertainment, including music, movies, TV shows, videos, celebrities, humor, nightlife but excluding music or film if discussed as art
+Fashion & Beauty; The document's topic is fashion and beauty, including clothing, accessories, and cosmetics
+Finance & Business; The document's topic is finance and business, including taxes, regulations, investments, insurance, credit cards, personal finance, corporate communication, marketing, and human resources
+Food & Dining; The document's topic is food and dining, including recipes, groceries, beverages, and restaurants, but excluding nutritional sciences
+Games; The document's topic is games, including video games, board games, and gambling
+Hardware; The document's topic is hardware, including computer hardware, phones, televisions, and other consumer electronics
+Health; The document's topic is health, including medicine, wellness, mental health, veterinary science, and nutritional science, but excluding health insurance
+History; The document's topic is history, including geography and archaeology
+Home & Hobbies; The document's topic is home and hobbies, including real estate, renting, relocation, furniture, appliances, home improvement, DIY, gardening, pets, toys, and collecting
+Industrial; The document's topic is industrial activity, including mining, agriculture, manufacturing, utilities, construction, raw materials, industrial goods, chemicals, and textiles, but excluding general business topics and business finance
+Literature; The document's topic is literature, including literary criticism, linguistics, philosophy, and related subjects in the humanities, but excluding texts whose literary style is incidental to their topic
+Politics; The document's topic is politics, including social issues, political campaigns, the legislative process, geopolitics, protests, and activism
+Religion; The document's topic is religion, including spirituality
+Science & Technology; The document's topic is science and technology, including physics, chemistry, biology, environmental science, mathematics, statistics, biotech, and engineering
+Social Life; The document's topic is social life, including family, friends, relationships, and community, but excluding specific social activities that fall under other topics
+Software; The document's topic is software, including the use of software and the internet
+Software Development; The document's topic is software development, including algorithms, coding, and web development
+Sports & Fitness; The document's topic is sports and fitness, including martial arts, motor sports, outdoor activities, and sports equipment
+Transportation; The document's topic is transportation, including cars and other vehicles, taxis, public transportation, traffic, commuting, aviation, rail, shipping, and logistics
+Travel; The document's topic is travel, including hospitality, hotels, sight-seeing, and cruises, but excluding detailed descriptions of tourist destinations
