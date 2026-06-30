@@ -3,3 +3,4 @@ sqlitedict
 zstandard
 sentence-transformers
 scikit-learn
+faiss-cpu
