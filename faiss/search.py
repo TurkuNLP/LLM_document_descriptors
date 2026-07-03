@@ -196,9 +196,7 @@ def filter_results_by_distance(
         return distances, indices
 
     filtered_results = [
-        (d, idx)
-        for d, idx in zip(distances[0], indices[0])
-        if float(d) <= max_distance
+        (d, idx) for d, idx in zip(distances[0], indices[0]) if float(d) <= max_distance
     ]
     if not filtered_results:
         return None
@@ -301,7 +299,9 @@ def print_results(
     print(f"Query: {query}")
 
     found_any = False
-    for rank, hit in enumerate(build_search_result(query, distances, indices, index)["results"], start=1):
+    for rank, hit in enumerate(
+        build_search_result(query, distances, indices, index)["results"], start=1
+    ):
         found_any = True
         print(f"[{rank}] Distance: {float(hit['distance']):.6f}")
         print(f"Descriptor: {hit['descriptor']}")
@@ -346,7 +346,7 @@ def parse_arguments():
     parser.add_argument(
         "--query",
         type=str,
-        help="Query string to search in the index. Separate multiple queries with | (e.g., --query \"query one|query two\").",
+        help='Query string to search in the index. Separate multiple queries with | (e.g., --query "query one|query two").',
     )
     parser.add_argument(
         "--top-k",

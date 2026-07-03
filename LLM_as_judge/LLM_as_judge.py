@@ -66,7 +66,7 @@ class LLMJudge:
         outputs = self.llm.chat(
             inputs,
             sampling_params=sampling_params,
-            use_tqdm=False,
+            use_tqdm=True,
         )
 
         response_texts: list[str] = []
@@ -458,12 +458,132 @@ class DescriptorAccuracyTask(BaseTask):
             invalid_count = counter.get("invalid", 0)
             invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
             print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
+            
+            
+class Descriptors2LabelCorrespondenceTask(BaseTask):
+    """Evaluates whether the descriptors of a document correspond to it WebOrganizer label."""
+    
+    name = "Descriptors2LabelCorrespondence"
+    valid_labels = {"yes", "no"}
+    
+    def include_row(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> bool:
+        return True
+    
+    def build_examples(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> list[dict[str, Any]]:
+        document = row["document"]
+        label = row.get("label", "")
+        descriptors = row.get("descriptors", [])
+        
+        return [
+            {
+                "document": document,
+                "label": label,
+                "descriptors": descriptors,
+            }
+        ]
+        
+    def build_prompt(self, example: dict[str, Any]) -> str:
+        return prompts.get_descriptors2label_correspondence_prompt(
+            example["document"],
+            example["label"],
+            example["descriptors"],
+        )
+        
+    def parse_response(self, response: str) -> str:
+        return parse_label_response(response, self.valid_labels)
+    
+    def print_results(
+        self, parsed_responses: list[str], args: argparse.Namespace
+    ) -> None:
+        counter = Counter(parsed_responses)
+        total = sum(counter.values())
+        yes_count = counter.get("yes", 0)
+        no_count = counter.get("no", 0)
+        invalid_count = counter.get("invalid", 0)
 
+        yes_percentage = (yes_count / total * 100) if total > 0 else 0
+        no_percentage = (no_count / total * 100) if total > 0 else 0
+        invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
+
+        print(f"Descriptor to Label Correspondence Evaluation Results (n={total}):")
+        print(f"ANSWER: Yes: {yes_count} ({yes_percentage:.2f}%)")
+        print(f"ANSWER: No: {no_count} ({no_percentage:.2f}%)")
+        print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
+        
+
+class Label2DocumentCorrespondenceTask(BaseTask):
+    """Evaluate whether the WebOrganizer label of a document corresponds to the document content."""
+    
+    name = "Label2DocumentCorrespondence"
+    valid_labels = {"yes", "no"}
+
+    def include_row(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> bool:
+        return True
+
+    def build_examples(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> list[dict[str, Any]]:
+        document = row["document"]
+        label = row.get("label", "")
+
+        return [
+            {
+                "document": document,
+                "label": label,
+            }
+        ]
+
+    def build_prompt(self, example: dict[str, Any]) -> str:
+        return prompts.get_label2document_correspondence_prompt(
+            example["document"],
+            example["label"],
+        )
+
+    def parse_response(self, response: str) -> str:
+        return parse_label_response(response, self.valid_labels)
+
+    def print_results(
+        self, parsed_responses: list[str], args: argparse.Namespace
+    ) -> None:
+        counter = Counter(parsed_responses)
+        total = sum(counter.values())
+        yes_count = counter.get("yes", 0)
+        no_count = counter.get("no", 0)
+        invalid_count = counter.get("invalid", 0)
+
+        yes_percentage = (yes_count / total * 100) if total > 0 else 0
+        no_percentage = (no_count / total * 100) if total > 0 else 0
+        invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
+
+        print(f"Label to Document Correspondence Evaluation Results (n={total}):")
+        print(f"ANSWER: Yes: {yes_count} ({yes_percentage:.2f}%)")
+        print(f"ANSWER: No: {no_count} ({no_percentage:.2f}%)")
+        print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
 
 TASKS: dict[str, BaseTask] = {
     "QueryDocMatch": QueryDocMatchTask(),
     "DescriptorAccuracy": DescriptorAccuracyTask(),
     "QueryDescriptorMatch": QueryDescriptorMatchTask(),
+    "Descriptors2LabelCorrespondence": Descriptors2LabelCorrespondenceTask(),
+    "Label2DocumentCorrespondence": Label2DocumentCorrespondenceTask(),
 }
 
 
@@ -524,7 +644,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         type=str,
-        default="meta-llama/Llama-3.3-70B-Instruct",
+        default="Qwen/Qwen3-Next-80B-A3B-Instruct",
         help="Model name or path.",
     )
     parser.add_argument(
@@ -548,8 +668,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-path",
         type=str,
-        default="../results/harmonized/fineweb-edu/concatenated/"
-        "descriptors_fineweb-edu_harmonized.jsonl",
+        default="../data/weborganizer/topic_format_edu.jsonl",
         help="Path to the JSONL evaluation data.",
     )
     parser.add_argument(

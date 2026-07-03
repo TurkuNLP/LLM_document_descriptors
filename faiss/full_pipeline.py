@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 JUDGE_DIR = SCRIPT_DIR.parent / "LLM_as_judge"
@@ -44,13 +44,37 @@ def summarize_labels(labels: list[str]) -> dict[str, int]:
     return dict(Counter(labels))
 
 
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as file:
+        return [json.loads(line) for line in file if line.strip()]
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def release_embedder(shared_embedder: Any) -> None:
+    del shared_embedder
+    gc.collect()
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def run_judge_task(
     judge: judge_module.LLMJudge,
     task: Any,
     examples: list[dict[str, Any]],
     args: argparse.Namespace,
 ) -> tuple[list[dict[str, Any]], list[str], list[str]]:
-    processed_examples = [task.preprocess_example(judge, example) for example in examples]
+    processed_examples = [
+        task.preprocess_example(judge, example) for example in examples
+    ]
     prompts = [task.build_prompt(example) for example in processed_examples]
     sampling_params = judge.get_sampling_params(args.model)
     responses = judge.generate(sampling_params, prompts)
@@ -91,42 +115,134 @@ def build_query_run_dir(root: Path, query: str, index: int) -> Path:
     return root / f"{index:02d}_{slugify(query)}"
 
 
-def run_single_query(
+def query_artifact_paths(query_dir: Path) -> dict[str, Path]:
+    return {
+        "search_path": query_dir / "search_results.jsonl",
+        "descriptor_path": query_dir / "descriptor_judgements.jsonl",
+        "selected_docs_path": query_dir / "selected_documents.jsonl",
+        "document_path": query_dir / "document_judgements.jsonl",
+        "final_path": query_dir / "final_results.jsonl",
+        "summary_path": query_dir / "summary.json",
+    }
+
+
+def run_query_search(
     args: argparse.Namespace,
     query: str,
     index: int,
     shared_index: Any,
     shared_embedder: Any,
-    judge: judge_module.LLMJudge,
 ) -> dict[str, Any]:
     query_dir = build_query_run_dir(Path(args.output_dir), query, index)
     query_dir.mkdir(parents=True, exist_ok=True)
 
-    search_path = query_dir / "search_results.jsonl"
-    descriptor_path = query_dir / "descriptor_judgements.jsonl"
-    selected_docs_path = query_dir / "selected_documents.jsonl"
-    document_path = query_dir / "document_judgements.jsonl"
-    final_path = query_dir / "final_results.jsonl"
-    summary_path = query_dir / "summary.json"
+    paths = query_artifact_paths(query_dir)
+    search_path = paths["search_path"]
 
-    print(f"Running FAISS search...", flush=True)
-    search_output = faiss_search.run_search_query(
-        shared_index,
-        shared_embedder,
-        query,
-        top_k=args.top_k,
-        nprobe=args.nprobe,
-        max_distance=args.max_distance,
-        max_attempts=args.max_search_attempts,
-    )
+    if search_path.exists():
+        search_rows = load_jsonl(search_path)
+        search_payload = (
+            search_rows[0] if search_rows else {"query": query, "results": []}
+        )
+        print(f"Using existing FAISS search results from {search_path}", flush=True)
+    else:
+        print(f"Running FAISS search...", flush=True)
+        search_output = faiss_search.run_search_query(
+            shared_index,
+            shared_embedder,
+            query,
+            top_k=args.top_k,
+            nprobe=args.nprobe,
+            max_distance=args.max_distance,
+            max_attempts=args.max_search_attempts,
+        )
 
-    if search_output is None:
-        search_payload = {"query": query, "results": []}
+        if search_output is None:
+            search_payload = {"query": query, "results": []}
+        else:
+            distances, indices = search_output
+            search_payload = faiss_search.build_search_result(
+                query, distances, indices, shared_index
+            )
+
         write_jsonl(search_path, [search_payload])
-        write_jsonl(descriptor_path, [])
-        write_jsonl(selected_docs_path, [])
-        write_jsonl(document_path, [])
-        write_jsonl(final_path, [])
+
+    return {
+        "query": query,
+        "search_payload": search_payload,
+        **paths,
+    }
+
+
+def run_query_judgements(
+    args: argparse.Namespace,
+    query_run: dict[str, Any],
+    judge: judge_module.LLMJudge,
+) -> dict[str, Any]:
+    query = query_run["query"]
+    if "search_payload" not in query_run:
+        return query_run
+
+    search_payload = query_run["search_payload"]
+    search_path = query_run["search_path"]
+    descriptor_path = query_run["descriptor_path"]
+    selected_docs_path = query_run["selected_docs_path"]
+    document_path = query_run["document_path"]
+    final_path = query_run["final_path"]
+    summary_path = query_run["summary_path"]
+
+    if (
+        search_path.exists()
+        and descriptor_path.exists()
+        and selected_docs_path.exists()
+        and document_path.exists()
+        and final_path.exists()
+        and summary_path.exists()
+    ):
+        print(f"Using existing pipeline results for query: {query}", flush=True)
+        return load_json(summary_path)
+
+    descriptor_rows: list[dict[str, Any]] = []
+    selected_documents: list[dict[str, Any]] = []
+    document_rows: list[dict[str, Any]] = []
+
+    if descriptor_path.exists():
+        descriptor_rows = load_jsonl(descriptor_path)
+        print(
+            f"Using existing descriptor judgements from {descriptor_path}",
+            flush=True,
+        )
+
+    if selected_docs_path.exists():
+        selected_documents = load_jsonl(selected_docs_path)
+        print(
+            f"Using existing selected documents from {selected_docs_path}",
+            flush=True,
+        )
+
+    if document_path.exists():
+        document_rows = load_jsonl(document_path)
+        print(
+            f"Using existing document judgements from {document_path}",
+            flush=True,
+        )
+    elif final_path.exists():
+        document_rows = load_jsonl(final_path)
+        write_jsonl(document_path, document_rows)
+
+    descriptor_labels = [str(row.get("label", "invalid")) for row in descriptor_rows]
+    document_labels = [str(row.get("label", "invalid")) for row in document_rows]
+
+    if not search_payload["results"]:
+        if not descriptor_path.exists():
+            write_jsonl(descriptor_path, [])
+        if not selected_docs_path.exists():
+            write_jsonl(selected_docs_path, [])
+        if not document_path.exists():
+            write_jsonl(document_path, [])
+        if not final_path.exists():
+            write_jsonl(final_path, [])
+
         summary = {
             "query": query,
             "artifacts": {
@@ -144,72 +260,84 @@ def run_single_query(
         write_json(summary_path, summary)
         return summary
 
-    distances, indices = search_output
-    search_payload = faiss_search.build_search_result(query, distances, indices, shared_index)
-    write_jsonl(search_path, [search_payload])
-
-    print(f"Running descriptor judgement for {len(search_payload['results'])} hits...", flush=True)
-    descriptor_task = judge_module.TASKS["QueryDescriptorMatch"]
-    descriptor_examples = [
-        {"query": query, "descriptor": hit["descriptor"]}
-        for hit in search_payload["results"]
-    ]
-
-    _, descriptor_responses, descriptor_labels = run_judge_task(
-        judge,
-        descriptor_task,
-        descriptor_examples,
-        argparse.Namespace(query=query, model=args.model),
-    )
-
-    descriptor_rows: list[dict[str, Any]] = []
-    for hit, response, label in zip(
-        search_payload["results"], descriptor_responses, descriptor_labels
-    ):
-        descriptor_rows.append(
-            {
-                "query": query,
-                "descriptor": hit["descriptor"],
-                "distance": hit["distance"],
-                "documents": hit["documents"],
-                "response": response,
-                "label": label,
-            }
+    if not descriptor_rows:
+        print(
+            f"Running descriptor judgement for {len(search_payload['results'])} hits...",
+            flush=True,
         )
-    write_jsonl(descriptor_path, descriptor_rows)
+        descriptor_task = judge_module.TASKS["QueryDescriptorMatch"]
+        descriptor_examples = [
+            {"query": query, "descriptor": hit["descriptor"]}
+            for hit in search_payload["results"]
+        ]
 
-    selected_documents = collect_documents(search_payload["results"], descriptor_labels)
-    write_jsonl(selected_docs_path, selected_documents)
+        _, descriptor_responses, descriptor_labels = run_judge_task(
+            judge,
+            descriptor_task,
+            descriptor_examples,
+            argparse.Namespace(query=query, model=args.model),
+        )
+
+        descriptor_rows = []
+        for hit, response, label in zip(
+            search_payload["results"], descriptor_responses, descriptor_labels
+        ):
+            descriptor_rows.append(
+                {
+                    "query": query,
+                    "descriptor": hit["descriptor"],
+                    "distance": hit["distance"],
+                    "documents": hit["documents"],
+                    "response": response,
+                    "label": label,
+                }
+            )
+        write_jsonl(descriptor_path, descriptor_rows)
+        descriptor_labels = [
+            str(row.get("label", "invalid")) for row in descriptor_rows
+        ]
+
+    if not selected_documents:
+        selected_documents = collect_documents(
+            search_payload["results"], descriptor_labels
+        )
+        write_jsonl(selected_docs_path, selected_documents)
 
     document_task = judge_module.TASKS["QueryDocMatch"]
     document_examples = [
         {"query": query, "document": row["document"]} for row in selected_documents
     ]
 
-    if document_examples:
+    if not document_rows and document_examples:
         _, document_responses, document_labels = run_judge_task(
             judge,
             document_task,
             document_examples,
             argparse.Namespace(query=query, model=args.model),
         )
-    else:
-        document_responses = []
-        document_labels = []
-
-    document_rows: list[dict[str, Any]] = []
-    print(f"Running document judgement for {len(selected_documents)} hits...", flush=True)
-    for row, response, label in zip(selected_documents, document_responses, document_labels):
-        document_rows.append(
-            {
-                "query": query,
-                **row,
-                "response": response,
-                "label": label,
-            }
+        print(
+            f"Running document judgement for {len(selected_documents)} hits...",
+            flush=True,
         )
-    write_jsonl(document_path, document_rows)
-    write_jsonl(final_path, document_rows)
+        document_rows = []
+        for row, response, label in zip(
+            selected_documents, document_responses, document_labels
+        ):
+            document_rows.append(
+                {
+                    "query": query,
+                    **row,
+                    "response": response,
+                    "label": label,
+                }
+            )
+        write_jsonl(document_path, document_rows)
+        write_jsonl(final_path, document_rows)
+        document_labels = [str(row.get("label", "invalid")) for row in document_rows]
+    elif document_rows and not final_path.exists():
+        write_jsonl(final_path, document_rows)
+    elif document_rows and not document_path.exists():
+        write_jsonl(document_path, document_rows)
 
     summary = {
         "query": query,
@@ -223,7 +351,9 @@ def run_single_query(
         "search": {"results": len(search_payload["results"])},
         "descriptor_judge": {
             "labels": summarize_labels(descriptor_labels),
-            "selected_descriptors": sum(1 for label in descriptor_labels if label == "yes"),
+            "selected_descriptors": sum(
+                1 for label in descriptor_labels if label == "yes"
+            ),
         },
         "documents": {"selected": len(selected_documents)},
         "document_judge": {
@@ -239,8 +369,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the FAISS search -> descriptor judge -> document judge pipeline."
     )
-    parser.add_argument("--data-path", required=True, help="Path to the document JSONL.")
-    parser.add_argument("--query", required=True, help="Query string. Use | for multiple queries.")
+    parser.add_argument(
+        "--data-path", required=True, help="Path to the document JSONL."
+    )
+    parser.add_argument(
+        "--query", required=True, help="Query string. Use | for multiple queries."
+    )
     parser.add_argument(
         "--output-dir",
         default="pipeline_results",
@@ -262,7 +396,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the cached embeddings. Defaults to <output-dir>/embeddings.npy.",
     )
 
-    parser.add_argument("--build-index", action="store_true", help="Build or rebuild the index.")
+    parser.add_argument(
+        "--build-index", action="store_true", help="Build or rebuild the index."
+    )
     parser.add_argument(
         "--force-rebuild",
         action="store_true",
@@ -279,12 +415,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="raw",
         help="Descriptor field to index from the input documents.",
     )
-    parser.add_argument("--max-docs", type=int, default=None, help="Optional cap for input docs.")
+    parser.add_argument(
+        "--max-docs", type=int, default=None, help="Optional cap for input docs."
+    )
 
-    parser.add_argument("--index-type", default="IndexIVFFlat", help="FAISS index type.")
+    parser.add_argument(
+        "--index-type", default="IndexIVFFlat", help="FAISS index type."
+    )
     parser.add_argument("--nlist", type=int, default=100, help="FAISS IVF list count.")
-    parser.add_argument("--dimension", type=int, default=1024, help="Embedding dimension.")
-    parser.add_argument("--top-k", type=int, default=20, help="Descriptor search fan-out.")
+    parser.add_argument(
+        "--dimension", type=int, default=1024, help="Embedding dimension."
+    )
+    parser.add_argument(
+        "--top-k", type=int, default=20, help="Descriptor search fan-out."
+    )
     parser.add_argument("--nprobe", type=int, default=10, help="FAISS IVF probe count.")
     parser.add_argument(
         "--max-distance",
@@ -328,8 +472,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Force vLLM eager mode. Defaults to on for ROCm and off otherwise.",
     )
-    parser.add_argument("--api-base-url", default=None, help="Optional OpenAI-compatible API URL.")
-    parser.add_argument("--api-key", default=None, help="Optional OpenAI-compatible API key.")
+    parser.add_argument(
+        "--api-base-url", default=None, help="Optional OpenAI-compatible API URL."
+    )
+    parser.add_argument(
+        "--api-key", default=None, help="Optional OpenAI-compatible API key."
+    )
     return parser
 
 
@@ -353,15 +501,31 @@ def main() -> None:
     print("Building or loading the FAISS index...", flush=True)
     shared_index, shared_embedder = faiss_search.build_or_load_index(args)
     print("FAISS index ready.", flush=True)
+
+    query_runs = []
+    for index, query in enumerate(queries, start=1):
+        print(f"\n=== Query {index}/{len(queries)}: {query} ===", flush=True)
+        query_dir = build_query_run_dir(output_dir, query, index)
+        paths = query_artifact_paths(query_dir)
+        if all(path.exists() for path in paths.values()):
+            print(
+                f"Skipping query '{query}' because all result files already exist.",
+                flush=True,
+            )
+            query_runs.append(load_json(paths["summary_path"]))
+            continue
+        query_runs.append(
+            run_query_search(args, query, index, shared_index, shared_embedder)
+        )
+
+    release_embedder(shared_embedder)
+    shared_embedder = None
     print("Initializing the LLM judge...", flush=True)
     judge = judge_module.LLMJudge(args)
 
     run_summaries = []
-    for index, query in enumerate(queries, start=1):
-        print(f"\n=== Query {index}/{len(queries)}: {query} ===", flush=True)
-        run_summaries.append(
-            run_single_query(args, query, index, shared_index, shared_embedder, judge)
-        )
+    for query_run in query_runs:
+        run_summaries.append(run_query_judgements(args, query_run, judge))
 
     write_json(output_dir / "pipeline_summary.json", {"runs": run_summaries})
 

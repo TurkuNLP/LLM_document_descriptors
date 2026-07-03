@@ -4,3 +4,4 @@ zstandard
 sentence-transformers
 scikit-learn
 faiss-cpu
+xformers

@@ -1,47 +1,48 @@
-from transformers import AutoModel, AutoTokenizer  # type: ignore
-import torch  # type: ignore
-import numpy as np  # type: ignore
-from sklearn.preprocessing import normalize  # type: ignore
-from tqdm import tqdm  # type: ignore
+import numpy as np
+from sentence_transformers import SentenceTransformer
+import os
 
 
 class StellaEmbedder:
-    def __init__(self, cache_dir, batch_size=64):
-        model_name = "Marqo/dunzhang-stella_en_400M_v5"
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = (
-            AutoModel.from_pretrained(
-                model_name, trust_remote_code=True, cache_dir=cache_dir
-            )
-            .to(device)
-            .eval()
-            .half()
+    def __init__(self, cache_dir, batch_size=64, max_length=512):
+        model_name = "NovaSearch/stella_en_400M_v5"
+
+        self.model = SentenceTransformer(
+            model_name,
+            cache_folder=cache_dir,
+            trust_remote_code=True,
+            config_kwargs={
+                "use_memory_efficient_attention": False,
+                "unpad_inputs": False,
+            },
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, cache_dir=cache_dir
-        )
+        self.model.eval()
+        self.model.max_seq_length = max_length
+
         self.batch_size = batch_size
+        self.max_length = max_length
 
     def embed_descriptors(self, texts):
-        all_embeddings = []
-        for i in tqdm(range(0, len(texts), self.batch_size)):
-            batch_texts = texts[i : i + self.batch_size]
-            with torch.no_grad():
-                inputs = self.tokenizer(
-                    batch_texts,
-                    padding=True,
-                    truncation=True,
-                    max_length=512,
-                    return_tensors="pt",
-                ).to(self.model.device)
-                last_hidden_state = self.model(**inputs)[0]
-                attention_mask = inputs["attention_mask"]
-                last_hidden = last_hidden_state.masked_fill(
-                    ~attention_mask[..., None].bool(), 0.0
-                )
-                embeddings = (
-                    last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-                )
-                all_embeddings.append(embeddings.cpu().numpy())
-        return np.vstack(all_embeddings)
-    
+        texts = ["" if t is None else str(t) for t in texts]
+
+        embeddings = self.model.encode(
+            texts,
+            batch_size=self.batch_size,
+            show_progress_bar=True,
+            convert_to_numpy=True,
+        )
+
+        return embeddings.astype(np.float32)
+
+
+if __name__ == "__main__":
+    argv = os.sys.argv
+    if len(argv) > 1:
+        texts = argv[1:]
+    else:
+        texts = ["Hello world!", "This is a test.", "Embedding text with Stella."]
+
+    cache_dir = os.getenv("HF_HOME", "./hf_cache")
+    embedder = StellaEmbedder(cache_dir=cache_dir)
+    embeddings = embedder.embed_descriptors(texts)
+    print(embeddings.shape)

@@ -120,3 +120,72 @@ def get_descriptor_accuracy_prompt(document, descriptor):
             "content": f"Descriptor: {descriptor}\nDocument: {document}",
         },
     ]
+
+def get_descriptors2label_correspondence_prompt(descriptors, label):
+    return [
+        {
+            "role": "system",
+            "content": """You are a helpful assistant.
+
+    ###Instructions
+
+    You are given a list of descriptors and a label. The descriptors and label are all related to the same document. The descriptors describe the document in various ways, and the label is a single word or phrase that categorizes the document.
+    Your task is to evaluate whether the descriptors correspond to the label. In other words, you need to determine if the label can be inferred from the descriptors. Think of the question as "Given just the descriptors, would it be reasonable to label the document with this label?".
+    Not all descriptors need to be relevant to the label, but at least one descriptor should be relevant for the label to be considered corresponding to the descriptors.
+
+
+    ###Output options
+    - Yes: One or more of the descriptors are relevant to the label.
+    - No: None of the descriptors are clearly relevant to the label and the label cannot be inferred from them.
+
+    ###Output format
+    First, briefly explain your reasoning.
+    Then end with exactly one of the following lines:
+
+    ANSWER: Yes
+
+    or
+
+    ANSWER: No
+    """,
+        },
+        {
+            "role": "user",
+            "content": f"Label: {label}\nDescriptors: {', '.join(descriptors)}",
+        },
+    ]
+    
+def get_label2document_correspondence_prompt(document, label, label_type = "format"):
+    # label_type can be "format" or "topic".
+    return [
+        {
+            "role": "system",
+            "content": f"""You are a helpful assistant.
+
+    ###Instructions
+
+    You are given a document and a label. The label describes the {label_type} of the document. The label is a single word or phrase that categorizes the document.
+    Your task is to evaluate whether the label corresponds to the document. In other words, you need to determine if the label accurately describes the {label_type} of the document.
+    The label should be relevant to the main {label_type} of the document for it to be considered corresponding.
+
+
+    ###Output options
+    - Yes: The label accurately describes the {label_type} of the document.
+    - No: The label does not accurately describe the {label_type} of the document.
+
+    ###Output format
+    First, briefly explain your reasoning.
+    Then end with exactly one of the following lines:
+
+    ANSWER: Yes
+
+    or
+
+    ANSWER: No
+    """,
+        },
+        {
+            "role": "user",
+            "content": f"Label: {label}\nDocument: {document}",
+        },
+    ]

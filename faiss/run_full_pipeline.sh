@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=faiss
-#SBATCH --account=project_465002530
-#SBATCH --partition=small-g
-#SBATCH --time=16:00:00
+#SBATCH --account=project_2017843
+#SBATCH --partition=gpumedium
+#SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
-#SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=72
+#SBATCH --gres=gpu:gh200:4
 #SBATCH --mem=320G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
@@ -18,13 +18,18 @@
 # 3. LLM-based judgement of document matches.
 # Run pipeline for multiple queries by contatenating them with "|".
 
+# Set the number of CPU threads based on cpus-per-task
+#export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
-OELLM_CONTAINER="/scratch/project_465002530/containers/laif-rocm-6.4.4-pytorch-2.9.1-te-2.4.0-fa-2.8.0-triton-3.2.0.sif"
+# Place and bind CPU threads to single CPU cores
+# Comment the following lines if binding is not desired
+#export OMP_PLACES=cores
+#export OMP_PROC_BIND=spread
+
 
 module purge
-module use /appl/local/laifs/modules/
-module load lumi-aif-singularity-bindings
-export SIF=$OELLM_CONTAINER
+module load python-vllm/0.18.0
+source ../.vllm0.18_venv/bin/activate
 
 # Read queries from WO_formats.txt and concatenate with |
 query_file="WO_formats.txt"
@@ -48,37 +53,59 @@ if [ -z "$cache_dir" ]; then
     exit 1
 fi
 
-data_type=$1
+label_type=$1
+if [ "$label_type" != "format" ] && [ "$label_type" != "topic" ]; then
+    echo "Usage: $0 [format|topic] [raw|harmonized]"
+    exit 1
+fi
+
+data_type=$2
 if [ "$data_type" != "raw" ] && [ "$data_type" != "harmonized" ]; then
-    echo "Usage: $0 [raw|harmonized]"
+    echo "Usage: $0 [format|topic] [raw|harmonized]"
     exit 1
 fi
 
 
-if [ "$data_type" == "raw" ]; then
-    index_path="../results/faiss/raw_index.faiss"
-    embeddings_path="../results/faiss/raw_embeddings.npy"
+if [ "$data_type" == "raw" ] && [ "$label_type" == "format" ]; then
+    data_path="../data/weborganizer/LLM_verified_formats_edu.jsonl"
+    index_path="../results/faiss/format_raw_index.faiss"
+    embeddings_path="../results/faiss/format_raw_embeddings.npy"
     output_dir="../results/faiss/pipeline/formats/raw"
     descriptor_type="raw"
-    echo "Running search on raw descriptors..."
-elif [ "$data_type" == "harmonized" ]; then
-    index_path="../results/faiss/harmonized_index.faiss"
-    embeddings_path="../results/faiss/harmonized_embeddings.npy"
+    echo "Running format search on raw descriptors..."
+elif [ "$data_type" == "raw" ] && [ "$label_type" == "topic" ]; then
+    data_path="../data/weborganizer/LLM_verified_topics_edu.jsonl"
+    index_path="../results/faiss/topic_raw_index.faiss"
+    embeddings_path="../results/faiss/topic_raw_embeddings.npy"
+    output_dir="../results/faiss/pipeline/topics/raw"
+    descriptor_type="raw"
+    echo "Running topic search on raw descriptors..."
+elif [ "$data_type" == "harmonized" ] && [ "$label_type" == "format" ]; then
+    data_path="../data/weborganizer/LLM_verified_formats_edu.jsonl"
+    index_path="../results/faiss/format_harmonized_index.faiss"
+    embeddings_path="../results/faiss/format_harmonized_embeddings.npy"
     output_dir="../results/faiss/pipeline/formats/harmonized"
     descriptor_type="harmonized"
-    echo "Running search on harmonized descriptors..."
+    echo "Running format search on harmonized descriptors..."
+elif [ "$data_type" == "harmonized" ] && [ "$label_type" == "topic" ]; then
+    data_path="../data/weborganizer/LLM_verified_topics_edu.jsonl"
+    index_path="../results/faiss/topic_harmonized_index.faiss"
+    embeddings_path="../results/faiss/topic_harmonized_embeddings.npy"
+    output_dir="../results/faiss/pipeline/topics/harmonized"
+    descriptor_type="harmonized"
+    echo "Running topic search on harmonized descriptors..."
 fi
 
-export HIP_VISIBLE_DEVICES=$ROCR_VISIBLE_DEVICES
+mkdir -p $output_dir
 
-srun singularity run --rocm --bind /scratch/project_465002530 \
-    $SIF bash -c "source /scratch/project_465002530/users/tarkkaot/LLM_document_descriptors/.laif-venv/bin/activate && python full_pipeline.py \
-    --data-path ../results/harmonized/fineweb-edu/concatenated/descriptors_fineweb-edu_harmonized.jsonl \
-    --cache-dir '$cache_dir' \
-    --index-path '$index_path' \
-    --embeddings-path '$embeddings_path' \
-    --descriptor-type '$descriptor_type' \
-    --query '$query' \
+srun python full_pipeline.py \
+    --data-path $data_path \
+    --cache-dir $cache_dir \
+    --index-path $index_path \
+    --embeddings-path $embeddings_path \
+    --descriptor-type $descriptor_type \
+    --query "$query" \
     --top-k 100 \
     --max-distance 320 \
-    --output-dir '$output_dir'" \
+    --output-dir $output_dir \
+    --build-index \
