@@ -9,6 +9,7 @@ import re
 import numpy as np  # type: ignore
 from concurrent.futures import ThreadPoolExecutor
 from openai import OpenAI  # type: ignore
+import random
 
 import torch  # type: ignore
 from vllm import LLM, SamplingParams  # type: ignore
@@ -189,7 +190,7 @@ class LLMJudge:
             "max_model_len": max_model_len,
             "tensor_parallel_size": max(1, torch.cuda.device_count()),
             "enforce_eager": False,
-            "gpu_memory_utilization": 0.8,
+            "gpu_memory_utilization": 0.9,
         }
 
         if cache_dir:
@@ -458,14 +459,14 @@ class DescriptorAccuracyTask(BaseTask):
             invalid_count = counter.get("invalid", 0)
             invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
             print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
-            
-            
+
+
 class Descriptors2LabelCorrespondenceTask(BaseTask):
     """Evaluates whether the descriptors of a document correspond to it WebOrganizer label."""
-    
+
     name = "Descriptors2LabelCorrespondence"
     valid_labels = {"yes", "no"}
-    
+
     def include_row(
         self,
         row: dict[str, Any],
@@ -473,7 +474,7 @@ class Descriptors2LabelCorrespondenceTask(BaseTask):
         args: argparse.Namespace,
     ) -> bool:
         return True
-    
+
     def build_examples(
         self,
         row: dict[str, Any],
@@ -483,7 +484,7 @@ class Descriptors2LabelCorrespondenceTask(BaseTask):
         document = row["document"]
         label = row.get("label", "")
         descriptors = row.get("descriptors", [])
-        
+
         return [
             {
                 "document": document,
@@ -491,17 +492,17 @@ class Descriptors2LabelCorrespondenceTask(BaseTask):
                 "descriptors": descriptors,
             }
         ]
-        
+
     def build_prompt(self, example: dict[str, Any]) -> str:
         return prompts.get_descriptors2label_correspondence_prompt(
             example["document"],
             example["label"],
             example["descriptors"],
         )
-        
+
     def parse_response(self, response: str) -> str:
         return parse_label_response(response, self.valid_labels)
-    
+
     def print_results(
         self, parsed_responses: list[str], args: argparse.Namespace
     ) -> None:
@@ -519,11 +520,11 @@ class Descriptors2LabelCorrespondenceTask(BaseTask):
         print(f"ANSWER: Yes: {yes_count} ({yes_percentage:.2f}%)")
         print(f"ANSWER: No: {no_count} ({no_percentage:.2f}%)")
         print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
-        
+
 
 class Label2DocumentCorrespondenceTask(BaseTask):
     """Evaluate whether the WebOrganizer label of a document corresponds to the document content."""
-    
+
     name = "Label2DocumentCorrespondence"
     valid_labels = {"yes", "no"}
 
@@ -578,12 +579,168 @@ class Label2DocumentCorrespondenceTask(BaseTask):
         print(f"ANSWER: No: {no_count} ({no_percentage:.2f}%)")
         print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
 
+
+class InferLabelsFromDescriptorsTask(BaseTask):
+    """Infers all reasonable labels from a document's descriptors."""
+
+    name = "InferLabelsFromDescriptors"
+
+    format_labels = [
+        "About (Org.)",
+        "About (Personal)",
+        "Academic Writing",
+        "Audio Transcript",
+        "Comment Section",
+        "Content Listing",
+        "Creative Writing",
+        "Documentation",
+        "FAQ",
+        "Knowledge Article",
+        "Legal Notices",
+        "Listicle",
+        "News (Org.)",
+        "News Article",
+        "Nonfiction Writing",
+        "Personal Blog",
+        "Product Page",
+        "Q&A Forum",
+        "Spam / Ads",
+        "Structured Data",
+        "Customer Support",
+        "Truncated",
+        "Tutorial",
+        "User Review",
+    ]
+    topic_labels = [
+        "Adult",
+        "Art & Design",
+        "Crime & Law",
+        "Education & Jobs",
+        "Entertainment",
+        "Fashion & Beauty",
+        "Finance & Business",
+        "Food & Dining",
+        "Games",
+        "Hardware",
+        "Health",
+        "History",
+        "Home & Hobbies",
+        "Industrial",
+        "Literature",
+        "Politics",
+        "Religion",
+        "Science & Technology",
+        "Social Life",
+        "Software",
+        "Software Development",
+        "Sports & Fitness",
+        "Transportation",
+        "Travel",
+    ]
+
+    def setup(self, args: argparse.Namespace) -> dict[str, Any]:
+        if args.label_type == "format":
+            labels = self.format_labels
+            random.shuffle(labels)  # Shuffle to avoid bias in label order
+        elif args.label_type == "topic":
+            labels = self.topic_labels
+            random.shuffle(labels)  # Shuffle to avoid bias in label order
+        else:
+            raise ValueError("--label-type must be either 'format' or 'topic'.")
+
+        self.label_type = args.label_type
+        self.label_vocab = labels
+        return {"labels": labels}
+
+    def include_row(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> bool:
+        return True
+
+    def build_examples(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> list[dict[str, Any]]:
+        if args.descriptor_type == "harmonized":
+            descriptors = row.get("harmonized_descriptors", [])
+        elif args.descriptor_type == "raw":
+            similarity_scores = row.get("similarity", [])
+            if similarity_scores:
+                best_idx = np.argmax(similarity_scores)
+                descriptors = row["descriptors"][best_idx]
+            else:
+                descriptors = row.get("descriptors", [])
+
+        if args.label_type == "format":
+            true_label = row.get("format", "")
+        elif args.label_type == "topic":
+            true_label = row.get("topic", "")
+
+        return [
+            {
+                "descriptors": descriptors,
+                "labels": context["labels"],
+                "true_label": true_label,
+            }
+        ]
+
+    def build_prompt(self, example: dict[str, Any]) -> str:
+        return prompts.get_infer_labels_from_descriptors_prompt(
+            example["descriptors"],
+            example["labels"],
+            self.label_type,
+        )
+
+    def parse_response(self, response: str) -> list[str] | None:
+        return parse_label_list_response(response, self.label_vocab)
+
+    def print_results(
+        self, parsed_responses: list[list[str] | None], args: argparse.Namespace
+    ) -> None:
+        label_counter: Counter[str] = Counter()
+        invalid_count = 0
+        empty_count = 0
+
+        for response in parsed_responses:
+            if response is None:
+                invalid_count += 1
+                continue
+
+            if not response:
+                empty_count += 1
+
+            label_counter.update(response)
+
+        total = len(parsed_responses)
+        total_labels = sum(label_counter.values())
+        empty_percentage = (empty_count / total * 100) if total > 0 else 0
+        invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
+
+        print(f"Infer Labels From Descriptors Evaluation Results (n={total}):")
+        print(f"Label vocabulary: {', '.join(self.label_vocab)}")
+        print(f"Total inferred labels: {total_labels}")
+        print(
+            f"Documents with no inferred labels: {empty_count} ({empty_percentage:.2f}%)"
+        )
+        print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
+        for label in self.label_vocab:
+            count = label_counter.get(label, 0)
+            percentage = (count / total * 100) if total > 0 else 0
+            print(f"{label}: {count} ({percentage:.2f}%)")
+
+
 TASKS: dict[str, BaseTask] = {
     "QueryDocMatch": QueryDocMatchTask(),
     "DescriptorAccuracy": DescriptorAccuracyTask(),
     "QueryDescriptorMatch": QueryDescriptorMatchTask(),
     "Descriptors2LabelCorrespondence": Descriptors2LabelCorrespondenceTask(),
     "Label2DocumentCorrespondence": Label2DocumentCorrespondenceTask(),
+    "InferLabelsFromDescriptors": InferLabelsFromDescriptorsTask(),
 }
 
 
@@ -607,6 +764,34 @@ def parse_label_response(response: str, valid_labels: list[str]) -> str:
             return label
 
     return "invalid"
+
+
+def parse_label_list_response(
+    response: str,
+    valid_labels: list[str],
+) -> list[str] | None:
+    answer = extract_answer_text(response).strip()
+    # answer looks like this "["Health", "Social Life"]"
+    answer = re.sub(r"[\[\]\"']", "", answer)  # remove brackets and quotes
+
+    if not answer:
+        return None
+
+    label_lookup = {label.casefold(): label for label in valid_labels}
+
+    selected_labels = []
+    if "," in answer:
+        # Split by commas and strip whitespace
+        selected_labels = [label.strip() for label in answer.split(",")]
+        for i, label in enumerate(selected_labels):
+            if label.casefold() in label_lookup:
+                selected_labels[i] = label_lookup[label.casefold()]
+            else:
+                selected_labels[i] = None  # Mark invalid labels as None
+        # Filter out None values (invalid labels)
+        selected_labels = [label for label in selected_labels if label is not None]
+
+    return selected_labels
 
 
 def iter_jsonl(path: str) -> Iterator[dict[str, Any]]:
@@ -744,6 +929,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--query", type=str, help="The query to evaluate correspondence for."
     )
 
+    infer_labels_parser = subparsers.add_parser(
+        "InferLabelsFromDescriptors",
+        help="Infer all reasonable labels from a document's descriptors.",
+    )
+    infer_labels_parser.add_argument(
+        "--label-type",
+        type=str,
+        required=True,
+        choices=["format", "topic"],
+        help="The type of labels to infer from the descriptors.",
+    )
+    infer_labels_parser.add_argument(
+        "--descriptor-type",
+        type=str,
+        required=True,
+        choices=["harmonized", "raw"],
+        help="Which descriptor set to use for inference.",
+    )
+
     return parser
 
 
@@ -763,7 +967,10 @@ def main() -> None:
         args.output_path.split(",") if args.output_path else [None] * len(data_paths)
     )
     if len(output_paths) < len(data_paths):
-        print("Warning: Fewer output paths than data paths. Some results will not be saved.", flush=True)
+        print(
+            "Warning: Fewer output paths than data paths. Some results will not be saved.",
+            flush=True,
+        )
 
     for i, data_path in enumerate(data_paths):
         examples = load_examples(data_path, task, args)
