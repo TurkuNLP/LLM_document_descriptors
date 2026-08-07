@@ -308,6 +308,38 @@ def run_query_judgements(
         {"query": query, "document": row["document"]} for row in selected_documents
     ]
 
+    if not document_examples:
+        if not document_path.exists():
+            write_jsonl(document_path, [])
+        if not final_path.exists():
+            write_jsonl(final_path, [])
+        document_rows = []
+        document_labels = []
+        summary = {
+            "query": query,
+            "artifacts": {
+                "search_results": str(search_path),
+                "descriptor_judgements": str(descriptor_path),
+                "selected_documents": str(selected_docs_path),
+                "document_judgements": str(document_path),
+                "final_results": str(final_path),
+            },
+            "search": {"results": len(search_payload["results"])},
+            "descriptor_judge": {
+                "labels": summarize_labels(descriptor_labels),
+                "selected_descriptors": sum(
+                    1 for label in descriptor_labels if label == "yes"
+                ),
+            },
+            "documents": {"selected": len(selected_documents)},
+            "document_judge": {
+                "labels": summarize_labels(document_labels),
+                "final_documents": len(document_rows),
+            },
+        }
+        write_json(summary_path, summary)
+        return summary
+
     if not document_rows and document_examples:
         _, document_responses, document_labels = run_judge_task(
             judge,
