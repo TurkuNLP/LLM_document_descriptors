@@ -1,3 +1,6 @@
+import json
+
+
 def get_query_correspondence_prompt(document, query):
     return [
         {
@@ -187,5 +190,33 @@ def get_label2document_correspondence_prompt(document, label, label_type = "form
         {
             "role": "user",
             "content": f"Label: {label}\nDocument: {document}",
+        },
+    ]
+
+
+def get_infer_labels_from_descriptors_prompt(descriptors, labels, label_type = "format"):
+    return [
+        {
+            "role": "system",
+            "content": f"""You are a helpful assistant.
+
+###Instructions
+
+You are given a list of descriptors and list of candidate labels.
+The descriptors describe a document in various ways, and the labels categorize the {label_type} of the document.
+Your task is to determine, which of the candidate labels could reasonably be applied to the document that the descriptors describe.
+Choose all labels that are directly supported or clearly implied by the descriptors.
+Do not invent new labels.
+
+###Output format
+Return only a JSON array of exact label strings taken from the candidate list.
+Use the same casing as the candidate labels.
+First, briefly explain your reasoning.
+Then end with the exact string "ANSWER: " followed by a comma-separated list of labels.
+""",
+        },
+        {
+            "role": "user",
+            "content": f"Candidate labels: {json.dumps(labels, ensure_ascii=False)}\nDescriptors: {json.dumps(descriptors, ensure_ascii=False)}",
         },
     ]
