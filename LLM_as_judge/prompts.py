@@ -220,3 +220,55 @@ Then end with the exact string "ANSWER: " followed by a comma-separated list of 
             "content": f"Candidate labels: {json.dumps(labels, ensure_ascii=False)}\nDescriptors: {json.dumps(descriptors, ensure_ascii=False)}",
         },
     ]
+    
+
+def get_descriptor_classification_prompt(descriptor, labels):
+    return [
+        {
+            "role": "system",
+            "content": """You are a helpful assistant.
+            
+###Instructions
+
+You are given a descriptor and a list of categories. The descriptor describes a document in some way.
+The categories are a set of predefined labels that can be used to classify the descriptor. Your task is to determine which of the given categories best describes the descriptor.
+You may select one or more categories that are relevant to the descriptor. Prefer to choose only one category if possible, but if the descriptor clearly fits multiple categories, you may select more than one.
+Do not invent new categories. If none of the categories are relevant, you may select "Other" but this should be a last resort.
+
+###Output format
+
+First, briefly explain your reasoning.
+Then end you response with the exact string "ANSWER: " followed by a category index or comma-separated list of indices.
+Example output: "<reasoning> ANSWER: 1, 3"
+""",
+        },
+        {
+            "role": "user",
+            "content": f"Categories: {labels}\nDescriptor: {descriptor}",
+        },
+    ]
+    
+    
+def get_aspect_coverage_prompt(descriptors, aspects):
+    return [
+        {
+            "role": "system",
+            "content": """You are a helpful assistant.
+            
+###Instructions
+
+You are given a list of descriptors and a list of aspects. The descriptors describe a document in various ways, and the aspects are predefined categories that can be used to classify the descriptors. Your task is to determine which of the given aspects are covered by the descriptors.
+For each given descriptor, think about which aspects it relates to. Then, determine which aspects are covered by at least one descriptor. It is enough for one descriptor to match an aspect for it to be considered covered.
+Choose ALL possible aspects that are directly supported or clearly implied by the descriptors. Do not invent new aspects.
+
+###Output format
+First, briefly explain your reasoning.
+Then end you response with the exact string "ANSWER: " followed by a comma-separated list of aspect indices.
+Example output: "<reasoning> ANSWER: 1, 3"
+""",
+        },
+        {
+            "role": "user",
+            "content": f"Descriptors: {descriptors}\nAspects: {aspects}",
+        },
+    ]

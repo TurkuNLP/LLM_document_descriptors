@@ -18,6 +18,7 @@ import prompts
 os.environ["VLLM_CONFIGURE_LOGGING"] = "0"
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
+random.seed(42)
 
 class LLMJudge:
     def __init__(
@@ -354,8 +355,13 @@ class QueryDocMatchTask(BaseTask):
         context: dict[str, Any],
         args: argparse.Namespace,
     ) -> list[dict[str, Any]]:
-        return [{"document": row["document"], "query": args.query}]
-
+        if "document" in row:
+            return [{"document": row["document"], "query": args.query}]
+        elif "text" in row:
+            return [{"document": row["text"], "query": args.query}]
+        else:
+            raise ValueError("Row must contain either 'document' or 'text' field.")
+        
     def build_prompt(self, example: dict[str, Any]) -> str:
         return prompts.get_query_correspondence_prompt(
             example["document"], example["query"]
@@ -413,16 +419,25 @@ class DescriptorAccuracyTask(BaseTask):
         context: dict[str, Any],
         args: argparse.Namespace,
     ) -> list[dict[str, Any]]:
-        document = row["document"]
+        if "document" in row:
+            document = row["document"]
+        elif "text" in row:
+            document = row["text"]
+        else:
+            raise ValueError("Row must contain either 'document' or 'text' field.")
+
         if args.descriptor_type == "harmonized":
             descriptors = row.get("harmonized_descriptors", [])
         elif args.descriptor_type == "raw":
-            similarity_scores = row.get("similarity", [])
-            if similarity_scores:
-                best_idx = np.argmax(similarity_scores)
-                descriptors = row["descriptors"][best_idx]
+            if "raw_descriptors" in row:
+                descriptors = row.get("raw_descriptors", [])
             else:
-                descriptors = row.get("descriptors", [])
+                similarity_scores = row.get("similarity", [])
+                if similarity_scores:
+                    best_idx = np.argmax(similarity_scores)
+                    descriptors = row["descriptors"][best_idx]
+                else:
+                    descriptors = row.get("descriptors", [])
         else:
             raise ValueError(f"Invalid descriptor type: {args.descriptor_type}")
 
@@ -450,7 +465,7 @@ class DescriptorAccuracyTask(BaseTask):
         total = sum(counter.values())
         print(f"Descriptor type: {args.descriptor_type}")
         print(f"Descriptor Accuracy Evaluation Results (n={total}):")
-        for label in self.VALID_CLASSES:
+        for label in self.valid_labels:
             count = counter.get(label, 0)
             percentage = (count / total * 100) if total > 0 else 0
             print(f"{label}: {count} ({percentage:.2f}%)")
@@ -481,7 +496,13 @@ class Descriptors2LabelCorrespondenceTask(BaseTask):
         context: dict[str, Any],
         args: argparse.Namespace,
     ) -> list[dict[str, Any]]:
-        document = row["document"]
+        if "document" in row:
+            document = row["document"]
+        elif "text" in row:
+            document = row["text"]
+        else:
+            raise ValueError("Row must contain either 'document' or 'text' field.")
+
         label = row.get("label", "")
         descriptors = row.get("descriptors", [])
 
@@ -542,7 +563,13 @@ class Label2DocumentCorrespondenceTask(BaseTask):
         context: dict[str, Any],
         args: argparse.Namespace,
     ) -> list[dict[str, Any]]:
-        document = row["document"]
+        if "document" in row:
+            document = row["document"]
+        elif "text" in row:
+            document = row["text"]
+        else:
+            raise ValueError("Row must contain either 'document' or 'text' field.")
+        
         label = row.get("label", "")
 
         return [
@@ -732,6 +759,245 @@ class InferLabelsFromDescriptorsTask(BaseTask):
             count = label_counter.get(label, 0)
             percentage = (count / total * 100) if total > 0 else 0
             print(f"{label}: {count} ({percentage:.2f}%)")
+            
+            
+class DescriptorClassificationTask(BaseTask):
+    """Classifies descriptors into predefined categories."""
+    
+    categories = (
+    "Content & Subject Matter: e.g. topic, domain, subtopic, intent, cultural context, temporal relevance",
+    "Structure & Format: e.g. genre, document type (blog, news, etc.), media format, length",
+    "Style & Tone: e.g. formality, tone, technicality (e.g. jargon), voice (active/passive), syntax",
+    "Quality & Trustworthiness: e.g. factuality, authority, originality, spam, bias, depth (superficial/in-depth)",
+    "Audience & Engagement: e.g. target audience, engagement level, monetization, call-to-action, shareability",
+    "Linguistic Features: e.g. readability, sentiment, figurative language, multilinguality, repetition",
+    "Ethical & Legal: e.g. toxicity, misinformation, legal compliance, accessibility, dark patterns",
+    "Other: miscellaneous, not fitting into other categories",
+    )
+    
+    def setup(self, args: argparse.Namespace) -> dict[str, Any]:
+        return {"categories": self.categories}
+    
+    def include_row(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> bool:
+        return random.random() <= args.sample_percent
+    
+    def build_examples(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> list[dict[str, Any]]:
+        
+        if args.descriptor_type == "harmonized":
+            descriptors = row.get("harmonized_descriptors", [])
+        elif args.descriptor_type == "raw":
+            if "raw_descriptors" in row:
+                descriptors = row.get("raw_descriptors", [])
+            else:
+                similarity_scores = row.get("similarity", [])
+                if similarity_scores:
+                    best_idx = np.argmax(similarity_scores)
+                    descriptors = row["descriptors"][best_idx]
+                else:
+                    descriptors = row.get("descriptors", [])
+        else:
+            raise ValueError(f"Invalid descriptor type: {args.descriptor_type}")
+        
+        return [
+            {
+                "descriptor": descriptor,
+                "categories": context["categories"],
+            }
+            for descriptor in descriptors
+        ]
+        
+    def build_prompt(self, example: dict[str, Any]) -> str:
+        
+        formatted_categories = "\n".join(f"{i+1} {category}" for i, category in enumerate(example["categories"]))
+        
+        return prompts.get_descriptor_classification_prompt(
+            example["descriptor"],
+            formatted_categories,
+        )
+        
+    def parse_response(self, response: str) -> list[str] | None:
+        answer = extract_answer_text(response).strip()
+        # answer looks like this "1, 3, 5"
+        selected_indices = re.findall(r"\d+", answer)
+        
+        if not selected_indices:
+            return None
+        
+        selected_categories = []
+        for index in selected_indices:
+            idx = int(index) - 1  # Convert to 0-based index
+            if 0 <= idx < len(self.categories):
+                selected_categories.append(self.categories[idx])
+        
+        return selected_categories if selected_categories else None
+    
+    def print_results(
+        self, parsed_responses: list[list[str] | None], args: argparse.Namespace
+    ) -> None:
+        category_counter: Counter[str] = Counter()
+        invalid_count = 0
+        empty_count = 0
+
+        for response in parsed_responses:
+            if response is None:
+                invalid_count += 1
+                continue
+
+            if not response:
+                empty_count += 1
+
+            category_counter.update(response)
+
+        total = len(parsed_responses)
+        total_categories = sum(category_counter.values())
+        empty_percentage = (empty_count / total * 100) if total > 0 else 0
+        invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
+
+        print(f"Descriptor Classification Evaluation Results (n={total}):")
+        print(f"Total classified categories: {total_categories}")
+        print(
+            f"Descriptors with no classified categories: {empty_count} ({empty_percentage:.2f}%)"
+        )
+        print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
+        for category in self.categories:
+            count = category_counter.get(category, 0)
+            percentage = (count / total * 100) if total > 0 else 0
+            print(f"{category}: {count} ({percentage:.2f}%)")
+            
+            
+class AspectCoverageTask(BaseTask):
+    """For the descriptors of a document, evuluate whether the given aspect are covered by the descriptors."""
+    
+    aspects = (
+        "Content & Subject Matter: e.g. topic, domain, subtopic, intent, cultural context, temporal relevance",
+        "Structure & Format: e.g. genre, document type (blog, news, etc.), media format, length",
+        "Style & Tone: e.g. formality, tone, technicality (e.g. jargon), voice (active/passive), syntax",
+        "Quality & Trustworthiness: e.g. factuality, authority, originality, spam, bias, depth (superficial/in-depth)",
+        "Audience & Engagement: e.g. target audience, engagement level, monetization, call-to-action, shareability",
+        "Linguistic Features: e.g. readability, sentiment, figurative language, multilinguality, repetition",
+        "Ethical & Legal: e.g. toxicity, misinformation, legal compliance, accessibility, dark patterns",
+        "Other: miscellaneous, not fitting into other categories"
+    )
+    
+    def setup(self, args: argparse.Namespace) -> dict[str, Any]:
+        return {"aspects": self.aspects}
+    
+    def include_row(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> bool:
+        return random.random() <= args.sample_percent
+    
+    def build_examples(
+        self,
+        row: dict[str, Any],
+        context: dict[str, Any],
+        args: argparse.Namespace,
+    ) -> list[dict[str, Any]]:
+        
+        if args.descriptor_type == "harmonized":
+            descriptors = row.get("harmonized_descriptors", [])
+        elif args.descriptor_type == "raw":
+            if "raw_descriptors" in row:
+                descriptors = row.get("raw_descriptors", [])
+            else:
+                similarity_scores = row.get("similarity", [])
+                if similarity_scores:
+                    best_idx = np.argmax(similarity_scores)
+                    descriptors = row["descriptors"][best_idx]
+                else:
+                    descriptors = row.get("descriptors", [])
+        else:
+            raise ValueError(f"Invalid descriptor type: {args.descriptor_type}")
+        
+        return [
+            {
+                "descriptors": descriptors,
+                "aspects": context["aspects"],
+            }
+        ]
+        
+    def build_prompt(self, example: dict[str, Any]) -> str:
+        formatted_aspects = "\n".join(f"{i+1} {aspect}" for i, aspect in enumerate(example["aspects"]))
+        
+        return prompts.get_aspect_coverage_prompt(
+            example["descriptors"],
+            formatted_aspects,
+        )
+        
+    def parse_response(self, response: str) -> list[str] | None:
+        answer = extract_answer_text(response).strip()
+        # answer looks like this "1, 3, 5"
+        selected_indices = re.findall(r"\d+", answer)
+        
+        if not selected_indices:
+            return None
+        
+        selected_aspects = []
+        for index in selected_indices:
+            idx = int(index) - 1  # Convert to 0-based index
+            if 0 <= idx < len(self.aspects):
+                selected_aspects.append(self.aspects[idx])
+        
+        return selected_aspects if selected_aspects else None
+    
+    def print_results(
+        self, parsed_responses: list[list[str] | None], args: argparse.Namespace
+    ) -> None:
+        """Print the number of documents that cover each aspect, documents that cover all-1 aspects, all-2 aspects, etc.
+        Also print the number of documents that do not cover any aspect, and the number of invalid responses.
+        Also, print the percentage of aspects covered by the descriptors across all documents.
+        """
+        aspect_counter: Counter[str] = Counter()
+        invalid_count = 0
+        empty_count = 0
+
+        for response in parsed_responses:
+            if response is None:
+                invalid_count += 1
+                continue
+
+            if not response:
+                empty_count += 1
+
+            aspect_counter.update(response)
+
+        total = len(parsed_responses)
+        total_aspects = sum(aspect_counter.values())
+        empty_percentage = (empty_count / total * 100) if total > 0 else 0
+        invalid_percentage = (invalid_count / total * 100) if total > 0 else 0
+        
+        print(f"Aspect Coverage Evaluation Results (n={total}):")
+        print(f"Descriptor type: {args.descriptor_type}")
+        print(f"Total covered aspects: {total_aspects}")
+        print(
+            f"Documents with no covered aspects: {empty_count} ({empty_percentage:.2f}%)"
+        )
+        print(f"Invalid answers: {invalid_count} ({invalid_percentage:.2f}%)")
+        for num_aspects in range(len(self.aspects) + 1):
+            exact_count = sum(1 for response in parsed_responses if response and len(response) == num_aspects)
+            exact_percentage = (exact_count / total * 100) if total > 0 else 0
+            print(f"Documents covering exactly {num_aspects} aspects: {exact_count} ({exact_percentage:.2f}%)")
+            at_least_count = sum(1 for response in parsed_responses if response and len(response) >= num_aspects)
+            at_least_percentage = (at_least_count / total * 100) if total > 0 else 0
+            print(f"Documents covering at least {num_aspects} aspects: {at_least_count} ({at_least_percentage:.2f}%)")
+        
+        for aspect in self.aspects:
+            count = aspect_counter.get(aspect, 0)
+            percentage = (count / total * 100) if total > 0 else 0
+            print(f"{aspect}: {count} ({percentage:.2f}%)")    
 
 
 TASKS: dict[str, BaseTask] = {
@@ -741,6 +1007,8 @@ TASKS: dict[str, BaseTask] = {
     "Descriptors2LabelCorrespondence": Descriptors2LabelCorrespondenceTask(),
     "Label2DocumentCorrespondence": Label2DocumentCorrespondenceTask(),
     "InferLabelsFromDescriptors": InferLabelsFromDescriptorsTask(),
+    "DescriptorClassification": DescriptorClassificationTask(),
+    "AspectCoverage": AspectCoverageTask(),
 }
 
 
@@ -929,6 +1197,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--query", type=str, help="The query to evaluate correspondence for."
     )
 
+    # Subparser for labels inference task
     infer_labels_parser = subparsers.add_parser(
         "InferLabelsFromDescriptors",
         help="Infer all reasonable labels from a document's descriptors.",
@@ -946,6 +1215,44 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         choices=["harmonized", "raw"],
         help="Which descriptor set to use for inference.",
+    )
+    
+    # Subparser for descriptor classification task
+    descriptor_classification_parser = subparsers.add_parser(
+        "DescriptorClassification",
+        help="Classify descriptors into predefined categories.",
+    )
+    descriptor_classification_parser.add_argument(
+        "--sample-percent",
+        type=float,
+        default=0.05,
+        help="Fraction of documents to sample for evaluation.",
+    )
+    descriptor_classification_parser.add_argument(
+        "--descriptor-type",
+        type=str,
+        required=True,
+        choices=["harmonized", "raw"],
+        help="Which descriptor set to use for classification.",
+    )
+    
+    # Subparser for aspect coverage task
+    aspect_coverage_parser = subparsers.add_parser(
+        "AspectCoverage",
+        help="Evaluate whether the given aspects are covered by the descriptors.",
+    )
+    aspect_coverage_parser.add_argument(
+        "--sample-percent",
+        type=float,
+        default=0.05,
+        help="Fraction of documents to sample for evaluation.",
+    )
+    aspect_coverage_parser.add_argument(
+        "--descriptor-type",
+        type=str,
+        required=True,
+        choices=["harmonized", "raw"],
+        help="Which descriptor set to use for evaluation.",
     )
 
     return parser
@@ -991,6 +1298,8 @@ def main() -> None:
         parsed_responses = [task.parse_response(response) for response in responses]
         task.print_results(parsed_responses, args)
         if args.output_path:
+            # Ensure the output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             if args.detailed_output:
                 task.save_detailed_results(output_path, examples, responses)
             else:
