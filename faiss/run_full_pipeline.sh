@@ -119,7 +119,7 @@ else
     echo "Using full data for search."
         if [ "$data_type" == "raw" ] && [ "$label_type" == "format" ]; then
         data_path="../data/weborganizer/topic_format_edu.jsonl"
-        index_path="../results/faiss/full_data_faiss_index/raw_embeddings.faiss"
+        index_path="../results/faiss/full_data_faiss_index/raw_index.faiss"
         embeddings_path="../results/faiss/full_data_faiss_index/raw_embeddings.npy"
         output_dir="../results/faiss/pipeline/full/formats/raw"
         descriptor_type="raw"
