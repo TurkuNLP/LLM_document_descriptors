@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=decompress
-#SBATCH --account=project_462000964
-#SBATCH --partition=debug
+#SBATCH --account=project_2011109
+#SBATCH --partition=small
 #SBATCH --time=00:20:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
