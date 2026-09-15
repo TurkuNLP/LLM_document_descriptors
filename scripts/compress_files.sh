@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=compress
-#SBATCH --account=project_2011109
+#SBATCH --account=project_465002530
 #SBATCH --partition=small
 #SBATCH --time=01:00:00
 #SBATCH --nodes=1

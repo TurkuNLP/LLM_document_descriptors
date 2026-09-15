@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=decompress
-#SBATCH --account=project_2011109
-#SBATCH --partition=small
-#SBATCH --time=00:20:00
+#SBATCH --account=project_465002530
+#SBATCH --partition=debug
+#SBATCH --time=00:29:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 #SBATCH -o ../logs/%j.out
 #SBATCH -e ../logs/%j.err
 
