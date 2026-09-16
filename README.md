@@ -72,9 +72,33 @@ Before submitting a job, update the `--account`, paths, and resource settings in
 ## Reproducibility notes
 
 - The repository targets LUMI, ROCm, and GPU execution. Porting it elsewhere may require changes to the environment and Slurm wrappers.
-- `requirements.txt` pins `vllm==0.6.6.dev27+ge461c262.rocm624`, while older project notes mention vLLM 0.15.1. Treat the requirements file and the scripts' module loads as historical environment records, and verify compatible versions before reproducing a run.
-- Large datasets, logs, results, model caches, and figures are ignored by Git. Check the relevant `.gitignore` rules and obtain any required source data separately.
-- Record the model name or revision, dataset version, schema version, query files, command line, and output location for every new experiment.
+- The repository relies on a pre-built LUMI AI Factory container image and a virtual environment extension. The container image is not included in the repository. To reproduce the original environment, follow these steps:
+1. Load modules
+```shell
+module purge
+module use /appl/local/laifs/modules
+module load lumi-aif-singularity-bindings
+```
+
+2. Activate container and build venv
+```shell
+export SIF=/appl/local/laifs/containers/lumi-multitorch-u24r64f21m43t29-20260216_093549/lumi-multitorch-full-u24r64f21m43t29-20260216_093549.sif
+singularity shell $SIF
+Singularity> python -m venv .venv --system-site-packages
+Singularity> source .venv/bin/activate
+(.venv) Singularity> pip install -r requirements.txt
+```
+
+lumi-multitorch-full-u24r64f21m43t29-20260216_093549.sif
+
+3. Run scripts using the container and venv in a SLURM job
+```shell
+srun singularity run --rocm --bind /scratch/project_465002530 \
+    $SIF bash -c "source .venv/bin/activate && python script.py \
+							  --input 'data.jsonl' \
+							  --output 'out.jsonl'
+							  "
+```
 
 ## Citation and license
 
